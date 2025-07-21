@@ -2,7 +2,7 @@
 
 > **See your investments through a halal lens.**  A privacy‑first, read‑only Shariah‑compliance screener and analytics dashboard for Indian & GCC equities and mutual‑fund schemes.
 
-![CI](https://img.shields.io/github/actions/workflow/status/your‑org/HalalLens/ci.yml?branch=main)
+![CI](https://img.shields.io/github/actions/workflow/status/hamzaziizzz/HalalLens/ci.yml?branch=main)
 ![License](https://img.shields.io/github/license/hamzaziizzz/HalalLens)
 
 ---
@@ -99,7 +99,7 @@ HalalLens/
 * [ ] OAuth2 social login (Apple/Google)
 * [ ] Mobile PWA wrapper (Capacitor)
 
-See [`PROJECTS`](https://github.com/your‑org/HalalLens/projects) for sprint board.
+See [`PROJECTS`](https://github.com/hamzaziizzz/HalalLens/projects) for sprint board.
 
 ---
 
