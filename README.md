@@ -3,7 +3,7 @@
 > **See your investments through a halal lens.**  A privacy‑first, read‑only Shariah‑compliance screener and analytics dashboard for Indian & GCC equities and mutual‑fund schemes.
 
 ![CI](https://img.shields.io/github/actions/workflow/status/your‑org/HalalLens/ci.yml?branch=main)
-![License](https://img.shields.io/github/license/your‑org/HalalLens)
+![License](https://img.shields.io/github/license/hamzaziizzz/HalalLens)
 
 ---
 
