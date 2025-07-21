@@ -22,7 +22,7 @@
 
 ## 🏗️  System Overview
 
-```mermaid
+```
 flowchart TD
     A[Filings Crawler] -->|Nightly ETL| B[Raw Docs (S3)]
     B --> C[Financial Extractor]
