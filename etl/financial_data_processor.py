@@ -13,6 +13,8 @@ from typing import Dict, List, Optional
 
 import requests
 
+from minio_client import BSEPDFStorage
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
@@ -33,7 +35,9 @@ class FinancialDataProcessor:
             'Accept': 'application/pdf, application/xml, */*'
         })
 
-        self.bse_attachment_base = "https://www.bseindia.com/xml-data/corpfiling/AttachLive/"
+        self.bse_attachment_dir = "https://www.bseindia.com/xml-data/corpfiling"
+        self.bse_attachment_live = f"{self.bse_attachment_dir}/AttachLive"
+        self.bse_attachment_moved = f"{self.bse_attachment_dir}/AttachHis"
 
         # Financial keywords for detection
         self.financial_keywords = {
@@ -50,6 +54,10 @@ class FinancialDataProcessor:
             'extraction_successful': 0,
             'extraction_failed': 0
         }
+
+        # Add MinIO storage
+        self.pdf_storage = BSEPDFStorage()
+        logger.info("MinIO PDF storage initialized")
 
     def process_announcements(self, anns: List[Dict]) -> List[Dict]:
         """
@@ -75,6 +83,7 @@ class FinancialDataProcessor:
             symbol = str(announcement.get('SCRIP_CD', ''))
             date = announcement.get('NEWS_DT', '')
             attachment = announcement.get('ATTACHMENTNAME', '')
+            year, month = date[:4], date[5:7]
 
             # Focus on financial announcements
             if self._is_financial_announcement(category, subject):
@@ -95,8 +104,22 @@ class FinancialDataProcessor:
 
                 # Try to extract financial data
                 if attachment:
-                    pdf_url = f"{self.bse_attachment_base}{attachment}"
+                    pdf_url = f"{self.bse_attachment_live}/{attachment}"
                     processed_data['pdf_url'] = pdf_url
+
+                    # Download and store PDF in MinIO
+                    minio_path = self.pdf_storage.download_and_store_pdf(pdf_url, symbol, date)
+                    if minio_path.lower() == "pdf moved":
+                        pdf_url = f"{self.bse_attachment_moved}/{year}/{month}/{attachment}"
+                        minio_path = self.pdf_storage.download_and_store_pdf(pdf_url, symbol, date)
+
+                    if minio_path:
+                        processed_data['minio_path'] = minio_path
+                        processed_data['pdf_stored'] = True
+                        logger.info(f"PDF stored in MinIO: {company} ({symbol})")
+                    else:
+                        processed_data['pdf_stored'] = False
+                        logger.warning(f"Failed to store PDF: {company} ({symbol})")
 
                     # Extract basic financial information from announcement text
                     extracted_info = self._extract_financial_info_from_text(announcement)

@@ -6,13 +6,14 @@ This script demonstrates how to use all three modules together for a complete wo
 
 import sys
 import logging
-from datetime import date, timedelta
+from datetime import date, timedelta, datetime
 from pathlib import Path
 
 # Import our custom modules
 from crawler import NSEAnnouncementsFetcher
 from crawler import BSEAnnouncementsFetcher
 from etl import FinancialDataProcessor
+from database import BSEDatabaseManager
 
 # Configure logging
 logging.basicConfig(
@@ -237,37 +238,54 @@ class FilingsCrawler:
 def main():
     """Main function demonstrating usage of the filings' crawler."""
     crawler = FilingsCrawler()
+    db = BSEDatabaseManager()
 
     try:
         # Example 1: Run daily crawl for yesterday
-        print("=== Running Daily Crawl ===")
-        daily_summary = crawler.run_daily_crawl()
-        print(f"Daily crawl results: {daily_summary}")
-
-        # Example 2: Run crawl for a specific date range
-        print("\n=== Running Date Range Crawl ===")
-        from_date = "2024-01-15"
-        to_date = "2024-01-17"
-        range_summary = crawler.run_date_range_crawl(from_date, to_date)
-        print(f"Date range crawl results: {range_summary}")
+        # print("=== Running Daily Crawl ===")
+        # daily_summary = crawler.run_daily_crawl()
+        # print(f"Daily crawl results: {daily_summary}")
+        #
+        # # Example 2: Run crawl for a specific date range
+        # print("\n=== Running Date Range Crawl ===")
+        # from_date = "2024-01-15"
+        # to_date = "2024-01-17"
+        # range_summary = crawler.run_date_range_crawl(from_date, to_date)
+        # print(f"Date range crawl results: {range_summary}")
 
         # Example 3: Individual module usage
         print("\n=== Individual Module Examples ===")
 
         # NSE only
-        nse_fetcher = NSEAnnouncementsFetcher()
-        nse_data = nse_fetcher.get_corporate_announcements("2024-01-15", "2024-01-15")
-        print(f"NSE announcements: {len(nse_data) if nse_data else 0}")
-        nse_fetcher.close()
+        # nse_fetcher = NSEAnnouncementsFetcher()
+        # nse_data = nse_fetcher.get_corporate_announcements("2024-01-15", "2024-01-15")
+        # print(f"NSE announcements: {len(nse_data) if nse_data else 0}")
+        # nse_fetcher.close()
 
         # BSE only
         bse_fetcher = BSEAnnouncementsFetcher()
-        bse_data = bse_fetcher.get_announcements_paginated("20240115", "20240115")
+        bse_data = bse_fetcher.get_announcements_paginated("20250723", "20250723")
+        if bse_data:
+            # Save to cache
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            bse_fetcher.save_to_cache(bse_data, f"bse_announcements_{timestamp}.json")
+
+            # Print summary
+            print(f"Successfully fetched {len(bse_data)} announcements")
+            if bse_data:
+                print("\nFirst 3 announcements:")
+                for i, ann in enumerate(bse_data[:3]):
+                    print(f"{i + 1}. {ann.get('SCRIP_CD', 'N/A')} - {ann.get('NEWSSUB', 'N/A')}")
+
+            # db.insert_announcements(announcements_data=bse_data)
+        else:
+            print("No announcements retrieved")
+
         print(f"BSE announcements: {len(bse_data) if bse_data else 0}")
         bse_fetcher.close()
 
         # Financial processor only (updated example)
-        if bse_data or nse_data:
+        if bse_data:
             processor = FinancialDataProcessor()
             financial_data = processor.process_announcements(bse_data)
             print(f"Financial data extracted: {len(financial_data)}")
@@ -283,6 +301,8 @@ def main():
                         extracted = item.get('extracted_data', {})
                         print(f"  • {item['company']} - Q{extracted.get('quarter', 'N/A')} "
                               f"{extracted.get('audit_status', 'N/A')} results")
+
+                db.insert_financial_snapshots(financial_data)
 
             processor.close()
 

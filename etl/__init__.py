@@ -1,1 +1,2 @@
-from etl.xbrl_processor import FinancialDataProcessor
+from etl.financial_data_processor import FinancialDataProcessor
+from etl.minio_client import BSEPDFStorage

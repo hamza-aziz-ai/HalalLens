@@ -13,6 +13,8 @@ cloudscraper = "*"
 playwright = "*"
 fake-useragent = "*"
 lxml = "*"
+minio = "*"
+pandas = "*"
 
 [dev-packages]
 
