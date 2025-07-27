@@ -5,14 +5,14 @@ Production-ready implementation for fetching BSE corporate announcements.
 Uses API endpoints discovered through research and proven pagination methods.
 """
 
-import requests
-import time
 import json
 import logging
-from datetime import datetime, date, timedelta
-from typing import Dict, List, Optional, Any
+import time
+from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Dict, List, Optional, Any
 
+import requests
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -83,7 +83,7 @@ class BSEAnnouncementsFetcher:
 
         current_day = start_date
         while current_day <= end_date:
-            chunk_end = min(current_day + timedelta(days=max_days-1), end_date)
+            chunk_end = min(current_day + timedelta(days=max_days - 1), end_date)
             chunks.append((
                 current_day.strftime('%Y%m%d'),
                 chunk_end.strftime('%Y%m%d'),
@@ -92,7 +92,14 @@ class BSEAnnouncementsFetcher:
 
         return chunks
 
-    def _fetch_date_chunk(self, url: str, from_date_bse: str, to_date_bse: str, category: str = '-1', search_type: str = 'P') -> List[Dict]:
+    def _fetch_date_chunk(
+            self,
+            url: str,
+            from_date_bse: str,
+            to_date_bse: str,
+            category: str = '-1',
+            search_type: str = 'P'
+    ) -> List[Dict]:
         """Fetch single date chunk with proper BSE pagination."""
         announcements = []
         page_no = 1
@@ -141,7 +148,7 @@ class BSEAnnouncementsFetcher:
         # Updated API endpoint based on research
         url = f"{self.api_base}/AnnGetData/w"
 
-        date_chunks = self._chunk_data_range(from_date, to_date, max_days=1)
+        date_chunks = self._chunk_data_range(from_date, to_date)
         all_announcements = []
 
         logger.info(f"Fetching BSE announcements from {from_date} to {to_date}")
