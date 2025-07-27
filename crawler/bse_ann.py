@@ -13,6 +13,7 @@ from datetime import datetime, date, timedelta
 from typing import Dict, List, Optional, Any
 from pathlib import Path
 
+
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -232,40 +233,3 @@ class BSEAnnouncementsFetcher:
         """Close the session."""
         self.session.close()
         logger.info("Session closed")
-
-
-def main():
-    """Example usage of BSE announcements fetcher."""
-    fetcher = BSEAnnouncementsFetcher()
-
-    try:
-        # Get current date and yesterday for demo (BSE uses YYYYMMDD format)
-        today = date.today().strftime('%Y%m%d')
-        yesterday = date.today().replace(day=date.today().day - 1).strftime('%Y%m%d')
-
-        # Fetch announcements with pagination
-        announcements = fetcher.get_announcements_paginated(yesterday, today)
-
-        if announcements:
-            # Save to cache
-            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            fetcher.save_to_cache(announcements, f"bse_announcements_{timestamp}.json")
-
-            # Print summary
-            print(f"Successfully fetched {len(announcements)} announcements")
-            if announcements:
-                print("\nFirst 3 announcements:")
-                for i, ann in enumerate(announcements[:3]):
-                    print(f"{i + 1}. {ann.get('SCRIP_CD', 'N/A')} - {ann.get('NEWSSUB', 'N/A')}")
-        else:
-            print("No announcements retrieved")
-
-    except Exception as e:
-        logger.error(f"Error in main execution: {e}")
-
-    finally:
-        fetcher.close()
-
-
-if __name__ == "__main__":
-    main()

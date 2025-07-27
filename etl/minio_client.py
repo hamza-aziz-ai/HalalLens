@@ -15,6 +15,13 @@ import requests
 from minio import Minio
 from minio.error import S3Error
 
+from config import (
+    MINIO_HOST, 
+    MINIO_PORT, 
+    MINIO_ACCESS_KEY, 
+    MINIO_SECRET_KEY
+)
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -24,15 +31,15 @@ class BSEPDFStorage:
 
     def __init__(self,
                  endpoint: str = "127.0.0.1:9000",
-                 access_key: str = "halal_admin",
-                 secret_key: str = "HalalLens2025!@#",
+                 access_key: str = None,
+                 secret_key: str = None,
                  secure: bool = False):
 
         # Initialize MinIO client
         self.client = Minio(
-            endpoint=endpoint,
-            access_key=access_key,
-            secret_key=secret_key,
+            endpoint=endpoint or f"{MINIO_HOST}:{MINIO_PORT}",
+            access_key=access_key or MINIO_ACCESS_KEY,
+            secret_key=secret_key or MINIO_SECRET_KEY,
             secure=secure
         )
 
@@ -89,7 +96,7 @@ class BSEPDFStorage:
 
             if homepage_response.status_code == 200:
                 # Visit announcements page to get additional cookies
-                announcements_page = self.session.get(
+                self.session.get(
                     f"{self.bse_base_url}/corporates/ann.html",
                     timeout=30
                 )
@@ -284,25 +291,3 @@ class BSEPDFStorage:
         if hasattr(self, 'session'):
             self.session.close()
         logger.info("BSE PDF storage session closed")
-
-
-# Test the enhanced client
-if __name__ == "__main__":
-    storage = BSEPDFStorage()
-
-    # Test with a known BSE PDF URL
-    test_url = "https://www.bseindia.com/xml-data/corpfiling/AttachLive/4eca3f49-cc9d-4956-8286-74a02681bd91.pdf"
-    result = storage.download_and_store_pdf(
-        test_url,
-        "500227",
-        "2025-07-22T23:46:18.437",
-        "HIGH"
-    )
-
-    if result:
-        print(f"✅ SUCCESS: PDF stored at {result}")
-    else:
-        print("❌ FAILED: Could not download PDF")
-
-    print(f"Statistics: {storage.get_statistics()}")
-    storage.close()

@@ -8,7 +8,7 @@ with proper connection pooling, error handling, and transaction management.
 """
 
 import logging
-import os
+import re
 from contextlib import contextmanager
 from datetime import datetime, timezone, date
 from typing import Dict, List, Optional
@@ -17,6 +17,14 @@ import pandas as pd
 import psycopg2
 from psycopg2 import pool
 from psycopg2.extras import RealDictCursor, Json
+
+from config import (
+    POSTGRES_HOST,
+    POSTGRES_PORT,
+    POSTGRES_DB,
+    POSTGRES_USER,
+    POSTGRES_PASSWORD
+)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -29,17 +37,17 @@ class BSEDatabaseManager:
                  host: str = "localhost",
                  port: int = 5432,
                  database: str = "Halal-Lens",
-                 user: str = "hamza",
-                 password: str = "23082001",
+                 user: str = None,
+                 password: str = None,
                  min_connections: int = 2,
                  max_connections: int = 20):
 
         self.connection_params = {
-            'host': host,
-            'port': port,
-            'database': database,
-            'user': user,
-            'password': password or os.getenv('POSTGRES_PASSWORD', ''),
+            'host': host or POSTGRES_HOST,
+            'port': port or POSTGRES_PORT,
+            'database': database or POSTGRES_DB,
+            'user': user or POSTGRES_USER,
+            'password': password or POSTGRES_PASSWORD,
             'cursor_factory': RealDictCursor
         }
 
@@ -114,16 +122,15 @@ class BSEDatabaseManager:
                         insert_query = """
                         INSERT INTO announcements (
                             symbol, company_name, filing_date, category, headline,
-                            pdf_url, confidence, raw_json, minio_path, pdf_stored
+                            confidence, raw_json, minio_path, pdf_stored
                         ) VALUES (
                             %(symbol)s, %(company_name)s, %(filing_date)s, %(category)s, %(headline)s,
-                            %(pdf_url)s, %(confidence)s, %(raw_json)s, %(minio_path)s, %(pdf_stored)s
+                            %(confidence)s, %(raw_json)s, %(minio_path)s, %(pdf_stored)s
                         ) ON CONFLICT (symbol, filing_date) 
                         DO UPDATE SET
                             company_name = EXCLUDED.company_name,
                             category = EXCLUDED.category,
                             headline = EXCLUDED.headline,
-                            pdf_url = EXCLUDED.pdf_url,
                             confidence = EXCLUDED.confidence,
                             raw_json = EXCLUDED.raw_json,
                             minio_path = EXCLUDED.minio_path,
@@ -175,16 +182,21 @@ class BSEDatabaseManager:
 
                         # Only insert if corresponding announcement exists
                         check_query = """
-                        SELECT 1 FROM announcements 
-                        WHERE symbol = %(symbol)s AND filing_date = %(filing_date)s
-                        """
+                                      SELECT 1 as alias
+                                      FROM announcements
+                                      WHERE symbol = %(symbol)s
+                                        AND filing_date = %(filing_date)s \
+                                      """
                         cursor.execute(check_query, {
                             'symbol': insert_data['symbol'],
                             'filing_date': insert_data['filing_date']
                         })
 
                         if not cursor.fetchone():
-                            logger.warning(f"No announcement found for snapshot: {insert_data['symbol']} on {insert_data['filing_date']}")
+                            logger.warning(
+                                f"No announcement found for snapshot: {insert_data['symbol']} "
+                                f"on {insert_data['filing_date']}"
+                            )
                             continue
 
                         # Insert or update snapshot
@@ -229,7 +241,30 @@ class BSEDatabaseManager:
         return processed_count
 
     @staticmethod
-    def _prepare_announcement_data(announcement: Dict) -> Optional[Dict]:
+    def parse_iso_datetime(dt_str: str) -> datetime:
+        """
+        Parse an ISO datetime string.
+        """
+        # Normalize fractional seconds to 6 digits for microseconds if present
+        # Match fractional seconds and pad/truncate as needed
+        m = re.match(r'(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(\.\d+)?', dt_str)
+        if not m:
+            # fallback parse
+            return datetime.strptime(dt_str, '%Y-%m-%dT%H:%M:%S').replace(tzinfo=timezone.utc)
+
+        base = m.group(1)
+        frac = m.group(2) or ''
+        if frac:
+            # Remove the dot and pad/truncate to 6 digits
+            frac_digits = frac[1:]  # strip the dot
+            frac_digits_padded = (frac_digits + '000000')[:6]
+            normalized = f"{base}.{frac_digits_padded}"
+        else:
+            normalized = base
+
+        return datetime.fromisoformat(normalized).replace(tzinfo=timezone.utc)
+
+    def _prepare_announcement_data(self, announcement: Dict) -> Optional[Dict]:
         """Prepare announcement data for database insertion"""
         try:
             # Handle filing_date conversion
@@ -245,25 +280,25 @@ class BSEDatabaseManager:
 
             if isinstance(filing_date, str):
                 # Parse ISO format with timezone
-                if 'T' in filing_date:
-                    filing_date = datetime.fromisoformat(filing_date.replace('Z', '+00:00'))
-                else:
-                    filing_date = datetime.strptime(filing_date, '%Y-%m-%d').replace(tzinfo=timezone.utc)
+                try:
+                    filing_date = self.parse_iso_datetime(filing_date)
+                except Exception as e:
+                    logger.error(f"Failed parsing filing_date '{filing_date}': {e}")
+                    raise
 
-            if announcement.get("CATEGORYNAME").lower() == "result":
+            if announcement.get("CATEGORYNAME") == "Result":
                 confidence = "HIGH"
-            elif announcement.get("CATEGORYNAME").lower() == "board meeting":
+            elif announcement.get("CATEGORYNAME") == "Board Meeting":
                 confidence = "MEDIUM"
             else:
                 confidence = "LOW"
 
             return {
                 'symbol': symbol,
-                'company_name': announcement.get("SLONGNAME", "").strip(),
+                'company_name': (announcement.get("SLONGNAME") or "").strip(),
                 'filing_date': filing_date,
                 'category': (announcement.get("CATEGORYNAME") or "").strip(),
                 'headline': announcement.get("NEWSSUB", "")[:600],
-                'pdf_url': f"https://www.bseindia.com/xml-data/corpfiling/AttachLive/{announcement.get('ATTACHMENTNAME','')}",
                 'confidence': confidence,
                 'raw_json': Json(announcement),  # Store complete original data
                 'minio_path': announcement.get('minio_path', None),
@@ -280,10 +315,12 @@ class BSEDatabaseManager:
             # Handle filing_date conversion
             filing_date = snapshot.get('date') or snapshot.get('filing_date')
             if isinstance(filing_date, str):
-                if 'T' in filing_date:
-                    filing_date = datetime.fromisoformat(filing_date.replace('Z', '+00:00'))
-                else:
-                    filing_date = datetime.strptime(filing_date, '%Y-%m-%d').replace(tzinfo=timezone.utc)
+                # Parse ISO format with timezone
+                try:
+                    filing_date = self.parse_iso_datetime(filing_date)
+                except Exception as e:
+                    logger.error(f"Failed parsing filing_date '{filing_date}': {e}")
+                    raise
 
             # Extract financial data from extracted_data field if present
             extracted_data = snapshot.get('extracted_data', {}) or {}

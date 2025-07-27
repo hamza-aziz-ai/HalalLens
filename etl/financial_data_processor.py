@@ -13,10 +13,13 @@ from typing import Dict, List, Optional
 
 import requests
 
-from minio_client import BSEPDFStorage
+from etl.minio_client import BSEPDFStorage
+from database.database_manager import BSEDatabaseManager
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
+
+db_client = BSEDatabaseManager()
 
 
 # noinspection PyTypeChecker
@@ -94,7 +97,7 @@ class FinancialDataProcessor:
                     'company': company,
                     'category': category,
                     'subject': announcement.get('NEWSSUB', ''),
-                    'date': date,
+                    'date': db_client.parse_iso_datetime(date),
                     'attachment_name': attachment,
                     'confidence': self._determine_confidence(category, subject),
                     'extracted_data': None,
@@ -114,12 +117,16 @@ class FinancialDataProcessor:
                         minio_path = self.pdf_storage.download_and_store_pdf(pdf_url, symbol, date)
 
                     if minio_path:
-                        processed_data['minio_path'] = minio_path
                         processed_data['pdf_stored'] = True
                         logger.info(f"PDF stored in MinIO: {company} ({symbol})")
                     else:
                         processed_data['pdf_stored'] = False
                         logger.warning(f"Failed to store PDF: {company} ({symbol})")
+
+                    processed_data['minio_path'] = minio_path
+                    self.updated_pdf_status(
+                        symbol, processed_data['date'], processed_data['minio_path'], processed_data['pdf_stored']
+                    )
 
                     # Extract basic financial information from announcement text
                     extracted_info = self._extract_financial_info_from_text(announcement)
@@ -140,6 +147,37 @@ class FinancialDataProcessor:
         logger.info(f"  Failed extractions: {self.stats['extraction_failed']}")
 
         return finance_data
+
+    @staticmethod
+    def updated_pdf_status(symbol, filing_date, minio_path: str, pdf_stored: bool):
+        """
+        Update minio_path and pdf_stored status in BSE Announcements table
+
+        Args:
+            symbol: Financial announcements symbol
+            filing_date: Financial announcements filing date
+            minio_path: Path for PDF to minio bucket
+            pdf_stored: Boolean flag to indicate whether the PDF stored successfully
+        """
+        with db_client.get_connection() as conn:
+            with conn.cursor() as cursor:
+                try:
+                    # Use ON CONFLICT to handle duplicates
+                    update_query = """
+                    UPDATE announcements
+                        SET minio_path = %s, pdf_stored = %s
+                        WHERE symbol = %s AND filing_date = %s;
+                    """
+
+                    cursor.execute(update_query, (minio_path, pdf_stored, symbol, filing_date))
+
+                    conn.commit()
+                    logger.info(f"Successfully updated minio_path in announcements")
+
+                except Exception as e:
+                    conn.rollback()
+                    logger.error(f"Failed to update minio_path: {e}")
+                    raise
 
     def _is_financial_announcement(self, category: str, subject: str) -> bool:
         """Determine if announcement is financial-related"""
@@ -283,44 +321,3 @@ class FinancialDataProcessor:
         """Clean up resources"""
         self.session.close()
         logger.info("Financial processor session closed")
-
-
-if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser(description="Financial Data Processor for BSE Announcements")
-    parser.add_argument("--announcements-file", required=True, help="BSE announcements JSON file")
-    parser.add_argument("--output-dir", default="./financial_output", help="Output directory")
-
-    args = parser.parse_args()
-
-    # Load BSE announcements
-    with open(args.announcements_file, 'r') as f:
-        announcements = json.load(f)
-
-    # Process financial data
-    processor = FinancialDataProcessor(cache_dir=args.output_dir)
-
-    try:
-        financial_data = processor.process_announcements(announcements)
-
-        if financial_data:
-            # Save results
-            output_file = processor.save_financial_data(financial_data)
-
-            # Show summary
-            high_conf = [f for f in financial_data if f['confidence'] == 'HIGH']
-            logger.info(f"Processing Summary:")
-            logger.info(f"  Total financial announcements: {len(financial_data)}")
-            logger.info(f"  High confidence: {len(high_conf)}")
-            logger.info(f"  Successful extractions: {processor.stats['extraction_successful']}")
-
-            if high_conf:
-                logger.info("High-confidence financial results:")
-                for item in high_conf[:5]:  # Show first 5
-                    logger.info(f"  {item['company']} ({item['symbol']}) - {item['extracted_data']}")
-
-        print(f"\nFinal Statistics: {processor.get_statistics()}")
-
-    finally:
-        processor.close()
