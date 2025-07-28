@@ -1,3 +1,8 @@
+#!/usr/bin/env python3
+"""
+Project configurations
+"""
+
 import os
 from dotenv import load_dotenv
 

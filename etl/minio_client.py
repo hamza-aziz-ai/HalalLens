@@ -16,9 +16,9 @@ from minio import Minio
 from minio.error import S3Error
 
 from config import (
-    MINIO_HOST, 
-    MINIO_PORT, 
-    MINIO_ACCESS_KEY, 
+    MINIO_HOST,
+    MINIO_PORT,
+    MINIO_ACCESS_KEY,
     MINIO_SECRET_KEY
 )
 
@@ -46,7 +46,8 @@ class BSEPDFStorage:
         # Initialize HTTP session with anti-bot headers
         self.session = requests.Session()
         self.session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) '
+                          'Chrome/124.0.0.0 Safari/537.36',
             'Accept': 'application/pdf,application/octet-stream,*/*;q=0.9',
             'Accept-Language': 'en-US,en;q=0.9,hi;q=0.8',
             'Accept-Encoding': 'gzip, deflate, br',
