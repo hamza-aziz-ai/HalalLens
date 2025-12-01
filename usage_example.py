@@ -38,18 +38,17 @@ def main():
 
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
 
-        bse_data = bse_fetcher.get_announcements_paginated("20250725", "20250725")
+        bse_from = "20251116"
+        bse_to = "20251122"
+
+        bse_data = bse_fetcher.get_announcements_paginated(bse_from, bse_to)
+
         if bse_data:
-            # Save to cache
             bse_fetcher.save_to_cache(bse_data, f"bse_announcements_{timestamp}.json")
-
-            # Print summary
-            print(f"Successfully fetched {len(bse_data)} announcements")
-            if bse_data:
-                print("\nFirst 3 announcements:")
-                for i, ann in enumerate(bse_data[:3]):
-                    print(f"{i + 1}. {ann.get('SCRIP_CD', 'N/A')} - {ann.get('NEWSSUB', 'N/A')}")
-
+            print(f"BSE announcements fetched: {len(bse_data)}")
+            print("\nFirst 3 announcements:")
+            for i, ann in enumerate(bse_data[:3]):
+                print(f"{i + 1}. {ann.get('SCRIP_CD', 'N/A')} - {ann.get('NEWSSUB', 'N/A')}")
             db.insert_announcements(announcements_data=bse_data)
         else:
             print("No announcements retrieved")
@@ -71,9 +70,10 @@ def main():
                 if high_conf:
                     print("Sample high-confidence financial results:")
                     for item in high_conf[:3]:
-                        extracted = item.get('extracted_data', {})
-                        print(f"  • {item['company']} - Q{extracted.get('quarter', 'N/A')} "
-                              f"{extracted.get('audit_status', 'N/A')} results")
+                        extracted = item.get('extracted_data') or {}
+                        quarter = extracted.get('quarter') or 'N/A'
+                        audit_status = extracted.get('audit_status') or 'N/A'
+                        print(f"  • {item['company']} - {quarter} {audit_status} results")
 
                 db.insert_financial_snapshots(financial_data)
 
