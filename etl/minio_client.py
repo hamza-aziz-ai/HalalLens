@@ -21,6 +21,7 @@ from config import (
     MINIO_ACCESS_KEY,
     MINIO_SECRET_KEY
 )
+from utils.datetime_parser import parse_bse_datetime
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -125,15 +126,9 @@ class BSEPDFStorage:
 
         self.last_request_time = time.time()
 
-    @staticmethod
-    def generate_pdf_path(symbol: str, filing_date: str, confidence: str) -> str:
+    def generate_pdf_path(self, symbol: str, filing_date: str, confidence: str) -> str:
         """Generate organized path for PDF storage"""
-        try:
-            date_obj = datetime.fromisoformat(filing_date.replace('Z', '+00:00'))
-        except Exception as e:
-            # Fallback for different date formats
-            logger.warning(f"Falling back to different time format: {e}")
-            date_obj = datetime.now()
+        date_obj = parse_bse_datetime(filing_date)
 
         year = date_obj.strftime('%Y')
         month = date_obj.strftime('%m')

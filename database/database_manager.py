@@ -8,9 +8,8 @@ with proper connection pooling, error handling, and transaction management.
 """
 
 import logging
-import re
 from contextlib import contextmanager
-from datetime import datetime, timezone, date
+from datetime import datetime, date
 from typing import Dict, List, Optional
 
 import pandas as pd
@@ -25,6 +24,7 @@ from config import (
     POSTGRES_USER,
     POSTGRES_PASSWORD
 )
+from utils.datetime_parser import parse_bse_datetime
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -243,26 +243,9 @@ class BSEDatabaseManager:
     @staticmethod
     def parse_iso_datetime(dt_str: str) -> datetime:
         """
-        Parse an ISO datetime string.
+        Parse an ISO datetime string with BSE-specific normalization.
         """
-        # Normalize fractional seconds to 6 digits for microseconds if present
-        # Match fractional seconds and pad/truncate as needed
-        m = re.match(r'(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(\.\d+)?', dt_str)
-        if not m:
-            # fallback parse
-            return datetime.strptime(dt_str, '%Y-%m-%dT%H:%M:%S').replace(tzinfo=timezone.utc)
-
-        base = m.group(1)
-        frac = m.group(2) or ''
-        if frac:
-            # Remove the dot and pad/truncate to 6 digits
-            frac_digits = frac[1:]  # strip the dot
-            frac_digits_padded = (frac_digits + '000000')[:6]
-            normalized = f"{base}.{frac_digits_padded}"
-        else:
-            normalized = base
-
-        return datetime.fromisoformat(normalized).replace(tzinfo=timezone.utc)
+        return parse_bse_datetime(dt_str)
 
     def _prepare_announcement_data(self, announcement: Dict) -> Optional[Dict]:
         """Prepare announcement data for database insertion"""
