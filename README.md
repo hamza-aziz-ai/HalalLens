@@ -61,6 +61,78 @@ $ helm dependency build ./deploy/charts/halallens
 $ helm install halallens ./deploy/charts/halallens ‑f deploy/values‑prod.yaml
 ```
 
+## 🧮  Ratio API (FastAPI)
+
+```bash
+$ pipenv install --dev  # ensure FastAPI/Uvicorn dependencies are present
+$ uvicorn api.app:app --reload --port 8000
+```
+
+`GET /health` returns a simple status probe. Compute a verdict by posting to `/halal-score`, or get a plain-language explainer from `/narrate`:
+
+```bash
+curl -X POST http://localhost:8000/halal-score \
+  -H 'Content-Type: application/json' \
+  -d '{
+        "snapshot": {
+          "symbol": "TCS",
+          "filing_date": "2024-06-30T00:00:00Z",
+          "total_debt": 120000000,
+          "cash_equiv": 45000000,
+          "revenue": 500000000,
+          "non_permissible_income": 1000000
+        },
+        "market_data": {
+          "market_cap": 600000000
+        }
+      }'
+```
+
+The response echoes the ratios, thresholds, and pass/fail verdict so downstream services (LLM narrator, alerts) can consume the same API contract.
+
+```bash
+curl -X POST http://localhost:8000/narrate \
+  -H 'Content-Type: application/json' \
+  -d @payload.json
+```
+
+`/narrate` returns `summary`, `verdict`, bullet points, and lightweight citations composed from the same ratio evaluation so the UI can power the “Explain Why” panel without calling an external LLM.
+
+### Watchlists & Alerts
+
+```bash
+# add an entry tracking compliance flips for INFY
+$ curl -X POST http://localhost:8000/watchlist \
+    -H 'Content-Type: application/json' \
+    -d '{"user_id":"demo-user","symbol":"INFY"}'
+
+# list entries
+$ curl http://localhost:8000/watchlist/demo-user
+
+# feed latest verdicts to trigger alerts
+$ curl -X POST http://localhost:8000/alerts/check \
+    -H 'Content-Type: application/json' \
+    -d '{"symbol":"INFY","is_compliant":false}'
+```
+
+Alerts return lightweight JSON events (user, symbol, message) so you can plug in SES/WhatsApp delivery later; persisted watchlists live at `cache/watchlists.json` for easy cron-based processing.
+
+## 🕒  BSE Ingestion Job
+
+Use the orchestration script in `jobs/ingest_bse.py` to pull corporate filings, persist announcements, and extract financial snapshots:
+
+```bash
+$ pipenv run python jobs/ingest_bse.py --from-date 20250701 --to-date 20250702 --save-cache
+```
+
+Flags let you adjust categories, cache/download locations, and whether to save the raw payload. To schedule nightly runs, drop it into cron or a workflow runner, e.g.:
+
+```
+0 1 * * * cd /opt/Halal-Lens && pipenv run python jobs/ingest_bse.py --save-cache >> logs/ingestion.log 2>&1
+```
+
+This keeps `announcements` and `financial_snapshots` fresh for the `/halal-score` API.
+
 ---
 
 ## 📂  Repo Structure
