@@ -49,6 +49,13 @@ cp .env.example .env
 pipenv install --dev
 ```
 
+### Database schema
+
+```bash
+createdb halallens_dev   # if needed
+psql halallens_dev -f database/schema.sql
+```
+
 ### FastAPI service
 
 ```bash
