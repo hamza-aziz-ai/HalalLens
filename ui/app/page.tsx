@@ -6,7 +6,8 @@ import { AnalysisPayload, AnalysisResponse } from "@/lib/types";
 import { callAnalysis } from "@/lib/api";
 import { ExplainPanel } from "@/components/explain-panel";
 import { RatioTable } from "@/components/ratio-table";
-import { fetchRecentFilings, Filing } from "@/lib/filings";
+import { fetchRecentFilings } from "@/lib/filings";
+import type { Filing } from "@/lib/types";
 import { fetchMarketQuote } from "@/lib/market-data";
 import {
   fetchWatchlist,
