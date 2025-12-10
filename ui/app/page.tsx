@@ -12,7 +12,8 @@ import { fetchMarketQuote } from "@/lib/market-data";
 import { fetchWatchlist, upsertWatchlist } from "@/lib/watchlist";
 import type { WatchlistEntry } from "@/lib/types";
 import { triggerAlertCheck } from "@/lib/alerts";
-import { fetchIngestionStats, IngestionStats } from "@/lib/ingestion";
+import { fetchIngestionStats } from "@/lib/ingestion";
+import type { IngestionStats } from "@/lib/types";
 
 type SnapshotForm = {
   symbol: string;
