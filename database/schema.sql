@@ -5,6 +5,7 @@ BEGIN;
 
 CREATE TABLE IF NOT EXISTS announcements (
     symbol          VARCHAR(32) NOT NULL,
+    symbol_alias    VARCHAR(64) NOT NULL DEFAULT '',
     filing_date     TIMESTAMPTZ NOT NULL,
     company_name    TEXT NOT NULL DEFAULT '',
     category        TEXT NOT NULL DEFAULT '',
@@ -39,6 +40,9 @@ CREATE TABLE IF NOT EXISTS financial_snapshots (
 
 CREATE INDEX IF NOT EXISTS idx_announcements_filing_date
     ON announcements (filing_date DESC);
+
+CREATE INDEX IF NOT EXISTS idx_announcements_symbol_alias
+    ON announcements (symbol_alias);
 
 CREATE INDEX IF NOT EXISTS idx_financial_snapshots_filing_date
     ON financial_snapshots (filing_date DESC);

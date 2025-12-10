@@ -116,13 +116,14 @@ class BSEDatabaseManager:
                 try:
                     insert_query = """
                     INSERT INTO announcements (
-                        symbol, company_name, filing_date, category, headline,
+                        symbol, symbol_alias, company_name, filing_date, category, headline,
                         confidence, raw_json, minio_path, pdf_stored
                     ) VALUES (
-                        %(symbol)s, %(company_name)s, %(filing_date)s, %(category)s, %(headline)s,
+                        %(symbol)s, %(symbol_alias)s, %(company_name)s, %(filing_date)s, %(category)s, %(headline)s,
                         %(confidence)s, %(raw_json)s, %(minio_path)s, %(pdf_stored)s
                     ) ON CONFLICT (symbol, filing_date) 
                     DO UPDATE SET
+                        symbol_alias = EXCLUDED.symbol_alias,
                         company_name = EXCLUDED.company_name,
                         category = EXCLUDED.category,
                         headline = EXCLUDED.headline,
@@ -383,6 +384,7 @@ class BSEDatabaseManager:
         try:
             # Handle filing_date conversion
             symbol = str(announcement.get("SCRIP_CD") or '').strip()
+            symbol_alias = self._extract_symbol_alias(announcement)
             filing_date = announcement.get('NEWS_DT') or announcement.get('DT_TM')
 
             # ── SKIP rows that break the NOT-NULL PK ─────────────────────
@@ -409,6 +411,7 @@ class BSEDatabaseManager:
 
             return {
                 'symbol': symbol,
+                'symbol_alias': symbol_alias,
                 'company_name': (announcement.get("SLONGNAME") or "").strip(),
                 'filing_date': filing_date,
                 'category': (announcement.get("CATEGORYNAME") or "").strip(),
@@ -422,6 +425,35 @@ class BSEDatabaseManager:
             logger.error(f"Error preparing announcement data: {e}")
             logger.error(f"Problematic data: {announcement}")
             raise
+
+    @staticmethod
+    def _extract_symbol_alias(announcement: Dict) -> str:
+        alias_sources = [
+            announcement.get("SYMBOL"),
+            announcement.get("SYMBOL_TICKER"),
+            announcement.get("SecurityId"),
+            announcement.get("SYMBOL_NAME"),
+        ]
+        for candidate in alias_sources:
+            if candidate:
+                cleaned = str(candidate).strip()
+                if cleaned:
+                    return cleaned.replace(" ", "").upper()
+
+        ns_url = announcement.get("NSURL") or ""
+        if ns_url:
+            parts = [part for part in ns_url.split("/") if part]
+            if len(parts) >= 2:
+                maybe_code = parts[-1]
+                maybe_alias = parts[-2]
+                if maybe_code.isdigit():
+                    alias = maybe_alias
+                else:
+                    alias = maybe_code
+                alias = alias.replace(" ", "").upper()
+                if alias and not alias.isdigit():
+                    return alias
+        return ""
 
     def _prepare_snapshot_data(self, snapshot: Dict) -> Dict:
         """Prepare financial snapshot data for database insertion"""
@@ -561,25 +593,92 @@ class BSEDatabaseManager:
                 cursor.execute(query, {"limit": limit})
                 return [dict(row) for row in cursor.fetchall()]
 
-    def get_symbol_code(self, symbol: str) -> Optional[str]:
-        """Return latest script code for a symbol from raw_json."""
+    def get_latest_filing(self, symbol: str) -> Optional[Dict]:
+        """Return the most recent filing + financial snapshot for a symbol."""
+
+        if not symbol:
+            return None
 
         with self.get_connection() as conn:
             with conn.cursor() as cursor:
                 cursor.execute(
                     """
-                    SELECT raw_json ->> 'SCRIP_CD' as code
-                    FROM announcements
-                    WHERE symbol = %(symbol)s
-                    ORDER BY filing_date DESC
+                    SELECT
+                        a.symbol,
+                        a.company_name,
+                        a.filing_date,
+                        a.category,
+                        a.headline,
+                        a.confidence,
+                        fs.total_debt,
+                        fs.cash_equiv,
+                        fs.revenue,
+                        fs.interest_income,
+                        fs.dividend_income,
+                        fs.audit_status,
+                        fe.is_compliant,
+                        fe.verdict,
+                        fe.summary,
+                        fe.narration_source,
+                        fe.ratios,
+                        fe.market_cap_used,
+                        fe.trailing_cap_used
+                    FROM announcements a
+                    JOIN financial_snapshots fs
+                      ON a.symbol = fs.symbol
+                     AND a.filing_date = fs.filing_date
+                    LEFT JOIN filing_evaluations fe
+                      ON a.symbol = fe.symbol
+                     AND a.filing_date = fe.filing_date
+                    WHERE a.symbol = %(symbol)s
+                       OR a.symbol_alias = %(symbol)s
+                    ORDER BY a.filing_date DESC
                     LIMIT 1
                     """,
-                    {"symbol": symbol},
+                    {"symbol": symbol.strip().upper()},
                 )
                 row = cursor.fetchone()
                 if not row:
                     return None
-                return row["code"]
+                return dict(row)
+
+    def get_symbol_metadata(self, identifier: str) -> Optional[Dict[str, str]]:
+        """Return numeric symbol and alias for an identifier (symbol or alias)."""
+
+        normalized = (identifier or "").strip().upper()
+        if not normalized:
+            return None
+
+        with self.get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT symbol, symbol_alias
+                    FROM announcements
+                    WHERE symbol = %(identifier)s
+                       OR symbol_alias = %(identifier)s
+                    ORDER BY filing_date DESC
+                    LIMIT 1
+                    """,
+                    {"identifier": normalized},
+                )
+                row = cursor.fetchone()
+                if not row:
+                    return None
+                return dict(row)
+
+    def get_symbol_alias(self, symbol: str) -> Optional[str]:
+        metadata = self.get_symbol_metadata(symbol)
+        if not metadata:
+            return None
+        alias = (metadata.get("symbol_alias") or "").strip().upper()
+        return alias or None
+
+    def get_symbol_code(self, identifier: str) -> Optional[str]:
+        metadata = self.get_symbol_metadata(identifier)
+        if not metadata:
+            return None
+        return metadata.get("symbol")
 
     def get_database_stats(self) -> Dict:
         """Get comprehensive database statistics"""

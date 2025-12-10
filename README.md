@@ -43,7 +43,7 @@ git clone https://github.com/hamzaziizzz/HalalLens.git
 cd HalalLens
 
 # 2. Create env file (see Documentations/Charter for required secrets)
-cp .env.example .env
+cp .env.local .env
 
 # 3. Install dependencies
 pipenv install --dev
@@ -80,6 +80,9 @@ pipenv run uvicorn api.app:app --reload --port 8000
 - `GET /health` - liveness probe
 - `POST /halal-score` - compute ratios from filing + market data payloads
 - `POST /narrate` - generate explain-why text from the same request
+- `GET /filings/{symbol}` - fetch the latest stored filing + computed ratios for a symbol
+- `GET /filings/recent` - list the newest filings with AAOIFI verdict snapshots
+- `GET /market-data/{symbol}` - proxy/caches Yahoo Finance market caps & share prices
 - `POST /watchlist` / `GET /watchlist/{user}` - manage compliance-watch entries
 - `POST /alerts/check` - run compliance-flip alert evaluation
 
@@ -96,7 +99,7 @@ CI (GitHub Actions) installs the Pipenv environment and runs the same test suite
 ```bash
 cd ui
 npm install          # or pnpm install
-cp .env.example .env.local
+cp .env.local .env.local
 npm run dev          # http://localhost:3000
 ```
 
