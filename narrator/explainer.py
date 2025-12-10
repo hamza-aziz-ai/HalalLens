@@ -3,24 +3,16 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Dict, List
+import logging
+from typing import Dict, List, Optional
 
+from narrator.llm import LLMClient, LLMNarrationEngine, LLMNarrationError
+from narrator.models import NarrationResult, NarratorConfig
 from ratio_engine import RatioEvaluation
 
 
-@dataclass
-class NarrationResult:
-    """Container for narrator output."""
-
-    summary: str
-    verdict: str
-    bullets: List[str]
-    citations: List[str]
-
-
-class NarrationEngine:
-    """Rule-based narrator that explains ratio outcomes deterministically."""
+class RuleBasedNarrator:
+    """Deterministic narrator that explains ratio outcomes."""
 
     ratio_labels: Dict[str, str] = {
         "debt_to_market_cap": "Debt to market cap",
@@ -29,8 +21,6 @@ class NarrationEngine:
     }
 
     def build(self, evaluation: RatioEvaluation) -> NarrationResult:
-        """Produce a plain-language narration from a ratio evaluation."""
-
         verdict = (
             "compliant with AAOIFI screens"
             if evaluation.is_compliant
@@ -72,7 +62,43 @@ class NarrationEngine:
             verdict=verdict,
             bullets=bullets,
             citations=citations or [summary],
+            metadata={"source": "rule_based"},
         )
 
 
-__all__ = ["NarrationEngine", "NarrationResult"]
+class NarrationEngine:
+    """Hybrid narrator that can delegate to an LLM or rule-based engine."""
+
+    def __init__(
+        self,
+        config: Optional[NarratorConfig] = None,
+        llm_client: Optional[LLMClient] = None,
+    ):
+        self.config = config or NarratorConfig.default()
+        self.rule_based = RuleBasedNarrator()
+        self.llm_engine: Optional[LLMNarrationEngine] = None
+
+        self.logger = logging.getLogger("narrator")
+
+        if self.config.mode == "llm":
+            if llm_client is None and self.config.endpoint and self.config.model:
+                llm_client = LLMClient.from_config(self.config)
+            if llm_client is not None:
+                self.llm_engine = LLMNarrationEngine(llm_client, self.config)
+
+    def build(self, evaluation: RatioEvaluation) -> NarrationResult:
+        """Produce a narration, preferring LLM output with safe fallback."""
+
+        if self.llm_engine:
+            try:
+                return self.llm_engine.build(evaluation)
+            except LLMNarrationError:
+                self.logger.warning(
+                    "LLM narration failed for %s, falling back to rule-based",
+                    evaluation.symbol,
+                    exc_info=True,
+                )
+        return self.rule_based.build(evaluation)
+
+
+__all__ = ["NarrationEngine", "NarrationResult", "NarratorConfig", "RuleBasedNarrator"]

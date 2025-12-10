@@ -197,7 +197,7 @@ class FinancialDataProcessor:
                     minio_path = self.pdf_storage.download_and_store_pdf(pdf_url, symbol, date)
                     if (not is_absolute and isinstance(minio_path, str) and
                             minio_path.lower() == "pdf moved"):
-                        pdf_url = f"{self.bse_attachment_moved}/{year}/{month}/{attachment_str}"
+                        pdf_url = f"{self.bse_attachment_moved}/{attachment_str}"
                         minio_path = self.pdf_storage.download_and_store_pdf(pdf_url, symbol, date)
 
                     if minio_path:

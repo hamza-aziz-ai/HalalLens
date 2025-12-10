@@ -3,10 +3,28 @@
 Project configurations
 """
 
+import json
 import os
+from pathlib import Path
+from typing import Dict
 from dotenv import load_dotenv
 
 load_dotenv()
+
+
+def _as_float(value: str | None, default: float) -> float:
+    try:
+        return float(value) if value is not None else default
+    except ValueError:
+        return default
+
+
+def _as_int(value: str | None, default: int) -> int:
+    try:
+        return int(value) if value is not None else default
+    except ValueError:
+        return default
+
 
 POSTGRES_HOST = "localhost"
 POSTGRES_PORT = 5432
@@ -18,3 +36,24 @@ MINIO_HOST = "localhost"
 MINIO_PORT = 9000
 MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY")
 MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY")
+
+NARRATOR_MODE = os.getenv("NARRATOR_MODE", "rule_based")
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "vllm")
+LLM_ENDPOINT = os.getenv("LLM_ENDPOINT")
+LLM_MODEL = os.getenv("LLM_MODEL")
+LLM_API_KEY = os.getenv("LLM_API_KEY")
+LLM_TEMPERATURE = _as_float(os.getenv("LLM_TEMPERATURE"), 0.0)
+LLM_MAX_TOKENS = _as_int(os.getenv("LLM_MAX_TOKENS"), 400)
+LLM_TIMEOUT = _as_float(os.getenv("LLM_TIMEOUT"), 30.0)
+TICKER_MAP_PATH = Path(__file__).resolve().parent / "ticker_map.json"
+TICKER_MAP: Dict[str, str] = {}
+if TICKER_MAP_PATH.exists():
+    with TICKER_MAP_PATH.open("r", encoding="utf-8") as handle:
+        TICKER_MAP.update(json.load(handle))
+
+SMTP_HOST = os.getenv("SMTP_HOST")
+SMTP_PORT = _as_int(os.getenv("SMTP_PORT"), 587)
+SMTP_USERNAME = os.getenv("SMTP_USERNAME")
+SMTP_PASSWORD = os.getenv("SMTP_PASSWORD")
+ALERT_EMAIL_SENDER = os.getenv("ALERT_EMAIL_SENDER")
+ALERT_EMAIL_RECIPIENT = os.getenv("ALERT_EMAIL_RECIPIENT")

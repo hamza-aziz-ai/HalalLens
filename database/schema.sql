@@ -43,4 +43,30 @@ CREATE INDEX IF NOT EXISTS idx_announcements_filing_date
 CREATE INDEX IF NOT EXISTS idx_financial_snapshots_filing_date
     ON financial_snapshots (filing_date DESC);
 
+CREATE TABLE IF NOT EXISTS market_data_snapshots (
+    symbol          VARCHAR(32) NOT NULL,
+    captured_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    market_cap      NUMERIC,
+    share_price     NUMERIC,
+    provider        TEXT DEFAULT 'yahoo',
+    PRIMARY KEY (symbol, captured_at)
+);
+
+CREATE TABLE IF NOT EXISTS filing_evaluations (
+    symbol             VARCHAR(32) NOT NULL,
+    filing_date        TIMESTAMPTZ NOT NULL,
+    is_compliant       BOOLEAN,
+    ratios             JSONB,
+    summary            TEXT,
+    verdict            TEXT,
+    narration_source   TEXT,
+    market_cap_used    NUMERIC,
+    trailing_cap_used  NUMERIC,
+    evaluated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (symbol, filing_date),
+    FOREIGN KEY (symbol, filing_date)
+        REFERENCES announcements(symbol, filing_date)
+        ON DELETE CASCADE
+);
+
 COMMIT;

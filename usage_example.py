@@ -38,8 +38,8 @@ def main():
 
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
 
-        bse_from = "20251116"
-        bse_to = "20251122"
+        bse_from = "20230331"
+        bse_to = "20230331"
 
         bse_data = bse_fetcher.get_announcements_paginated(bse_from, bse_to)
 
