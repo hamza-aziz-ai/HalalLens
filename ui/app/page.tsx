@@ -9,11 +9,8 @@ import { RatioTable } from "@/components/ratio-table";
 import { fetchRecentFilings } from "@/lib/filings";
 import type { Filing } from "@/lib/types";
 import { fetchMarketQuote } from "@/lib/market-data";
-import {
-  fetchWatchlist,
-  upsertWatchlist,
-  WatchlistEntry,
-} from "@/lib/watchlist";
+import { fetchWatchlist, upsertWatchlist } from "@/lib/watchlist";
+import type { WatchlistEntry } from "@/lib/types";
 import { triggerAlertCheck } from "@/lib/alerts";
 import { fetchIngestionStats, IngestionStats } from "@/lib/ingestion";
 
