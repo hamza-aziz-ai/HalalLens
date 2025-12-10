@@ -1,5 +1,5 @@
 import { request } from "./api";
-import { Filing } from "./types";
+import type { Filing } from "./types";
 
 export async function fetchRecentFilings(limit = 20): Promise<Filing[]> {
   return request<Filing[]>(`/filings/recent?limit=${limit}`);
