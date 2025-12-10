@@ -10,12 +10,12 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-import requests
 
 from crawler import BSEAnnouncementsFetcher
 from database import BSEDatabaseManager
 from etl import FinancialDataProcessor
 from market_data import fetch_yahoo_quote
+from market_data.tickers import build_ticker_candidates
 from ratio_engine import FinancialSnapshotInput, MarketDataInput, RatioEngine
 
 
@@ -153,17 +153,8 @@ def _snapshot_from_record(
         return None
     return snapshot
 
-
-def _ticker_for_symbol(symbol: str) -> str:
-    normalized = (symbol or "").strip().upper()
-    if normalized.isdigit():
-        return f"{normalized}.BO"
-    return f"{normalized}.NS"
-
-
 def _lookup_market_data(
     symbol: str,
-    session: requests.Session,
     as_of: datetime,
     db: BSEDatabaseManager,
 ) -> Tuple[Optional[float], Optional[float]]:
@@ -177,11 +168,15 @@ def _lookup_market_data(
         MARKET_CACHE[cache_key] = db_snapshot
         return db_snapshot
 
-    ticker = _ticker_for_symbol(symbol)
-    market_cap, share_price = fetch_yahoo_quote(
-        ticker, session=session, backoff_seconds=30, retries=3
-    )
-    if market_cap is not None or share_price is not None:
+    alias = db.get_symbol_alias(cache_key)
+    tickers = build_ticker_candidates(cache_key, alias)
+
+    for ticker in tickers:
+        market_cap, share_price = fetch_yahoo_quote(
+            ticker, backoff_seconds=30, retries=3
+        )
+        if market_cap is None and share_price is None:
+            continue
         MARKET_CACHE[cache_key] = (market_cap, share_price)
         db.insert_market_snapshot(
             symbol=cache_key,
@@ -189,7 +184,8 @@ def _lookup_market_data(
             share_price=share_price,
             provider="yahoo",
         )
-    return market_cap, share_price
+        return market_cap, share_price
+    return None, None
 
 
 def _derive_verdict(evaluation) -> str:
@@ -225,7 +221,6 @@ def _build_summary(evaluation) -> str:
 def _evaluate_and_store(
     db: BSEDatabaseManager,
     snapshots: List[dict],
-    market_session: requests.Session,
 ) -> int:
     """Compute ratio evaluations and persist them."""
 
@@ -240,7 +235,6 @@ def _evaluate_and_store(
 
         market_cap, share_price = _lookup_market_data(
             snapshot_input.symbol,
-            market_session,
             snapshot_input.filing_date,
             db,
         )
@@ -299,7 +293,6 @@ def main() -> None:
         download_dir=str(args.download_dir), cache_dir=str(args.cache_dir)
     )
     db_manager = BSEDatabaseManager()
-    market_session = requests.Session()
 
     try:
         announcements = fetcher.get_announcements_paginated(
@@ -326,7 +319,7 @@ def main() -> None:
         )
         logger.info("Financial snapshots stored: %d", snapshot_count)
 
-        evaluations = _evaluate_and_store(db_manager, financial_data, market_session)
+        evaluations = _evaluate_and_store(db_manager, financial_data)
         logger.info("Automated evaluations stored: %d", evaluations)
 
         stats = processor.get_statistics()
@@ -335,7 +328,6 @@ def main() -> None:
     finally:
         fetcher.close()
         processor.close()
-        market_session.close()
         db_manager.close()
 
 

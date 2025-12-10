@@ -20,6 +20,7 @@ ghostscript = "*"
 uvicorn = "*"
 fastapi = "*"
 pytest = "*"
+pandas-stubs = "~=2.3.1"
 
 [dev-packages]
 pytest = "*"

@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from typing import List, Sequence
 
 import requests
-from requests import RequestException
+from requests import HTTPError, RequestException
 
 from narrator.models import NarrationResult, NarratorConfig
 from ratio_engine import RatioEvaluation
@@ -68,9 +68,9 @@ class LLMClient:
             response = self.session.post(
                 self.endpoint, headers=headers, json=payload, timeout=timeout
             )
-        except RequestException as exc:
+            response.raise_for_status()
+        except (RequestException, HTTPError) as exc:
             raise LLMNarrationError(f"LLM request failed: {exc}") from exc
-        response.raise_for_status()
         data = response.json()
         choices = data.get("choices")
         if not choices:

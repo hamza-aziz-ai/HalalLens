@@ -1,7 +1,7 @@
 {
     "_meta": {
         "hash": {
-            "sha256": "6adfb66b79b5dfd46505645ce8b63d89f1a03cd93149bcc3994542884110c885"
+            "sha256": "f7f6119072817c5cf2018f44ba62212aa3769a956955e109946e6f5828768a9b"
         },
         "pipfile-spec": 6,
         "requires": {
@@ -1089,6 +1089,15 @@
             "markers": "python_version >= '3.9'",
             "version": "==2.3.1"
         },
+        "pandas-stubs": {
+            "hashes": [
+                "sha256:7a980f4f08cff2a6d7e4c6d6d26f4c5fcdb82a6f6531489b2f75c81567fe4536",
+                "sha256:eb5c9b6138bd8492fd74a47b09c9497341a278fcfbc8633ea4b35b230ebf4be5"
+            ],
+            "index": "pip_conf_index_global",
+            "markers": "python_version >= '3.10'",
+            "version": "==2.3.3.251201"
+        },
         "pdfminer-six": {
             "hashes": [
                 "sha256:b03cc8df09cf3c7aba8246deae52e0bca7ebb112a38895b5e1d4f5dd2b8ca2e7",
@@ -1669,6 +1678,14 @@
             ],
             "markers": "python_version >= '3.8'",
             "version": "==2.3.0"
+        },
+        "types-pytz": {
+            "hashes": [
+                "sha256:0f1c9792cab4eb0e46c52f8845c8f77cf1e313cb3d68bf826aa867fe4717d91c",
+                "sha256:fca87917836ae843f07129567b74c1929f1870610681b4c92cb86a3df5817bdb"
+            ],
+            "markers": "python_version >= '3.9'",
+            "version": "==2025.2.0.20251108"
         },
         "typing-extensions": {
             "hashes": [

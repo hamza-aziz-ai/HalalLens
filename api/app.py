@@ -5,12 +5,14 @@ from __future__ import annotations
 
 from dataclasses import asdict
 from datetime import datetime
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import logging
 import time
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict
 
 from alerts import AlertEngine, AlertEvent, WatchEntry, WatchlistStorage, EmailNotifier
@@ -23,13 +25,15 @@ from config import (
     LLM_TEMPERATURE,
     LLM_TIMEOUT,
     NARRATOR_MODE,
-    TICKER_MAP,
     SMTP_HOST,
     SMTP_PORT,
     SMTP_USERNAME,
     SMTP_PASSWORD,
     ALERT_EMAIL_SENDER,
     ALERT_EMAIL_RECIPIENT,
+    ALLOWED_ORIGINS,
+    ALLOWED_ORIGIN_REGEX,
+    DEFAULT_ALLOWED_ORIGINS,
 )
 from narrator import NarrationEngine, NarratorConfig
 from ratio_engine import (
@@ -39,6 +43,7 @@ from ratio_engine import (
 )
 from database import BSEDatabaseManager
 from market_data import fetch_yahoo_quote
+from market_data.tickers import build_ticker_candidates
 
 
 class FinancialSnapshotPayload(BaseModel):
@@ -95,6 +100,15 @@ class HalalScoreResponse(BaseModel):
 
 
 app = FastAPI(title="Halal-Lens Ratio API", version="0.1.0")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=ALLOWED_ORIGINS or DEFAULT_ALLOWED_ORIGINS,
+    allow_origin_regex=ALLOWED_ORIGIN_REGEX,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 engine = RatioEngine()
 narrator_config = NarratorConfig(
     mode=NARRATOR_MODE,
@@ -109,8 +123,14 @@ narrator_config = NarratorConfig(
 narrator = NarrationEngine(config=narrator_config)
 watch_storage = WatchlistStorage(Path("cache/watchlists.json"))
 alert_engine = AlertEngine(watch_storage)
-db_manager = BSEDatabaseManager()
-SYMBOL_CODE_MAP: Dict[str, str] = {}
+try:
+    DB_MANAGER: Optional[BSEDatabaseManager] = BSEDatabaseManager()
+except Exception:  # pragma: no cover
+    logging.getLogger("api").warning(
+        "Database unavailable; DB-backed endpoints will return 503"
+    )
+    DB_MANAGER = None
+SYMBOL_METADATA_CACHE: Dict[str, Dict[str, str]] = {}
 email_notifier = EmailNotifier(
     SMTP_HOST,
     SMTP_PORT,
@@ -123,6 +143,35 @@ market_logger = logging.getLogger("market_data")
 MARKET_CACHE: Dict[str, tuple[float, tuple[Optional[float], Optional[float]]]] = {}
 CACHE_TTL_SECONDS = 300
 BACKOFF_SECONDS = 30
+
+
+def _get_db() -> BSEDatabaseManager:
+    if DB_MANAGER is None:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    return DB_MANAGER
+
+
+def _get_symbol_metadata_cached(identifier: str) -> Optional[Dict[str, str]]:
+    key = (identifier or "").strip().upper()
+    if not key:
+        return None
+    if key in SYMBOL_METADATA_CACHE:
+        return SYMBOL_METADATA_CACHE[key]
+    metadata = _get_db().get_symbol_metadata(key)
+    if metadata:
+        SYMBOL_METADATA_CACHE[key] = metadata
+    return metadata
+
+
+def _ticker_candidates(symbol: str) -> List[str]:
+    normalized = (symbol or "").strip().upper()
+    metadata = _get_symbol_metadata_cached(normalized)
+    alias = metadata.get("symbol_alias") if metadata else None
+    primary = metadata.get("symbol") if metadata else normalized
+    additional = []
+    if normalized and normalized != primary:
+        additional.append(normalized)
+    return build_ticker_candidates(primary, alias, additional=additional)
 
 
 @app.get("/health")
@@ -169,6 +218,110 @@ class AlertCheckPayload(BaseModel):
 
     symbol: str
     is_compliant: bool
+
+
+def _coerce_float(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, Decimal):
+        return float(value)
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _snapshot_from_record(record: Dict[str, Any]) -> Optional[FinancialSnapshotInput]:
+    filing_date = record.get("filing_date")
+    symbol = record.get("symbol")
+    if not symbol or not filing_date:
+        return None
+
+    return FinancialSnapshotInput(
+        symbol=str(symbol).strip().upper(),
+        filing_date=filing_date,
+        total_debt=_coerce_float(record.get("total_debt")),
+        cash_equiv=_coerce_float(record.get("cash_equiv")),
+        revenue=_coerce_float(record.get("revenue")),
+        interest_income=_coerce_float(record.get("interest_income")),
+        dividend_income=_coerce_float(record.get("dividend_income")),
+        non_permissible_income=None,
+    )
+
+
+def _market_data_for_filing(symbol: str, as_of: datetime) -> tuple[Optional[float], Optional[float]]:
+    key = symbol.strip().upper()
+    db_snapshot = _get_db().get_cached_market_data(key, as_of)
+    if db_snapshot:
+        return db_snapshot
+    return _fetch_and_cache_market_data(symbol)
+
+
+def _fetch_and_cache_market_data(symbol: str) -> tuple[Optional[float], Optional[float]]:
+    key = symbol.strip().upper()
+    now = time.time()
+    cached = MARKET_CACHE.get(key)
+    if cached and now - cached[0] < CACHE_TTL_SECONDS:
+        return cached[1]
+
+    candidates = _ticker_candidates(symbol)
+    for ticker in candidates:
+        market_cap, share_price = fetch_yahoo_quote(
+            ticker, backoff_seconds=BACKOFF_SECONDS
+        )
+        if market_cap is None and share_price is None:
+            continue
+        _get_db().insert_market_snapshot(
+            symbol=key, market_cap=market_cap, share_price=share_price, provider="yahoo"
+        )
+        MARKET_CACHE[key] = (now, (market_cap, share_price))
+        return market_cap, share_price
+
+    raise HTTPException(status_code=404, detail="Market data unavailable")
+
+
+def _ratios_payload(raw: Optional[Dict[str, Any]]) -> Optional[Dict[str, RatioComputationPayload]]:
+    if not raw:
+        return None
+    ratios: Dict[str, RatioComputationPayload] = {}
+    for name, payload in raw.items():
+        if isinstance(payload, RatioComputationPayload):
+            ratios[name] = payload
+        else:
+            ratios[name] = RatioComputationPayload(**payload)
+    return ratios
+
+
+FRIENDLY_LABELS = {
+    "debt_to_market_cap": "Debt to market cap",
+    "cash_to_market_cap": "Cash to market cap",
+    "non_permissible_income_ratio": "Non-permissible income ratio",
+}
+
+
+def _build_summary(evaluation):
+    failing = [
+        FRIENDLY_LABELS.get(name, name)
+        for name, comp in evaluation.ratios.items()
+        if comp.passed is False
+    ]
+    if evaluation.is_compliant and not failing:
+        return "All computed AAOIFI ratios are within the prescribed thresholds."
+    if failing:
+        return f"{', '.join(failing)} exceeded AAOIFI thresholds for this filing."
+    if evaluation.missing_inputs:
+        missing = ", ".join(sorted(evaluation.missing_inputs.keys()))
+        return f"Insufficient data to compute all ratios (missing: {missing})."
+    return "Ratios could not be computed for this filing."
+
+
+def _derive_verdict(evaluation):
+    has_ratios = any(comp.passed is not None for comp in evaluation.ratios.values())
+    if not has_ratios:
+        return "insufficient-data"
+    return "compliant" if evaluation.is_compliant else "non-compliant"
 
 
 def _evaluate_request(payload: HalalScoreRequest):
@@ -264,27 +417,6 @@ async def check_alerts(payload: AlertCheckPayload) -> List[AlertEventPayload]:
     return [AlertEventPayload(**asdict(event)) for event in events]
 
 
-def _normalize_ticker(symbol: str) -> str:
-    sym = (symbol or "").strip().upper()
-    if not sym:
-        raise HTTPException(status_code=400, detail="symbol is required")
-    if sym.endswith((".NS", ".BO")):
-        return sym
-    if sym in TICKER_MAP:
-        return TICKER_MAP[sym]
-    script_code = SYMBOL_CODE_MAP.get(sym)
-    if not script_code:
-        code = db_manager.get_symbol_code(sym)
-        if code:
-            SYMBOL_CODE_MAP[sym] = code
-            script_code = code
-    if script_code and script_code.isdigit():
-        return f"{script_code}.BO"
-    if sym.isdigit():
-        return f"{sym}.BO"
-    return f"{sym}.NS"
-
-
 class FilingResponse(BaseModel):
     symbol: str
     company_name: Optional[str] = ""
@@ -315,12 +447,90 @@ class MarketQuoteResponse(BaseModel):
     share_price: Optional[float] = None
 
 
+def _ensure_filing_evaluation(record: Dict[str, Any]) -> Optional[Dict[str, RatioComputationPayload]]:
+    ratios = _ratios_payload(record.get("ratios"))
+    if ratios is not None:
+        return ratios
+
+    snapshot = _snapshot_from_record(record)
+    if not snapshot:
+        return None
+
+    market_cap = record.get("market_cap_used")
+    trailing = record.get("trailing_cap_used")
+    share_price: Optional[float] = None
+
+    if market_cap is None and trailing is None:
+        market_cap, share_price = _market_data_for_filing(
+            snapshot.symbol, snapshot.filing_date
+        )
+
+    if market_cap is None and trailing is None:
+        raise HTTPException(status_code=503, detail="Market data unavailable")
+
+    evaluation = engine.evaluate(
+        snapshot,
+        MarketDataInput(
+            market_cap=market_cap,
+            trailing_market_cap=trailing,
+            share_price=share_price,
+        ),
+    )
+
+    verdict = _derive_verdict(evaluation)
+    summary = _build_summary(evaluation)
+    ratios_dict = {name: asdict(comp) for name, comp in evaluation.ratios.items()}
+
+    _get_db().upsert_filing_evaluation(
+        symbol=snapshot.symbol,
+        filing_date=snapshot.filing_date,
+        is_compliant=evaluation.is_compliant
+        if verdict != "insufficient-data"
+        else None,
+        ratios=ratios_dict,
+        summary=summary,
+        verdict=verdict,
+        narration_source="api",
+        market_cap_used=market_cap,
+        trailing_cap_used=trailing,
+    )
+
+    record["is_compliant"] = evaluation.is_compliant
+    record["verdict"] = verdict
+    record["summary"] = summary
+    record["narration_source"] = "api"
+    record["market_cap_used"] = market_cap
+    record["trailing_cap_used"] = trailing
+    record["ratios"] = ratios_dict
+
+    return _ratios_payload(ratios_dict)
+
+
 @app.get("/filings/recent", response_model=List[FilingResponse])
 async def recent_filings(limit: int = 20) -> List[FilingResponse]:
     """Return recent filings from announcements."""
 
-    rows = db_manager.get_recent_filings(limit=limit)
+    rows = _get_db().get_recent_filings(limit=limit)
     return [FilingResponse(**row) for row in rows]
+
+
+@app.get("/filings/{symbol}", response_model=FilingResponse)
+async def filing_detail(symbol: str) -> FilingResponse:
+    """Return the latest filing and computed ratios for a symbol."""
+
+    normalized = symbol.strip().upper()
+    record = _get_db().get_latest_filing(normalized)
+    if not record:
+        raise HTTPException(status_code=404, detail="No filing found for symbol")
+
+    ratio_payload = _ensure_filing_evaluation(record)
+    if ratio_payload is not None:
+        record["ratios"] = ratio_payload
+
+    record.setdefault("symbol", normalized)
+    record.setdefault("company_name", "")
+    record.setdefault("category", "")
+    return FilingResponse(**record)
 
 
 @app.get("/market-data/{symbol}", response_model=MarketQuoteResponse)
@@ -330,27 +540,16 @@ async def market_data(symbol: str) -> MarketQuoteResponse:
     key = symbol.strip().upper()
     now = time.time()
     cached = MARKET_CACHE.get(key)
-    market_cap: Optional[float] = None
-    share_price: Optional[float] = None
 
     if cached and now - cached[0] < CACHE_TTL_SECONDS:
         market_cap, share_price = cached[1]
     else:
-        db_snapshot = db_manager.get_cached_market_data(key)
+        db_snapshot = _get_db().get_cached_market_data(key)
         if db_snapshot:
             market_cap, share_price = db_snapshot
             MARKET_CACHE[key] = (now, db_snapshot)
         else:
-            ticker = _normalize_ticker(symbol)
-            market_cap, share_price = fetch_yahoo_quote(
-                ticker, backoff_seconds=BACKOFF_SECONDS
-            )
-            if market_cap is None and share_price is None:
-                raise HTTPException(status_code=404, detail="Market data unavailable")
-            db_manager.insert_market_snapshot(
-                key, market_cap, share_price, provider="yahoo"
-            )
-            MARKET_CACHE[key] = (now, (market_cap, share_price))
+            market_cap, share_price = _fetch_and_cache_market_data(symbol)
 
     return MarketQuoteResponse(symbol=key, market_cap=market_cap, share_price=share_price)
 
@@ -359,7 +558,7 @@ async def market_data(symbol: str) -> MarketQuoteResponse:
 async def ingestion_stats() -> Dict[str, Any]:
     """Fetch counts for announcements and financial snapshots."""
 
-    stats = db_manager.get_database_stats()
+    stats = _get_db().get_database_stats()
     return stats
 
 

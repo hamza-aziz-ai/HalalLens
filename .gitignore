@@ -16,6 +16,7 @@ downloads/
 eggs/
 .eggs/
 lib/
+!ui/lib/
 lib64/
 parts/
 sdist/
@@ -164,4 +165,5 @@ cython_debug/
 
 ### Project Files
 # json
-*.json
+# allow frontend configs
+!ui/tsconfig.json
