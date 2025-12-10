@@ -10,7 +10,7 @@ with proper connection pooling, error handling, and transaction management.
 import logging
 from contextlib import contextmanager
 from datetime import datetime, date
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 import psycopg2
@@ -114,29 +114,27 @@ class BSEDatabaseManager:
         with self.get_connection() as conn:
             with conn.cursor() as cursor:
                 try:
+                    insert_query = """
+                    INSERT INTO announcements (
+                        symbol, company_name, filing_date, category, headline,
+                        confidence, raw_json, minio_path, pdf_stored
+                    ) VALUES (
+                        %(symbol)s, %(company_name)s, %(filing_date)s, %(category)s, %(headline)s,
+                        %(confidence)s, %(raw_json)s, %(minio_path)s, %(pdf_stored)s
+                    ) ON CONFLICT (symbol, filing_date) 
+                    DO UPDATE SET
+                        company_name = EXCLUDED.company_name,
+                        category = EXCLUDED.category,
+                        headline = EXCLUDED.headline,
+                        confidence = EXCLUDED.confidence,
+                        raw_json = EXCLUDED.raw_json,
+                        minio_path = EXCLUDED.minio_path,
+                        pdf_stored = EXCLUDED.pdf_stored
+                    """
                     for announcement in announcements_data:
-                        # Prepare data for insertion
                         insert_data = self._prepare_announcement_data(announcement)
-
-                        # Use ON CONFLICT to handle duplicates
-                        insert_query = """
-                        INSERT INTO announcements (
-                            symbol, company_name, filing_date, category, headline,
-                            confidence, raw_json, minio_path, pdf_stored
-                        ) VALUES (
-                            %(symbol)s, %(company_name)s, %(filing_date)s, %(category)s, %(headline)s,
-                            %(confidence)s, %(raw_json)s, %(minio_path)s, %(pdf_stored)s
-                        ) ON CONFLICT (symbol, filing_date) 
-                        DO UPDATE SET
-                            company_name = EXCLUDED.company_name,
-                            category = EXCLUDED.category,
-                            headline = EXCLUDED.headline,
-                            confidence = EXCLUDED.confidence,
-                            raw_json = EXCLUDED.raw_json,
-                            minio_path = EXCLUDED.minio_path,
-                            pdf_stored = EXCLUDED.pdf_stored
-                        """
-
+                        if not insert_data:
+                            continue
                         cursor.execute(insert_query, insert_data)
 
                         if cursor.rowcount == 1:
@@ -239,6 +237,139 @@ class BSEDatabaseManager:
                     raise
 
         return processed_count
+
+    def insert_market_snapshot(
+        self,
+        symbol: str,
+        market_cap: Optional[float],
+        share_price: Optional[float],
+        provider: str = "yahoo",
+    ) -> None:
+        """Store a point-in-time market data snapshot."""
+
+        if market_cap is None and share_price is None:
+            return
+
+        with self.get_connection() as conn:
+            with conn.cursor() as cursor:
+                try:
+                    cursor.execute(
+                        """
+                        INSERT INTO market_data_snapshots (symbol, market_cap, share_price, provider)
+                        VALUES (%(symbol)s, %(market_cap)s, %(share_price)s, %(provider)s)
+                        """,
+                        {
+                            "symbol": symbol,
+                            "market_cap": market_cap,
+                            "share_price": share_price,
+                            "provider": provider,
+                        },
+                    )
+                    conn.commit()
+                except Exception as exc:
+                    conn.rollback()
+                    logger.warning(
+                        "Failed to insert market snapshot for %s: %s", symbol, exc
+                    )
+
+    def get_cached_market_data(
+        self, symbol: str, as_of: Optional[datetime] = None
+    ) -> Optional[Tuple[Optional[float], Optional[float]]]:
+        """Return the most recent market snapshot for a symbol."""
+
+        with self.get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT market_cap, share_price
+                    FROM market_data_snapshots
+                    WHERE symbol = %(symbol)s
+                      AND (%(as_of)s IS NULL OR captured_at <= %(as_of)s)
+                    ORDER BY captured_at DESC
+                    LIMIT 1
+                    """,
+                    {"symbol": symbol, "as_of": as_of},
+                )
+                row = cursor.fetchone()
+                if not row:
+                    return None
+                return row["market_cap"], row["share_price"]
+
+    def upsert_filing_evaluation(
+        self,
+        *,
+        symbol: str,
+        filing_date: datetime,
+        is_compliant: Optional[bool],
+        ratios: Dict,
+        summary: str,
+        verdict: str,
+        narration_source: str,
+        market_cap_used: Optional[float],
+        trailing_cap_used: Optional[float],
+    ) -> None:
+        """Persist computed ratio evaluations for a filing."""
+
+        with self.get_connection() as conn:
+            with conn.cursor() as cursor:
+                try:
+                    cursor.execute(
+                        """
+                        INSERT INTO filing_evaluations (
+                            symbol,
+                            filing_date,
+                            is_compliant,
+                            ratios,
+                            summary,
+                            verdict,
+                            narration_source,
+                            market_cap_used,
+                            trailing_cap_used
+                        )
+                        VALUES (
+                            %(symbol)s,
+                            %(filing_date)s,
+                            %(is_compliant)s,
+                            %(ratios)s,
+                            %(summary)s,
+                            %(verdict)s,
+                            %(narration_source)s,
+                            %(market_cap_used)s,
+                            %(trailing_cap_used)s
+                        )
+                        ON CONFLICT (symbol, filing_date)
+                        DO UPDATE SET
+                            is_compliant = EXCLUDED.is_compliant,
+                            ratios = EXCLUDED.ratios,
+                            summary = EXCLUDED.summary,
+                            verdict = EXCLUDED.verdict,
+                            narration_source = EXCLUDED.narration_source,
+                            market_cap_used = EXCLUDED.market_cap_used,
+                            trailing_cap_used = EXCLUDED.trailing_cap_used,
+                            evaluated_at = NOW()
+                        """,
+                        {
+                            "symbol": symbol,
+                            "filing_date": filing_date,
+                            "is_compliant": is_compliant,
+                            "ratios": Json(ratios),
+                            "summary": summary,
+                            "verdict": verdict,
+                            "narration_source": narration_source,
+                            "market_cap_used": market_cap_used,
+                            "trailing_cap_used": trailing_cap_used,
+                        },
+                    )
+                    conn.commit()
+                except Exception as exc:
+                    conn.rollback()
+                    logger.error(
+                        "Failed to upsert filing evaluation for %s@%s: %s",
+                        symbol,
+                        filing_date,
+                        exc,
+                    )
+                    raise
 
     @staticmethod
     def parse_iso_datetime(dt_str: str) -> datetime:
@@ -384,38 +515,106 @@ class BSEDatabaseManager:
                 params['limit'] = limit
 
                 cursor.execute(query, params)
+        return [dict(row) for row in cursor.fetchall()]
+
+    def get_recent_filings(self, limit: int = 20) -> List[Dict]:
+        """Return recent announcements with optional financial data."""
+
+        with self.get_connection() as conn:
+            with conn.cursor() as cursor:
+                query = """
+                SELECT
+                    a.symbol,
+                    a.company_name,
+                    a.filing_date,
+                    a.category,
+                    a.headline,
+                    a.confidence,
+                    fs.total_debt,
+                    fs.cash_equiv,
+                    fs.revenue,
+                    fs.interest_income,
+                    fs.dividend_income,
+                    fs.audit_status,
+                    fe.is_compliant,
+                    fe.verdict,
+                    fe.summary,
+                    fe.narration_source,
+                    fe.ratios,
+                    fe.market_cap_used,
+                    fe.trailing_cap_used
+                FROM announcements a
+                JOIN financial_snapshots fs
+                  ON a.symbol = fs.symbol
+                 AND a.filing_date = fs.filing_date
+                 AND (
+                    fs.total_debt IS NOT NULL
+                    OR fs.cash_equiv IS NOT NULL
+                    OR fs.revenue IS NOT NULL
+                 )
+                LEFT JOIN filing_evaluations fe
+                  ON a.symbol = fe.symbol
+                 AND a.filing_date = fe.filing_date
+                ORDER BY a.filing_date DESC
+                LIMIT %(limit)s
+                """
+                cursor.execute(query, {"limit": limit})
                 return [dict(row) for row in cursor.fetchall()]
+
+    def get_symbol_code(self, symbol: str) -> Optional[str]:
+        """Return latest script code for a symbol from raw_json."""
+
+        with self.get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT raw_json ->> 'SCRIP_CD' as code
+                    FROM announcements
+                    WHERE symbol = %(symbol)s
+                    ORDER BY filing_date DESC
+                    LIMIT 1
+                    """,
+                    {"symbol": symbol},
+                )
+                row = cursor.fetchone()
+                if not row:
+                    return None
+                return row["code"]
 
     def get_database_stats(self) -> Dict:
         """Get comprehensive database statistics"""
         with self.get_connection() as conn:
             with conn.cursor() as cursor:
-                statistics = {}
+                cursor.execute(
+                    """
+                    SELECT 
+                        COUNT(*) as total_announcements,
+                        COUNT(*) FILTER (WHERE confidence = 'HIGH') as high_confidence,
+                        COUNT(*) FILTER (WHERE pdf_stored = true) as pdfs_stored,
+                        MAX(filing_date) as latest_filing,
+                        COUNT(DISTINCT symbol) as unique_companies
+                    FROM announcements
+                    """
+                )
+                announcements_stats = dict(cursor.fetchone())
 
-                # Announcements statistics
-                cursor.execute("""
-                SELECT 
-                    COUNT(*) as total_announcements,
-                    COUNT(*) FILTER (WHERE confidence = 'HIGH') as high_confidence,
-                    COUNT(*) FILTER (WHERE pdf_stored = true) as pdfs_stored,
-                    MAX(filing_date) as latest_filing,
-                    COUNT(DISTINCT symbol) as unique_companies
-                FROM announcements
-                """)
-                statistics.update(dict(cursor.fetchone()))
+                cursor.execute(
+                    """
+                    SELECT 
+                        COUNT(*) as financial_snapshots,
+                        COUNT(*) FILTER (WHERE total_debt IS NOT NULL) as with_debt_data,
+                        COUNT(*) FILTER (WHERE revenue IS NOT NULL) as with_revenue_data,
+                        COUNT(DISTINCT quarter) as quarters_covered
+                    FROM financial_snapshots
+                    """
+                )
+                snapshots_stats = dict(cursor.fetchone())
 
-                # Financial snapshots statistics
-                cursor.execute("""
-                SELECT 
-                    COUNT(*) as financial_snapshots,
-                    COUNT(*) FILTER (WHERE total_debt IS NOT NULL) as with_debt_data,
-                    COUNT(*) FILTER (WHERE revenue IS NOT NULL) as with_revenue_data,
-                    COUNT(DISTINCT quarter) as quarters_covered
-                FROM financial_snapshots
-                """)
-                statistics.update(dict(cursor.fetchone()))
-
-                return statistics
+                stats = {**announcements_stats, **snapshots_stats}
+                latest = stats.get("latest_filing")
+                if isinstance(latest, datetime):
+                    stats["latest_filing"] = latest.isoformat()
+                return stats
 
     def export_to_dataframe(self, table: str = 'announcements', limit: int = None) -> pd.DataFrame:
         """Export table data to pandas DataFrame for analysis"""

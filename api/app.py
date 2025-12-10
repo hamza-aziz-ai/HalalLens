@@ -6,18 +6,39 @@ from __future__ import annotations
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
+import logging
+import time
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, ConfigDict
 
-from alerts import AlertEngine, AlertEvent, WatchEntry, WatchlistStorage
-from narrator import NarrationEngine
+from alerts import AlertEngine, AlertEvent, WatchEntry, WatchlistStorage, EmailNotifier
+from config import (
+    LLM_API_KEY,
+    LLM_ENDPOINT,
+    LLM_MAX_TOKENS,
+    LLM_MODEL,
+    LLM_PROVIDER,
+    LLM_TEMPERATURE,
+    LLM_TIMEOUT,
+    NARRATOR_MODE,
+    TICKER_MAP,
+    SMTP_HOST,
+    SMTP_PORT,
+    SMTP_USERNAME,
+    SMTP_PASSWORD,
+    ALERT_EMAIL_SENDER,
+    ALERT_EMAIL_RECIPIENT,
+)
+from narrator import NarrationEngine, NarratorConfig
 from ratio_engine import (
     FinancialSnapshotInput,
     MarketDataInput,
     RatioEngine,
 )
+from database import BSEDatabaseManager
+from market_data import fetch_yahoo_quote
 
 
 class FinancialSnapshotPayload(BaseModel):
@@ -75,9 +96,33 @@ class HalalScoreResponse(BaseModel):
 
 app = FastAPI(title="Halal-Lens Ratio API", version="0.1.0")
 engine = RatioEngine()
-narrator = NarrationEngine()
+narrator_config = NarratorConfig(
+    mode=NARRATOR_MODE,
+    provider=LLM_PROVIDER,
+    endpoint=LLM_ENDPOINT,
+    model=LLM_MODEL,
+    api_key=LLM_API_KEY,
+    temperature=LLM_TEMPERATURE,
+    max_tokens=LLM_MAX_TOKENS,
+    timeout=LLM_TIMEOUT,
+)
+narrator = NarrationEngine(config=narrator_config)
 watch_storage = WatchlistStorage(Path("cache/watchlists.json"))
 alert_engine = AlertEngine(watch_storage)
+db_manager = BSEDatabaseManager()
+SYMBOL_CODE_MAP: Dict[str, str] = {}
+email_notifier = EmailNotifier(
+    SMTP_HOST,
+    SMTP_PORT,
+    SMTP_USERNAME,
+    SMTP_PASSWORD,
+    ALERT_EMAIL_SENDER,
+    ALERT_EMAIL_RECIPIENT,
+)
+market_logger = logging.getLogger("market_data")
+MARKET_CACHE: Dict[str, tuple[float, tuple[Optional[float], Optional[float]]]] = {}
+CACHE_TTL_SECONDS = 300
+BACKOFF_SECONDS = 30
 
 
 @app.get("/health")
@@ -97,6 +142,7 @@ class NarrationResponse(BaseModel):
     verdict: str
     bullets: List[str]
     citations: List[str]
+    source: Optional[str] = None
 
 
 class WatchlistEntryPayload(BaseModel):
@@ -171,6 +217,7 @@ async def narrate(payload: HalalScoreRequest) -> NarrationResponse:
         verdict=narration.verdict,
         bullets=narration.bullets,
         citations=narration.citations,
+        source=narration.metadata.get("source"),
     )
 
 
@@ -193,7 +240,16 @@ async def list_watchlist(user_id: str) -> List[WatchlistEntryPayload]:
     """List watchlist entries for a user."""
 
     entries = watch_storage.list(user_id=user_id)
-    return [WatchlistEntryPayload(**asdict(entry)) for entry in entries]
+    sanitized = []
+    for entry in entries:
+        data = asdict(entry)
+        filtered = {
+            "user_id": data["user_id"],
+            "symbol": data["symbol"],
+            "trigger": data.get("trigger", "compliance_flip"),
+        }
+        sanitized.append(WatchlistEntryPayload(**filtered))
+    return sanitized
 
 
 @app.post("/alerts/check", response_model=List[AlertEventPayload])
@@ -203,7 +259,108 @@ async def check_alerts(payload: AlertCheckPayload) -> List[AlertEventPayload]:
     events: List[AlertEvent] = alert_engine.process_verdict(
         payload.symbol, payload.is_compliant
     )
+    for event in events:
+        email_notifier.send(event)
     return [AlertEventPayload(**asdict(event)) for event in events]
+
+
+def _normalize_ticker(symbol: str) -> str:
+    sym = (symbol or "").strip().upper()
+    if not sym:
+        raise HTTPException(status_code=400, detail="symbol is required")
+    if sym.endswith((".NS", ".BO")):
+        return sym
+    if sym in TICKER_MAP:
+        return TICKER_MAP[sym]
+    script_code = SYMBOL_CODE_MAP.get(sym)
+    if not script_code:
+        code = db_manager.get_symbol_code(sym)
+        if code:
+            SYMBOL_CODE_MAP[sym] = code
+            script_code = code
+    if script_code and script_code.isdigit():
+        return f"{script_code}.BO"
+    if sym.isdigit():
+        return f"{sym}.BO"
+    return f"{sym}.NS"
+
+
+class FilingResponse(BaseModel):
+    symbol: str
+    company_name: Optional[str] = ""
+    filing_date: datetime
+    category: Optional[str] = ""
+    headline: Optional[str] = ""
+    confidence: Optional[str] = ""
+    total_debt: Optional[float] = None
+    cash_equiv: Optional[float] = None
+    revenue: Optional[float] = None
+    interest_income: Optional[float] = None
+    dividend_income: Optional[float] = None
+    audit_status: Optional[str] = None
+    is_compliant: Optional[bool] = None
+    verdict: Optional[str] = None
+    summary: Optional[str] = None
+    narration_source: Optional[str] = None
+    ratios: Optional[Dict[str, RatioComputationPayload]] = None
+    market_cap_used: Optional[float] = None
+    trailing_cap_used: Optional[float] = None
+
+
+class MarketQuoteResponse(BaseModel):
+    """Market data proxy response."""
+
+    symbol: str
+    market_cap: Optional[float] = None
+    share_price: Optional[float] = None
+
+
+@app.get("/filings/recent", response_model=List[FilingResponse])
+async def recent_filings(limit: int = 20) -> List[FilingResponse]:
+    """Return recent filings from announcements."""
+
+    rows = db_manager.get_recent_filings(limit=limit)
+    return [FilingResponse(**row) for row in rows]
+
+
+@app.get("/market-data/{symbol}", response_model=MarketQuoteResponse)
+async def market_data(symbol: str) -> MarketQuoteResponse:
+    """Fetch market cap/share price for a symbol via Yahoo Finance."""
+
+    key = symbol.strip().upper()
+    now = time.time()
+    cached = MARKET_CACHE.get(key)
+    market_cap: Optional[float] = None
+    share_price: Optional[float] = None
+
+    if cached and now - cached[0] < CACHE_TTL_SECONDS:
+        market_cap, share_price = cached[1]
+    else:
+        db_snapshot = db_manager.get_cached_market_data(key)
+        if db_snapshot:
+            market_cap, share_price = db_snapshot
+            MARKET_CACHE[key] = (now, db_snapshot)
+        else:
+            ticker = _normalize_ticker(symbol)
+            market_cap, share_price = fetch_yahoo_quote(
+                ticker, backoff_seconds=BACKOFF_SECONDS
+            )
+            if market_cap is None and share_price is None:
+                raise HTTPException(status_code=404, detail="Market data unavailable")
+            db_manager.insert_market_snapshot(
+                key, market_cap, share_price, provider="yahoo"
+            )
+            MARKET_CACHE[key] = (now, (market_cap, share_price))
+
+    return MarketQuoteResponse(symbol=key, market_cap=market_cap, share_price=share_price)
+
+
+@app.get("/ingestion/stats")
+async def ingestion_stats() -> Dict[str, Any]:
+    """Fetch counts for announcements and financial snapshots."""
+
+    stats = db_manager.get_database_stats()
+    return stats
 
 
 __all__ = ["app"]
