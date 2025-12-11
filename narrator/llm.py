@@ -174,10 +174,20 @@ class LLMNarrationEngine:
         )
 
     def _parse_response(self, raw: str) -> NarrationResult:
+        cleaned = self._strip_code_fence(raw.strip())
+        if not cleaned:
+            raise LLMNarrationError("LLM response was empty")
         try:
-            parsed = json.loads(raw)
+            parsed = json.loads(cleaned)
         except json.JSONDecodeError as exc:
-            raise LLMNarrationError("LLM response was not valid JSON") from exc
+            fragment = self._extract_json_fragment(cleaned)
+            if fragment:
+                try:
+                    parsed = json.loads(fragment)
+                except json.JSONDecodeError as inner_exc:
+                    raise LLMNarrationError("LLM response was not valid JSON") from inner_exc
+            else:
+                raise LLMNarrationError("LLM response was not valid JSON") from exc
 
         summary = parsed.get("summary")
         verdict = parsed.get("verdict")
@@ -195,6 +205,48 @@ class LLMNarrationEngine:
             citations=[str(c) for c in citations],
             metadata={"source": "llm"},
         )
+
+    @staticmethod
+    @staticmethod
+    def _strip_code_fence(raw: str) -> str:
+        if raw.startswith("```"):
+            fence_end = raw.rfind("```")
+            if fence_end > 0:
+                header_end = raw.find("\n")
+                body_start = header_end + 1 if header_end != -1 else 3
+                return raw[body_start:fence_end].strip()
+        return raw
+
+    @staticmethod
+    def _extract_json_fragment(raw: str) -> str | None:
+        """Try to salvage JSON embedded inside fences or prose."""
+        start = None
+        depth = 0
+        in_string = False
+        escape = False
+        for idx, ch in enumerate(raw):
+            if escape:
+                escape = False
+                continue
+            if ch == "\\":
+                escape = True
+                continue
+            if ch == '"' and not escape:
+                in_string = not in_string
+                continue
+            if in_string:
+                continue
+            if ch == "{":
+                if depth == 0:
+                    start = idx
+                depth += 1
+            elif ch == "}":
+                if depth > 0:
+                    depth -= 1
+                    if depth == 0 and start is not None:
+                        return raw[start : idx + 1]
+        return None
+        return raw[start : end + 1]
 
 
 __all__ = ["LLMNarrationEngine", "LLMNarrationError", "LLMClient"]
