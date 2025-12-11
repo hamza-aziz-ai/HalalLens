@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import type { Dispatch, SetStateAction } from "react";
 
 import { AnalysisPayload, AnalysisResponse } from "@/lib/types";
 import { callAnalysis } from "@/lib/api";
@@ -558,7 +559,7 @@ function normalizePayload(formState: FormState): AnalysisPayload {
 
 function setFormFromFiling(
   filing: Filing,
-  setForm: (state: FormState) => void,
+  setForm: Dispatch<SetStateAction<FormState>>,
 ) {
   setForm({
     snapshot: {
@@ -685,7 +686,7 @@ function formatVerdict(verdict?: string | null) {
 
 async function handleAnalyzeFiling(
   filing: Filing,
-  setForm: (state: FormState) => void,
+  setForm: Dispatch<SetStateAction<FormState>>,
   setSelectedFiling: (filing: Filing) => void,
   setMarketStatus: (status: string | null) => void,
   analyzeForm: () => Promise<void>,
@@ -704,7 +705,7 @@ async function handleAnalyzeFiling(
 
 function handleSelectFiling(
   filing: Filing,
-  setForm: (state: FormState) => void,
+  setForm: Dispatch<SetStateAction<FormState>>,
   setSelectedFiling: (filing: Filing) => void,
   setMarketStatus: (status: string | null) => void,
   setWatchlistSymbol: (value: string) => void,
@@ -721,13 +722,13 @@ function handleSelectFiling(
 
 async function fetchAndApplyMarketData(
   symbol: string,
-  setForm: (state: FormState) => void,
+  setForm: Dispatch<SetStateAction<FormState>>,
   setStatus: (value: string | null) => void,
 ) {
   setStatus("Fetching latest market data…");
   try {
     const quote = await fetchMarketQuote(symbol);
-    setForm((prev) => ({
+    setForm((prev: FormState) => ({
       ...prev,
       market_data: {
         ...prev.market_data,
