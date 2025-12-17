@@ -17,6 +17,7 @@ from typing import Dict, List, Optional
 import camelot
 import warnings
 import requests
+from pdfminer.high_level import extract_text
 
 from etl.minio_client import BSEPDFStorage
 from database.database_manager import BSEDatabaseManager
@@ -28,18 +29,23 @@ logger = logging.getLogger(__name__)
 logging.getLogger("pdfminer").setLevel(logging.ERROR)
 logging.getLogger("pdfminer.image").setLevel(logging.ERROR)
 
-db_client = BSEDatabaseManager()
-
 
 # noinspection PyTypeChecker
 class FinancialDataProcessor:
     """Realistic processor for BSE financial announcements"""
 
-    def __init__(self, download_dir: str = "./downloads", cache_dir: str = "./cache"):
+    def __init__(
+        self,
+        download_dir: str = "./downloads",
+        cache_dir: str = "./cache",
+        db_manager: Optional[BSEDatabaseManager] = None,
+    ):
         self.download_dir = Path(download_dir)
         self.cache_dir = Path(cache_dir)
         self.download_dir.mkdir(exist_ok=True)
         self.cache_dir.mkdir(exist_ok=True)
+        self.db = db_manager or BSEDatabaseManager()
+        self.metric_cache_version = "v3"
 
         self.session = requests.Session()
         self.session.headers.update({
@@ -115,7 +121,9 @@ class FinancialDataProcessor:
                 'total revenue',
                 'total income',
                 'net sales',
-                'gross income'
+                'gross income',
+                'revenue from operations',
+                'income from operations'
             ],
             'total_debt': [
                 'total debt',
@@ -162,6 +170,7 @@ class FinancialDataProcessor:
             category = str(announcement.get('CATEGORYNAME', '')).strip()
             subject_text = str(announcement.get('NEWSSUB', ''))
             subject = subject_text.lower()
+            more_text = str(announcement.get('MORE', ''))
             company = announcement.get('SLONGNAME', '')
             symbol = str(announcement.get('SCRIP_CD', ''))
             date = announcement.get('NEWS_DT') or announcement.get('DT_TM', '')
@@ -173,12 +182,14 @@ class FinancialDataProcessor:
             if self._is_financial_announcement(category, subject):
                 self.stats['financial_announcements'] += 1
 
+                scale_hint = self._detect_scale(f"{subject_text} {more_text}")
+
                 processed_data = {
                     'symbol': symbol,
                     'company': company,
                     'category': category,
                     'subject': subject_text,
-                    'date': db_client.parse_iso_datetime(date) if date else None,
+                    'date': self.db.parse_iso_datetime(date) if date else None,
                     'attachment_name': attachment,
                     'confidence': self._determine_confidence(category, subject),
                     'extracted_data': None,
@@ -215,7 +226,9 @@ class FinancialDataProcessor:
 
                     # Extract basic financial information from announcement text/PDF
                     extracted_info = self._extract_financial_info_from_text(announcement) or {}
-                    numeric_metrics = self._get_or_extract_pdf_metrics(processed_data.get('minio_path'))
+                    numeric_metrics = self._get_or_extract_pdf_metrics(
+                        processed_data, scale_hint=scale_hint
+                    )
                     combined_data = {**extracted_info, **numeric_metrics} if numeric_metrics else extracted_info
 
                     if combined_data:
@@ -239,8 +252,7 @@ class FinancialDataProcessor:
 
         return finance_data
 
-    @staticmethod
-    def updated_pdf_status(symbol, filing_date, minio_path: str, pdf_stored: bool):
+    def updated_pdf_status(self, symbol, filing_date, minio_path: str, pdf_stored: bool):
         """
         Update minio_path and pdf_stored status in BSE Announcements table
 
@@ -250,7 +262,7 @@ class FinancialDataProcessor:
             minio_path: Path for PDF to minio bucket
             pdf_stored: Boolean flag to indicate whether the PDF stored successfully
         """
-        with db_client.get_connection() as conn:
+        with self.db.get_connection() as conn:
             with conn.cursor() as cursor:
                 try:
                     # Use ON CONFLICT to handle duplicates
@@ -414,12 +426,21 @@ class FinancialDataProcessor:
             return 'audited'
         return None
 
-    def _get_or_extract_pdf_metrics(self, minio_path: Optional[str]) -> Dict[str, float]:
+    def _get_or_extract_pdf_metrics(
+        self, record: Dict, scale_hint: float = 1.0
+    ) -> Dict[str, float]:
         """Download PDF from MinIO and extract numeric metrics using Camelot"""
+        minio_path = record.get("minio_path")
         if not minio_path:
             return {}
 
-        cache_key = f"metrics/{minio_path}.json"
+        pdf_url = record.get("pdf_url")
+        attachment_name = record.get("attachment_name")
+        symbol = record.get("symbol")
+        filing_date = record.get("date")
+        confidence = record.get("confidence", "HIGH")
+
+        cache_key = f"metrics/{self.metric_cache_version}/{minio_path}.json"
 
         cached_metrics = self._fetch_cached_metrics(cache_key)
         if cached_metrics is not None:
@@ -427,14 +448,45 @@ class FinancialDataProcessor:
 
         temp_path = None
         try:
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp:
-                temp_path = tmp.name
+            for refresh in range(2):
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+                    temp_path = tmp.name
 
-            self.pdf_storage.client.fget_object(
-                self.pdf_storage.bucket_name,
-                minio_path,
-                temp_path
-            )
+                self.pdf_storage.client.fget_object(
+                    self.pdf_storage.bucket_name,
+                    minio_path,
+                    temp_path
+                )
+
+                if not self._is_valid_pdf(temp_path):
+                    os.remove(temp_path)
+                    temp_path = None
+                    refreshed = self._refresh_pdf(
+                        minio_path,
+                        pdf_url,
+                        attachment_name,
+                        symbol,
+                        filing_date,
+                        confidence,
+                    )
+                    if refreshed:
+                        record["minio_path"] = refreshed
+                        minio_path = refreshed
+                        cache_key = (
+                            f"metrics/{self.metric_cache_version}/{minio_path}.json"
+                        )
+                        continue
+                    return {}
+                break
+            else:
+                return {}
+
+            try:
+                text = extract_text(temp_path) or ""
+            except Exception:
+                text = ""
+            text_scale = self._detect_scale(text)
+            effective_hint = max(scale_hint, text_scale)
 
             tables = self._read_pdf_tables(temp_path)
             if not tables:
@@ -449,7 +501,9 @@ class FinancialDataProcessor:
                     continue
 
                 try:
-                    table_metrics = self._parse_table_for_metrics(table_df, metrics)
+                    table_metrics = self._parse_table_for_metrics(
+                        table_df, metrics, scale_hint=effective_hint
+                    )
                     metrics.update(table_metrics)
                 except Exception as table_err:
                     logger.debug(f"Table parsing skipped for {minio_path}: {table_err}")
@@ -468,7 +522,9 @@ class FinancialDataProcessor:
             if temp_path and os.path.exists(temp_path):
                 os.remove(temp_path)
 
-    def _parse_table_for_metrics(self, dataframe, existing_metrics: Dict[str, float]) -> Dict[str, float]:
+    def _parse_table_for_metrics(
+        self, dataframe, existing_metrics: Dict[str, float], scale_hint: float = 1.0
+    ) -> Dict[str, float]:
         """Parse Camelot dataframe to capture financial metrics"""
         metrics = {}
         if dataframe.empty:
@@ -488,11 +544,13 @@ class FinancialDataProcessor:
                 continue
 
             row_text = ' '.join(cells).lower()
-            value = self._extract_numeric_value(cells)
+            value, value_scale = self._extract_numeric_value(cells)
             if value is None:
                 continue
 
-            scale = table_scale if table_scale != 1.0 else self._detect_scale(row_text)
+            row_scale = self._detect_scale(row_text)
+            effective_scale = max(scale_hint, table_scale, row_scale, value_scale)
+            scale = effective_scale if effective_scale > 1.0 else 1.0
             scaled_value = value * scale
 
             for metric, keywords in self.metric_patterns.items():
@@ -507,23 +565,27 @@ class FinancialDataProcessor:
 
         return metrics
 
-    def _extract_numeric_value(self, cells: List[str]) -> Optional[float]:
-        """Extract numeric value from table row cells"""
+    def _extract_numeric_value(self, cells: List[str]) -> tuple[Optional[float], float]:
+        """Extract numeric value and scale hints from table row cells"""
+        detected_scale = 1.0
         for cell in reversed(cells):
             normalized = (
-                cell.replace(',', '')
-                    .replace('₹', '')
-                    .replace('rs.', '')
-                    .replace('Rs.', '')
-                    .replace('−', '-')
+                cell.replace(',', "")
+                .replace("₹", "")
+                .replace("rs.", "")
+                .replace("Rs.", "")
+                .replace("−", "-")
             )
+            cell_scale = self._detect_scale(cell)
+            if cell_scale > 1.0:
+                detected_scale = max(detected_scale, cell_scale)
             match = self.numeric_pattern.search(normalized)
             if match:
                 try:
-                    return float(match.group(0))
+                    return float(match.group(0)), detected_scale
                 except ValueError:
                     continue
-        return None
+        return None, detected_scale
 
     @staticmethod
     def _detect_scale(text: str) -> float:
@@ -616,3 +678,61 @@ class FinancialDataProcessor:
             )
         except Exception:
             logger.debug(f"Unable to cache metrics for {cache_key}")
+
+    @staticmethod
+    def _is_valid_pdf(path: str) -> bool:
+        try:
+            with open(path, "rb") as handle:
+                return handle.read(4).startswith(b"%PDF")
+        except Exception:
+            return False
+
+    def _refresh_pdf(
+        self,
+        minio_path: str,
+        pdf_url: Optional[str],
+        attachment_name: Optional[str],
+        symbol: Optional[str],
+        filing_date: Optional[datetime],
+        confidence: str,
+    ) -> Optional[str]:
+        """Force refresh the PDF from BSE when cached copy is invalid."""
+
+        if not pdf_url or not symbol or not filing_date:
+            return None
+
+        if isinstance(filing_date, datetime):
+            filing_iso = filing_date.isoformat()
+        else:
+            filing_iso = str(filing_date)
+
+        refreshed = self.pdf_storage.download_and_store_pdf(
+            pdf_url,
+            symbol,
+            filing_iso,
+            confidence=confidence,
+            force=True,
+        )
+
+        if isinstance(refreshed, str) and refreshed.lower() == "pdf moved":
+            if attachment_name:
+                moved_url = (
+                    attachment_name
+                    if attachment_name.lower().startswith("http")
+                    else f"{self.bse_attachment_moved}/{attachment_name}"
+                )
+                refreshed = self.pdf_storage.download_and_store_pdf(
+                    moved_url,
+                    symbol,
+                    filing_iso,
+                    confidence=confidence,
+                    force=True,
+                )
+
+        if not refreshed or (
+            isinstance(refreshed, str) and refreshed.lower() == "pdf moved"
+        ):
+            return None
+
+        logger.info("Refreshed PDF for %s (%s)", symbol, minio_path)
+        return refreshed

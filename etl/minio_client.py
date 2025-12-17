@@ -31,9 +31,9 @@ class BSEPDFStorage:
     """Enhanced MinIO client with BSE anti-bot protection"""
 
     def __init__(self,
-                 endpoint: str = "127.0.0.1:9000",
-                 access_key: str = None,
-                 secret_key: str = None,
+                 endpoint: str | None = None,
+                 access_key: str | None = None,
+                 secret_key: str | None = None,
                  secure: bool = False):
 
         # Initialize MinIO client
@@ -146,9 +146,15 @@ class BSEPDFStorage:
 
         return f"{folder}/{filename}"
 
-    def download_and_store_pdf(self, pdf_url: str, symbol: str,
-                               filing_date: str, confidence: str = 'HIGH',
-                               max_retries: int = 3) -> Optional[str]:
+    def download_and_store_pdf(
+        self,
+        pdf_url: str,
+        symbol: str,
+        filing_date: str,
+        confidence: str = "HIGH",
+        max_retries: int = 3,
+        force: bool = False,
+    ) -> Optional[str]:
         """Download PDF from BSE with anti-bot protection and store in MinIO"""
 
         # Initialize BSE session if needed
@@ -161,7 +167,12 @@ class BSEPDFStorage:
         minio_path = self.generate_pdf_path(symbol, filing_date, confidence)
 
         # Check if already exists
-        if self._pdf_exists(minio_path):
+        if force and self._pdf_exists(minio_path):
+            try:
+                self.client.remove_object(self.bucket_name, minio_path)
+            except Exception:
+                pass
+        elif self._pdf_exists(minio_path):
             logger.info(f"PDF already exists in MinIO: {minio_path}")
             self.stats['cached'] += 1
             return minio_path
@@ -192,10 +203,13 @@ class BSEPDFStorage:
 
                     # Basic PDF validation (check PDF header)
                     if not pdf_content.startswith(b'%PDF'):
-                        logger.warning(f"Downloaded content doesn't appear to be a PDF: {symbol}")
+                        logger.warning(
+                            f"Downloaded content doesn't appear to be a PDF: {symbol}"
+                        )
                         if attempt < max_retries - 1:
                             time.sleep(random.uniform(2, 5))
                             continue
+                        return "PDF Moved"
 
                     # Upload to MinIO
                     pdf_data = BytesIO(pdf_content)

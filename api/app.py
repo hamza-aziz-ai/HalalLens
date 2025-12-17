@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -13,7 +13,7 @@ import logging
 import time
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from alerts import AlertEngine, AlertEvent, WatchEntry, WatchlistStorage, EmailNotifier
 from config import (
@@ -42,8 +42,10 @@ from ratio_engine import (
     RatioEngine,
 )
 from database import BSEDatabaseManager
-from market_data import fetch_yahoo_quote
-from market_data.tickers import build_ticker_candidates
+from market_data import fetch_yahoo_quote, fetch_tiingo_quote, BhavcopyMarketResolver
+from market_data.tickers import build_ticker_candidates, build_tiingo_tickers
+from crawler import BSEAnnouncementsFetcher
+from etl import FinancialDataProcessor
 
 
 class FinancialSnapshotPayload(BaseModel):
@@ -143,12 +145,85 @@ market_logger = logging.getLogger("market_data")
 MARKET_CACHE: Dict[str, tuple[float, tuple[Optional[float], Optional[float]]]] = {}
 CACHE_TTL_SECONDS = 300
 BACKOFF_SECONDS = 30
+bhavcopy_resolver = BhavcopyMarketResolver()
+REALTIME_LOOKBACK_DAYS = 30
+REALTIME_LOOKBACK_MULTIPLIER = 4
+_realtime_fetcher: Optional[BSEAnnouncementsFetcher] = None
+_realtime_processor: Optional[FinancialDataProcessor] = None
+api_logger = logging.getLogger("api")
 
 
 def _get_db() -> BSEDatabaseManager:
     if DB_MANAGER is None:
         raise HTTPException(status_code=503, detail="Database unavailable")
     return DB_MANAGER
+
+
+def _get_realtime_fetcher() -> BSEAnnouncementsFetcher:
+    global _realtime_fetcher
+    if _realtime_fetcher is None:
+        _realtime_fetcher = BSEAnnouncementsFetcher(cache_dir=str(Path("cache")))
+    return _realtime_fetcher
+
+
+def _get_realtime_processor() -> FinancialDataProcessor:
+    global _realtime_processor
+    if _realtime_processor is None:
+        _realtime_processor = FinancialDataProcessor(
+            download_dir=str(Path("downloads")),
+            cache_dir=str(Path("cache")),
+            db_manager=_get_db(),
+        )
+    return _realtime_processor
+
+
+def _fetch_latest_filing_from_bse(symbol: str) -> Optional[Dict[str, Any]]:
+    """Fetch announcements for a symbol directly from BSE when cache misses."""
+
+    fetcher = _get_realtime_fetcher()
+    processor = _get_realtime_processor()
+    today = datetime.utcnow().date()
+    db = _get_db()
+
+    lookbacks = [
+        REALTIME_LOOKBACK_DAYS,
+        REALTIME_LOOKBACK_DAYS * REALTIME_LOOKBACK_MULTIPLIER,
+    ]
+
+    for window in lookbacks:
+        start = (today - timedelta(days=window)).strftime("%Y%m%d")
+        end = today.strftime("%Y%m%d")
+        try:
+            announcements = fetcher.get_company_announcements(symbol, start, end)
+        except Exception as exc:  # pragma: no cover - network failures
+            api_logger.warning("Realtime BSE fetch failed for %s: %s", symbol, exc)
+            break
+
+        if not announcements:
+            continue
+
+        try:
+            db.insert_announcements(announcements)
+        except Exception as exc:  # pragma: no cover - logged upstream
+            api_logger.warning("Failed to persist realtime announcements for %s: %s", symbol, exc)
+
+        try:
+            snapshots = processor.process_announcements(announcements)
+        except Exception as exc:  # pragma: no cover - extraction failures
+            api_logger.warning("Realtime processing failed for %s: %s", symbol, exc)
+            snapshots = []
+
+        if snapshots:
+            try:
+                db.insert_financial_snapshots(snapshots)
+            except Exception as exc:  # pragma: no cover
+                api_logger.warning("Failed to store snapshots for %s: %s", symbol, exc)
+
+        record = db.get_latest_filing(symbol)
+        if record:
+            return record
+
+    return None
 
 
 def _get_symbol_metadata_cached(identifier: str) -> Optional[Dict[str, str]]:
@@ -163,6 +238,13 @@ def _get_symbol_metadata_cached(identifier: str) -> Optional[Dict[str, str]]:
     return metadata
 
 
+def _load_quality_issues(symbol: str, filing_date: datetime) -> List[str]:
+    try:
+        return _get_db().get_quality_issues(symbol, filing_date)
+    except Exception:
+        return []
+
+
 def _ticker_candidates(symbol: str) -> List[str]:
     normalized = (symbol or "").strip().upper()
     metadata = _get_symbol_metadata_cached(normalized)
@@ -172,6 +254,17 @@ def _ticker_candidates(symbol: str) -> List[str]:
     if normalized and normalized != primary:
         additional.append(normalized)
     return build_ticker_candidates(primary, alias, additional=additional)
+
+
+def _tiingo_candidates(symbol: str) -> List[str]:
+    normalized = (symbol or "").strip().upper()
+    metadata = _get_symbol_metadata_cached(normalized)
+    alias = metadata.get("symbol_alias") if metadata else None
+    primary = metadata.get("symbol") if metadata else normalized
+    additional = []
+    if normalized and normalized != primary:
+        additional.append(normalized)
+    return build_tiingo_tickers(primary, alias, additional=additional)
 
 
 @app.get("/health")
@@ -220,6 +313,16 @@ class AlertCheckPayload(BaseModel):
     is_compliant: bool
 
 
+class FeedbackPayload(BaseModel):
+    """User feedback for filings/verdicts."""
+
+    symbol: Optional[str] = None
+    filing_date: Optional[datetime] = None
+    verdict: Optional[str] = None
+    message: str
+    contact: Optional[str] = None
+
+
 def _coerce_float(value: Any) -> Optional[float]:
     if value is None:
         return None
@@ -256,15 +359,28 @@ def _market_data_for_filing(symbol: str, as_of: datetime) -> tuple[Optional[floa
     db_snapshot = _get_db().get_cached_market_data(key, as_of)
     if db_snapshot:
         return db_snapshot
-    return _fetch_and_cache_market_data(symbol)
+    return _fetch_and_cache_market_data(symbol, as_of)
 
 
-def _fetch_and_cache_market_data(symbol: str) -> tuple[Optional[float], Optional[float]]:
+def _fetch_and_cache_market_data(
+    symbol: str, as_of: Optional[datetime] = None
+) -> tuple[Optional[float], Optional[float]]:
     key = symbol.strip().upper()
     now = time.time()
     cached = MARKET_CACHE.get(key)
     if cached and now - cached[0] < CACHE_TTL_SECONDS:
         return cached[1]
+
+    tiingo_candidates = _tiingo_candidates(symbol)
+    for ticker in tiingo_candidates:
+        market_cap, share_price = fetch_tiingo_quote(ticker)
+        if market_cap is None and share_price is None:
+            continue
+        _get_db().insert_market_snapshot(
+            symbol=key, market_cap=market_cap, share_price=share_price, provider="tiingo"
+        )
+        MARKET_CACHE[key] = (now, (market_cap, share_price))
+        return market_cap, share_price
 
     candidates = _ticker_candidates(symbol)
     for ticker in candidates:
@@ -278,7 +394,16 @@ def _fetch_and_cache_market_data(symbol: str) -> tuple[Optional[float], Optional
         )
         MARKET_CACHE[key] = (now, (market_cap, share_price))
         return market_cap, share_price
-
+    fallback_cap, fallback_price = bhavcopy_resolver.resolve(symbol, as_of)
+    if fallback_cap is not None or fallback_price is not None:
+        _get_db().insert_market_snapshot(
+            symbol=key,
+            market_cap=fallback_cap,
+            share_price=fallback_price,
+            provider="bhavcopy",
+        )
+        MARKET_CACHE[key] = (now, (fallback_cap, fallback_price))
+        return fallback_cap, fallback_price
     raise HTTPException(status_code=404, detail="Market data unavailable")
 
 
@@ -437,6 +562,7 @@ class FilingResponse(BaseModel):
     ratios: Optional[Dict[str, RatioComputationPayload]] = None
     market_cap_used: Optional[float] = None
     trailing_cap_used: Optional[float] = None
+    quality_issues: List[str] = Field(default_factory=list)
 
 
 class MarketQuoteResponse(BaseModel):
@@ -445,6 +571,32 @@ class MarketQuoteResponse(BaseModel):
     symbol: str
     market_cap: Optional[float] = None
     share_price: Optional[float] = None
+
+
+def _detect_quality_issues(
+    snapshot: FinancialSnapshotInput, evaluation
+) -> List[str]:
+    """Return human-readable reasons when ratios look suspicious."""
+
+    issues: List[str] = []
+    ratios = evaluation.ratios
+    npi = ratios.get("non_permissible_income_ratio")
+    if npi and npi.value is not None and npi.value > 1.0:
+        issues.append(
+            f"Non-permissible income ratio {npi.value:.2f} (>100%) suggests unit mismatch."
+        )
+    cash_ratio = ratios.get("cash_to_market_cap")
+    if cash_ratio and cash_ratio.value is not None and cash_ratio.value > 2.0:
+        issues.append(
+            f"Cash to market cap ratio {cash_ratio.value:.2f} (>200%) looks unrealistic."
+        )
+    if snapshot.revenue and snapshot.revenue < 1e6:
+        npi_value = npi.value if npi else None
+        if npi_value and npi_value > 0.5:
+            issues.append(
+                "Revenue figure appears too small relative to non-permissible income."
+            )
+    return issues
 
 
 def _ensure_filing_evaluation(record: Dict[str, Any]) -> Optional[Dict[str, RatioComputationPayload]]:
@@ -481,7 +633,21 @@ def _ensure_filing_evaluation(record: Dict[str, Any]) -> Optional[Dict[str, Rati
     summary = _build_summary(evaluation)
     ratios_dict = {name: asdict(comp) for name, comp in evaluation.ratios.items()}
 
-    _get_db().upsert_filing_evaluation(
+    quality_issues = _detect_quality_issues(snapshot, evaluation)
+    db = _get_db()
+    if quality_issues:
+        for issue in quality_issues:
+            db.record_quality_issue(
+                snapshot.symbol, snapshot.filing_date, "ratio_anomaly", issue
+            )
+        verdict = "needs-review"
+        summary = "Flagged for manual review due to anomalous ratios."
+        record["is_compliant"] = None
+    else:
+        db.resolve_quality_issues(snapshot.symbol, snapshot.filing_date)
+        quality_issues = _load_quality_issues(snapshot.symbol, snapshot.filing_date)
+
+    db.upsert_filing_evaluation(
         symbol=snapshot.symbol,
         filing_date=snapshot.filing_date,
         is_compliant=evaluation.is_compliant
@@ -495,13 +661,16 @@ def _ensure_filing_evaluation(record: Dict[str, Any]) -> Optional[Dict[str, Rati
         trailing_cap_used=trailing,
     )
 
-    record["is_compliant"] = evaluation.is_compliant
+    record["is_compliant"] = (
+        None if quality_issues else evaluation.is_compliant
+    )
     record["verdict"] = verdict
     record["summary"] = summary
     record["narration_source"] = "api"
     record["market_cap_used"] = market_cap
     record["trailing_cap_used"] = trailing
     record["ratios"] = ratios_dict
+    record["quality_issues"] = quality_issues
 
     return _ratios_payload(ratios_dict)
 
@@ -511,6 +680,11 @@ async def recent_filings(limit: int = 20) -> List[FilingResponse]:
     """Return recent filings from announcements."""
 
     rows = _get_db().get_recent_filings(limit=limit)
+    for row in rows:
+        symbol = row.get("symbol")
+        filing_date = row.get("filing_date")
+        if symbol and filing_date:
+            row["quality_issues"] = _load_quality_issues(symbol, filing_date)
     return [FilingResponse(**row) for row in rows]
 
 
@@ -521,6 +695,8 @@ async def filing_detail(symbol: str) -> FilingResponse:
     normalized = symbol.strip().upper()
     record = _get_db().get_latest_filing(normalized)
     if not record:
+        record = _fetch_latest_filing_from_bse(normalized)
+    if not record:
         raise HTTPException(status_code=404, detail="No filing found for symbol")
 
     ratio_payload = _ensure_filing_evaluation(record)
@@ -528,6 +704,11 @@ async def filing_detail(symbol: str) -> FilingResponse:
         record["ratios"] = ratio_payload
 
     record.setdefault("symbol", normalized)
+    if "quality_issues" not in record or record["quality_issues"] is None:
+        symbol = record.get("symbol")
+        filing_date = record.get("filing_date")
+        if symbol and filing_date:
+            record["quality_issues"] = _load_quality_issues(symbol, filing_date)
     record.setdefault("company_name", "")
     record.setdefault("category", "")
     return FilingResponse(**record)
@@ -560,6 +741,31 @@ async def ingestion_stats() -> Dict[str, Any]:
 
     stats = _get_db().get_database_stats()
     return stats
+
+
+@app.post("/feedback", status_code=201)
+async def submit_feedback(payload: FeedbackPayload) -> Dict[str, str]:
+    """Store user feedback about a filing or verdict."""
+
+    message = payload.message.strip()
+    if not message:
+        raise HTTPException(status_code=400, detail="Feedback message is required")
+
+    try:
+        _get_db().insert_feedback(
+            symbol=(payload.symbol or "").strip().upper() or None,
+            filing_date=payload.filing_date,
+            verdict=payload.verdict,
+            message=message,
+            contact=payload.contact,
+            source="ui",
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:  # pragma: no cover - logged upstream
+        raise HTTPException(status_code=500, detail="Unable to store feedback") from exc
+
+    return {"status": "received"}
 
 
 __all__ = ["app"]

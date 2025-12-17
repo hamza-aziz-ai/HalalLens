@@ -85,6 +85,7 @@ pipenv run uvicorn api.app:app --reload --port 8000
 - `GET /market-data/{symbol}` - proxy/caches Yahoo Finance market caps & share prices
 - `POST /watchlist` / `GET /watchlist/{user}` - manage compliance-watch entries
 - `POST /alerts/check` - run compliance-flip alert evaluation
+- `POST /feedback` - capture user-reported issues with filings/verdicts
 
 ### Tests
 
@@ -104,6 +105,30 @@ npm run dev          # http://localhost:3000
 ```
 
 Set `HALAL_API_BASE_URL` to the FastAPI origin (default `http://localhost:8000`). The UI proxies analysis via `/api/analysis`, fetches recent filings via `/api/filings/recent`, auto-looks up market caps/share prices via `/api/market-data` (now using the BSE `SCRIP_CD` captured in ingestion for better coverage), and surfaces `/watchlist` + `/alerts/check` so you can add symbols and see compliance-flip alerts without leaving the dashboard.
+
+## Docker pilot deployment
+
+The repository ships Dockerfiles for both the FastAPI backend and the Next.js dashboard plus a `docker-compose.yml` that stands up PostgreSQL, API, and UI together.
+
+1. Copy `.env` to the project root (or create one) with your existing PostgreSQL connection details plus the Tiingo token, e.g.:
+   ```env
+   POSTGRES_HOST=host.docker.internal   # or the LAN IP of your DB server
+   POSTGRES_DB=halallens
+   POSTGRES_USER=halallens
+   POSTGRES_PASSWORD=supersecret
+   TIINGO_API_TOKEN=your-tiingo-token
+   NEXT_PUBLIC_HALAL_API_BASE_URL=http://api:8001
+   ```
+   If you run Docker on native Linux, `host.docker.internal` is provided via the `extra_hosts` entry in `docker-compose.yml`; you can also set `POSTGRES_HOST` to the IP/hostname of your Postgres instance explicitly.
+2. Build and start the API + UI containers (they will connect to your existing Postgres):
+   ```bash
+   docker compose up --build
+   ```
+3. Visit:
+   - API docs: http://localhost:8001/docs
+   - Dashboard: http://localhost:3001 (already wired to the containerized API)
+
+The compose stack persists Postgres data in the `postgres_data` volume. Stop with `docker compose down` (add `-v` to drop the volume between runs).
 
 ### Ingestion scheduler
 

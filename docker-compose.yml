@@ -1,0 +1,65 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: api.Dockerfile
+    env_file:
+      - .env
+    environment:
+      POSTGRES_HOST: ${POSTGRES_HOST:-host.docker.internal}
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      TIINGO_API_TOKEN: ${TIINGO_API_TOKEN:?set in .env}
+      MINIO_HOST: ${MINIO_HOST:-host.docker.internal}
+      MINIO_PORT: ${MINIO_PORT:-9000}
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:?set in .env}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:?set in .env}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "8001:8001"
+    volumes:
+      - ./:/app
+    restart: unless-stopped
+
+  ui:
+    build:
+      context: .
+      dockerfile: ui.Dockerfile
+      args:
+        NEXT_PUBLIC_HALAL_API_BASE_URL: ${NEXT_PUBLIC_HALAL_API_BASE_URL:-http://api:8001}
+    environment:
+      NEXT_PUBLIC_HALAL_API_BASE_URL: ${NEXT_PUBLIC_HALAL_API_BASE_URL:-http://api:8001}
+    depends_on:
+      - api
+    ports:
+      - "3001:3000"
+    volumes:
+      - ./ui:/app/ui
+    restart: unless-stopped
+
+  ingestion:
+    build:
+      context: .
+      dockerfile: scheduler.Dockerfile
+    env_file:
+      - .env
+    environment:
+      POSTGRES_HOST: ${POSTGRES_HOST:-host.docker.internal}
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      TIINGO_API_TOKEN: ${TIINGO_API_TOKEN:?set in .env}
+      MINIO_HOST: ${MINIO_HOST:-host.docker.internal}
+      MINIO_PORT: ${MINIO_PORT:-9000}
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:?set in .env}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:?set in .env}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./:/app
+    entrypoint: ["python3", "-m", "jobs.schedule_ingestion"]
+    depends_on:
+      - api
+    restart: unless-stopped

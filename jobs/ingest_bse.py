@@ -14,14 +14,15 @@ from typing import Dict, List, Optional, Tuple
 from crawler import BSEAnnouncementsFetcher
 from database import BSEDatabaseManager
 from etl import FinancialDataProcessor
-from market_data import fetch_yahoo_quote
-from market_data.tickers import build_ticker_candidates
+from market_data import fetch_yahoo_quote, fetch_tiingo_quote, BhavcopyMarketResolver
+from market_data.tickers import build_ticker_candidates, build_tiingo_tickers
 from ratio_engine import FinancialSnapshotInput, MarketDataInput, RatioEngine
 
 
 logger = logging.getLogger("ingestion")
 ratio_engine = RatioEngine()
 MARKET_CACHE: Dict[str, Tuple[Optional[float], Optional[float]]] = {}
+bhavcopy_resolver = BhavcopyMarketResolver()
 
 
 def _normalize_bse_date(date_str: str) -> str:
@@ -157,18 +158,26 @@ def _lookup_market_data(
     symbol: str,
     as_of: datetime,
     db: BSEDatabaseManager,
-) -> Tuple[Optional[float], Optional[float]]:
+) -> Tuple[Optional[float], Optional[float], Optional[str]]:
     cache_key = symbol.strip().upper()
     cached = MARKET_CACHE.get(cache_key)
     if cached and any(value is not None for value in cached):
-        return cached
+        return cached[0], cached[1], None
 
     db_snapshot = db.get_cached_market_data(cache_key, as_of)
     if db_snapshot:
         MARKET_CACHE[cache_key] = db_snapshot
-        return db_snapshot
+        return db_snapshot[0], db_snapshot[1], None
 
     alias = db.get_symbol_alias(cache_key)
+    tiingo_tickers = build_tiingo_tickers(cache_key, alias)
+    for ticker in tiingo_tickers:
+        market_cap, share_price = fetch_tiingo_quote(ticker)
+        if market_cap is None and share_price is None:
+            continue
+        MARKET_CACHE[cache_key] = (market_cap, share_price)
+        return market_cap, share_price, "tiingo"
+
     tickers = build_ticker_candidates(cache_key, alias)
 
     for ticker in tickers:
@@ -178,14 +187,12 @@ def _lookup_market_data(
         if market_cap is None and share_price is None:
             continue
         MARKET_CACHE[cache_key] = (market_cap, share_price)
-        db.insert_market_snapshot(
-            symbol=cache_key,
-            market_cap=market_cap,
-            share_price=share_price,
-            provider="yahoo",
-        )
-        return market_cap, share_price
-    return None, None
+        return market_cap, share_price, "yahoo"
+    fallback_cap, fallback_price = bhavcopy_resolver.resolve(symbol, as_of)
+    if fallback_cap is not None or fallback_price is not None:
+        MARKET_CACHE[cache_key] = (fallback_cap, fallback_price)
+        return fallback_cap, fallback_price, "bhavcopy"
+    return None, None, None
 
 
 def _derive_verdict(evaluation) -> str:
@@ -233,7 +240,7 @@ def _evaluate_and_store(
         if not snapshot_input:
             continue
 
-        market_cap, share_price = _lookup_market_data(
+        market_cap, share_price, provider = _lookup_market_data(
             snapshot_input.symbol,
             snapshot_input.filing_date,
             db,
@@ -245,9 +252,13 @@ def _evaluate_and_store(
             )
             continue
 
-        db.insert_market_snapshot(
-            snapshot_input.symbol, market_cap, share_price, provider="yahoo"
-        )
+        if provider:
+            db.insert_market_snapshot(
+                snapshot_input.symbol,
+                market_cap,
+                share_price,
+                provider=provider,
+            )
 
         market_input = MarketDataInput(market_cap=market_cap, share_price=share_price)
         evaluation = ratio_engine.evaluate(snapshot_input, market_input)
@@ -276,23 +287,15 @@ def _evaluate_and_store(
     return evaluations
 
 
-def main() -> None:
-    args = parse_args()
-
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
-    )
-
-    logger.info(
-        "Starting BSE ingestion for %s ƒ+' %s", args.from_date, args.to_date
-    )
+def _run_with_args(args: argparse.Namespace) -> Dict[str, int]:
+    logger.info("Starting BSE ingestion for %s -> %s", args.from_date, args.to_date)
 
     fetcher = BSEAnnouncementsFetcher(cache_dir=str(args.cache_dir))
     processor = FinancialDataProcessor(
         download_dir=str(args.download_dir), cache_dir=str(args.cache_dir)
     )
     db_manager = BSEDatabaseManager()
+    metrics = {"announcements": 0, "snapshots": 0, "evaluations": 0}
 
     try:
         announcements = fetcher.get_announcements_paginated(
@@ -301,34 +304,81 @@ def main() -> None:
         logger.info("Fetched %d raw announcements", len(announcements))
 
         if args.save_cache and announcements:
-            filename = (
-                f"bse_announcements_{args.from_date}_{args.to_date}.json"
-            )
+            filename = f"bse_announcements_{args.from_date}_{args.to_date}.json"
             fetcher.save_to_cache(announcements, filename)
 
         inserted = _persist_announcements(db_manager, announcements)
+        metrics["announcements"] = inserted
         logger.info("Announcements inserted/updated: %d", inserted)
 
         financial_data = processor.process_announcements(announcements)
-        logger.info(
-            "Financial records processed: %d", len(financial_data)
-        )
+        logger.info("Financial records processed: %d", len(financial_data))
 
         snapshot_count = _persist_financial_snapshots(
             db_manager, processor, financial_data
         )
+        metrics["snapshots"] = snapshot_count
         logger.info("Financial snapshots stored: %d", snapshot_count)
 
         evaluations = _evaluate_and_store(db_manager, financial_data)
+        metrics["evaluations"] = evaluations
         logger.info("Automated evaluations stored: %d", evaluations)
 
         stats = processor.get_statistics()
         logger.info("Processor stats: %s", stats)
-
     finally:
         fetcher.close()
         processor.close()
         db_manager.close()
+    return metrics
+
+
+def run_ingestion(
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    *,
+    category: str = "-1",
+    cache_dir: Path | str = Path("./cache"),
+    download_dir: Path | str = Path("./downloads"),
+    save_cache: bool = False,
+    configure_logging: bool = False,
+) -> Dict[str, int]:
+    """Programmatic entry point for running BSE ingestion."""
+
+    today = datetime.utcnow().date()
+    default_start = (today - timedelta(days=1)).strftime("%Y%m%d")
+    default_end = today.strftime("%Y%m%d")
+
+    start = from_date or default_start
+    end = to_date or default_end
+
+    args = argparse.Namespace(
+        from_date=_normalize_bse_date(start),
+        to_date=_normalize_bse_date(end),
+        category=category,
+        cache_dir=Path(cache_dir),
+        download_dir=Path(download_dir),
+        save_cache=save_cache,
+    )
+    if configure_logging:
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
+        )
+    return _run_with_args(args)
+
+
+def main() -> None:
+    args = parse_args()
+    run_ingestion(
+        args.from_date,
+        args.to_date,
+        category=args.category,
+        cache_dir=args.cache_dir,
+        download_dir=args.download_dir,
+        save_cache=args.save_cache,
+        configure_logging=True,
+    )
 
 
 if __name__ == "__main__":

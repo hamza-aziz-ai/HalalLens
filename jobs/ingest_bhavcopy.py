@@ -7,7 +7,7 @@ import argparse
 import logging
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Iterator
+from typing import Iterator, Optional
 
 from database import BSEDatabaseManager
 from market_data import BhavcopyClient, BhavcopyError
@@ -47,22 +47,24 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def main() -> None:
-    args = parse_args()
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
-    )
+def run_bhavcopy(
+    from_date: date,
+    to_date: date,
+    *,
+    bse_local_dir: Optional[Path] = None,
+    nse_local_dir: Optional[Path] = None,
+) -> int:
+    """Run bhavcopy ingestion for a date range."""
 
     db = BSEDatabaseManager()
     client = BhavcopyClient(
-        bse_local_dir=args.bse_local_dir,
-        nse_local_dir=args.nse_local_dir,
+        bse_local_dir=bse_local_dir,
+        nse_local_dir=nse_local_dir,
     )
 
+    total_snapshots = 0
     try:
-        total_snapshots = 0
-        for day in _generate_days(args.from_date, args.to_date):
+        for day in _generate_days(from_date, to_date):
             try:
                 bse_records = client.fetch_bse_equity(day)
                 nse_caps = client.fetch_nse_market_caps(day)
@@ -94,6 +96,21 @@ def main() -> None:
             )
     finally:
         db.close()
+    return total_snapshots
+
+
+def main() -> None:
+    args = parse_args()
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
+    )
+    run_bhavcopy(
+        args.from_date,
+        args.to_date,
+        bse_local_dir=args.bse_local_dir,
+        nse_local_dir=args.nse_local_dir,
+    )
 
 
 if __name__ == "__main__":

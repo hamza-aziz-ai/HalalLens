@@ -73,4 +73,26 @@ CREATE TABLE IF NOT EXISTS filing_evaluations (
         ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS data_quality_issues (
+    id              SERIAL PRIMARY KEY,
+    symbol          VARCHAR(32) NOT NULL,
+    filing_date     TIMESTAMPTZ NOT NULL,
+    issue_type      TEXT NOT NULL,
+    details         TEXT,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    resolved_at     TIMESTAMPTZ,
+    UNIQUE (symbol, filing_date, issue_type)
+);
+
+CREATE TABLE IF NOT EXISTS feedback_reports (
+    id              SERIAL PRIMARY KEY,
+    symbol          VARCHAR(32),
+    filing_date     TIMESTAMPTZ,
+    verdict         TEXT,
+    message         TEXT NOT NULL,
+    contact         TEXT,
+    source          TEXT DEFAULT 'ui',
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 COMMIT;
