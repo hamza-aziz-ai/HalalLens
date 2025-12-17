@@ -168,3 +168,4 @@ cython_debug/
 # allow frontend configs
 !ui/tsconfig.json
 ui/out/
+cache
