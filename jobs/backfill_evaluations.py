@@ -8,12 +8,13 @@ from dataclasses import asdict
 from typing import Dict, Optional
 
 from database import BSEDatabaseManager
-from market_data import fetch_yahoo_quote
-from market_data.tickers import build_ticker_candidates
+from market_data import fetch_yahoo_quote, fetch_tiingo_quote, BhavcopyMarketResolver
+from market_data.tickers import build_ticker_candidates, build_tiingo_tickers
 from ratio_engine import FinancialSnapshotInput, MarketDataInput, RatioEngine
 
 logger = logging.getLogger("backfill")
 engine = RatioEngine()
+bhavcopy_resolver = BhavcopyMarketResolver()
 
 
 def _coerce_float(value) -> Optional[float]:
@@ -72,12 +73,24 @@ def main(limit: int = 500) -> None:
 
             tickers = _ticker_candidates(snapshot.symbol, db)
             market_cap = share_price = None
+            tiingo_tickers = build_tiingo_tickers(snapshot.symbol, db.get_symbol_alias(snapshot.symbol))
+            for ticker in tiingo_tickers:
+                market_cap, share_price = fetch_tiingo_quote(ticker)
+                if market_cap is not None or share_price is not None:
+                    break
             for ticker in tickers:
                 market_cap, share_price = fetch_yahoo_quote(
                     ticker, backoff_seconds=30, retries=3
                 )
                 if market_cap is not None or share_price is not None:
                     break
+            if market_cap is None:
+                fallback_cap, fallback_price = bhavcopy_resolver.resolve(
+                    snapshot.symbol, snapshot.filing_date
+                )
+                market_cap = fallback_cap
+                if share_price is None:
+                    share_price = fallback_price
             if market_cap is None:
                 continue
 

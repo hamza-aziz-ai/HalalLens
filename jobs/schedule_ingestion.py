@@ -7,7 +7,7 @@ import datetime
 import logging
 import time
 
-from jobs.ingest_bse import main as run_ingestion
+from jobs.ingestion_cycle import run_cycle
 
 logging.basicConfig(
     level=logging.INFO,
@@ -22,8 +22,8 @@ def main():
     logger.info("Starting ingestion scheduler (runs every %s minutes)", SLEEP_MINUTES)
     while True:
         try:
-            run_ingestion()
-            logger.info("Ingestion run completed successfully")
+            run_cycle(lookback_days=1)
+            logger.info("Ingestion cycle completed successfully")
         except Exception:
             logger.exception("Ingestion run failed")
         due = datetime.datetime.utcnow() + datetime.timedelta(minutes=SLEEP_MINUTES)

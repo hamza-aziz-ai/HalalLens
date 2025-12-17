@@ -96,3 +96,11 @@ export type IngestionStats = {
   high_confidence?: number;
   latest_filing?: string | null;
 };
+
+export type FeedbackPayload = {
+  symbol?: string;
+  filing_date?: string;
+  verdict?: string | null;
+  message: string;
+  contact?: string;
+};

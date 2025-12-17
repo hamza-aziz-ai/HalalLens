@@ -7,7 +7,7 @@ import { AnalysisPayload, AnalysisResponse } from "@/lib/types";
 import { callAnalysis } from "@/lib/api";
 import { ExplainPanel } from "@/components/explain-panel";
 import { RatioTable } from "@/components/ratio-table";
-import { fetchRecentFilings } from "@/lib/filings";
+import { fetchFilingDetail, fetchRecentFilings } from "@/lib/filings";
 import type { Filing } from "@/lib/types";
 import { fetchMarketQuote } from "@/lib/market-data";
 import { fetchWatchlist, upsertWatchlist } from "@/lib/watchlist";
@@ -15,6 +15,7 @@ import type { WatchlistEntry } from "@/lib/types";
 import { triggerAlertCheck } from "@/lib/alerts";
 import { fetchIngestionStats } from "@/lib/ingestion";
 import type { IngestionStats } from "@/lib/types";
+import { submitFeedback } from "@/lib/feedback";
 
 type SnapshotForm = {
   symbol: string;
@@ -74,6 +75,13 @@ export default function HomePage() {
   const [alertMessage, setAlertMessage] = useState<string | null>(null);
   const [ingestionStats, setIngestionStats] = useState<IngestionStats | null>(null);
   const [statsError, setStatsError] = useState<string | null>(null);
+  const [feedbackMessage, setFeedbackMessage] = useState("");
+  const [feedbackContact, setFeedbackContact] = useState("");
+  const [feedbackStatus, setFeedbackStatus] = useState<string | null>(null);
+  const [feedbackError, setFeedbackError] = useState<string | null>(null);
+  const [lookupSymbol, setLookupSymbol] = useState("");
+  const [lookupError, setLookupError] = useState<string | null>(null);
+  const [lookupLoading, setLookupLoading] = useState(false);
 
   useEffect(() => {
     fetchRecentFilings()
@@ -97,23 +105,27 @@ export default function HomePage() {
     }));
   };
 
-  const analyzeForm = async () => {
+  const runAnalysis = async (override?: AnalysisPayload) => {
+    const payload = override ?? normalizePayload(form);
     if (
-      !form.market_data.market_cap?.trim() &&
-      !form.market_data.trailing_market_cap?.trim()
+      !payload.market_data.market_cap &&
+      !payload.market_data.trailing_market_cap
     ) {
       setError("Enter market cap or trailing market cap before analyzing.");
+      return;
+    }
+    if (!payload.snapshot.symbol || !payload.snapshot.filing_date) {
+      setError("Symbol and filing date are required.");
       return;
     }
     setLoading(true);
     setError(null);
     setResponse(null);
     try {
-      const cleaned = normalizePayload(form);
-      const data = await callAnalysis(cleaned);
+      const data = await callAnalysis(payload);
       setResponse(data);
       const alerts = await triggerAlertCheck({
-        symbol: cleaned.snapshot.symbol,
+        symbol: payload.snapshot.symbol,
         is_compliant: data.score.is_compliant,
       });
       if (alerts.length) {
@@ -130,7 +142,63 @@ export default function HomePage() {
 
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
-    await analyzeForm();
+    await runAnalysis();
+  };
+
+  const quickAnalyzeSymbol = async () => {
+    const trimmed = lookupSymbol.trim().toUpperCase();
+    if (!trimmed) {
+      setLookupError("Enter a BSE symbol (e.g., 532540 or TCS).");
+      return;
+    }
+    setLookupError(null);
+    setLookupLoading(true);
+    try {
+      const filing = await fetchFilingDetail(trimmed);
+      setSelectedFiling(filing);
+      setFormFromFiling(filing, setForm);
+      setWatchlistSymbol(filing.symbol);
+      if (hasStoredMarketData(filing)) {
+        setMarketStatus("Using stored market data from ingestion pipeline.");
+      } else {
+        setMarketStatus(null);
+      }
+      let payload = payloadFromFiling(filing);
+      if (
+        !payload.market_data.market_cap &&
+        !payload.market_data.trailing_market_cap
+      ) {
+        try {
+          const quote = await fetchMarketQuote(filing.symbol);
+          payload = payloadFromFiling(filing, {
+            market_cap: quote.market_cap ?? undefined,
+            share_price: quote.share_price ?? undefined,
+          });
+          setForm((prev) => ({
+            ...prev,
+            market_data: {
+              ...prev.market_data,
+              market_cap: quote.market_cap
+                ? String(Math.round(quote.market_cap))
+                : prev.market_data.market_cap,
+              share_price: quote.share_price
+                ? String(quote.share_price)
+                : prev.market_data.share_price,
+            },
+          }));
+          setMarketStatus(null);
+        } catch {
+          setMarketStatus(
+            "Market data unavailable; please enter values manually.",
+          );
+        }
+      }
+      await runAnalysis(payload);
+    } catch (err: any) {
+      setLookupError(err.message ?? "Unable to fetch filing data.");
+    } finally {
+      setLookupLoading(false);
+    }
   };
 
   const handleAddWatchlist = async () => {
@@ -154,6 +222,44 @@ export default function HomePage() {
     }
   };
 
+  const handleFeedbackSubmit = async () => {
+    const symbol = (selectedFiling?.symbol || form.snapshot.symbol || "").trim();
+    if (!symbol) {
+      setFeedbackError("Select a filing or enter a symbol before submitting feedback.");
+      return;
+    }
+    const message = feedbackMessage.trim();
+    if (!message) {
+      setFeedbackError("Please describe what looks incorrect.");
+      return;
+    }
+    let filingDate: string | undefined;
+    if (selectedFiling?.filing_date) {
+      filingDate = selectedFiling.filing_date;
+    } else if (form.snapshot.filing_date) {
+      const parsed = new Date(form.snapshot.filing_date);
+      if (!Number.isNaN(parsed.getTime())) {
+        filingDate = parsed.toISOString();
+      }
+    }
+    try {
+      setFeedbackError(null);
+      await submitFeedback({
+        symbol,
+        filing_date: filingDate,
+        verdict: selectedFiling?.verdict ?? null,
+        message,
+        contact: feedbackContact.trim() || undefined,
+      });
+      setFeedbackStatus("Thanks — your note was recorded.");
+      setFeedbackMessage("");
+      setFeedbackContact("");
+    } catch (err: any) {
+      setFeedbackStatus(null);
+      setFeedbackError(err.message ?? "Unable to send feedback.");
+    }
+  };
+
   return (
     <main className="space-y-8">
       <header>
@@ -168,6 +274,37 @@ export default function HomePage() {
           ratios with Explain-Why narratives.
         </p>
       </header>
+
+      <section className="rounded-2xl border border-slate-800 bg-slate-900/50 p-4 shadow-xl shadow-black/40">
+        <h2 className="text-lg font-semibold text-white">Instant symbol lookup</h2>
+        <p className="text-sm text-slate-400">
+          Enter any BSE ticker to load the latest ingested filing and auto-run the AAOIFI
+          ratios plus Explain-Why narrative.
+        </p>
+        <div className="mt-3 flex flex-col gap-3 md:flex-row">
+          <input
+            className="flex-1 rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-white placeholder:text-slate-500 focus:border-cyan-400 focus:outline-none"
+            placeholder="e.g., 532540 or TCS"
+            value={lookupSymbol}
+            onChange={(e) => setLookupSymbol(e.target.value.toUpperCase())}
+          />
+          <button
+            type="button"
+            className="rounded-lg bg-emerald-500 px-4 py-2 text-sm font-semibold text-slate-950 transition hover:bg-emerald-400 disabled:opacity-50"
+            onClick={quickAnalyzeSymbol}
+            disabled={lookupLoading || loading}
+          >
+            {lookupLoading || loading ? "Analyzing…" : "Analyze symbol"}
+          </button>
+        </div>
+        {lookupError && (
+          <p className="mt-2 text-sm text-rose-300">{lookupError}</p>
+        )}
+        <p className="mt-2 text-xs text-slate-500">
+          We grab the newest filing from the backend. You can still tweak numbers below if
+          anything needs correction.
+        </p>
+      </section>
 
       <section className="rounded-2xl border border-slate-800 bg-slate-900/50 p-6 shadow-xl shadow-black/40">
         <form className="space-y-6" onSubmit={submit}>
@@ -358,7 +495,7 @@ export default function HomePage() {
                           setForm,
                           setSelectedFiling,
                           setMarketStatus,
-                          analyzeForm,
+                          runAnalysis,
                           setWatchlistSymbol,
                         );
                       }}
@@ -381,6 +518,65 @@ export default function HomePage() {
         )}
         {selectedFiling && (
           <FilingDetails filing={selectedFiling} marketStatus={marketStatus} />
+        )}
+      </section>
+
+      <section className="rounded-2xl border border-slate-800 bg-slate-900/40 p-4">
+        <h2 className="text-lg font-semibold text-white">Report an issue</h2>
+        <p className="text-sm text-slate-400">
+          Flag incorrect ratios, market data, or verdicts. Please include a brief
+          description — we review every submission.
+        </p>
+        <div className="mt-4 space-y-2">
+          <textarea
+            className="min-h-[90px] w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-white placeholder:text-slate-500 focus:border-cyan-400 focus:outline-none"
+            placeholder="Describe what looks wrong…"
+            value={feedbackMessage}
+            onChange={(e) => {
+              setFeedbackMessage(e.target.value);
+              setFeedbackStatus(null);
+              setFeedbackError(null);
+            }}
+          />
+          <input
+            className="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-white placeholder:text-slate-500 focus:border-cyan-400 focus:outline-none"
+            placeholder="Email or Telegram (optional, for follow-up)"
+            value={feedbackContact}
+            onChange={(e) => {
+              setFeedbackContact(e.target.value);
+              setFeedbackStatus(null);
+              setFeedbackError(null);
+            }}
+          />
+        </div>
+        <div className="mt-3 flex flex-wrap items-center gap-3">
+          <button
+            type="button"
+            onClick={handleFeedbackSubmit}
+            className="rounded-lg bg-amber-400 px-4 py-2 text-sm font-semibold text-slate-900 hover:bg-amber-300"
+          >
+            Send feedback
+          </button>
+          {selectedFiling ? (
+            <span className="text-xs text-slate-500">
+              Reporting for <strong>{selectedFiling.symbol}</strong> filing dated{" "}
+              {new Date(selectedFiling.filing_date).toLocaleDateString()}
+            </span>
+          ) : form.snapshot.symbol ? (
+            <span className="text-xs text-slate-500">
+              Reporting for <strong>{form.snapshot.symbol}</strong> (manual entry)
+            </span>
+          ) : (
+            <span className="text-xs text-slate-500">
+              Select a filing first to include its context.
+            </span>
+          )}
+        </div>
+        {feedbackError && (
+          <p className="mt-2 text-sm text-rose-300">{feedbackError}</p>
+        )}
+        {feedbackStatus && (
+          <p className="mt-2 text-sm text-emerald-300">{feedbackStatus}</p>
         )}
       </section>
 
@@ -584,6 +780,41 @@ function stringifyNumber(value?: number) {
   return typeof value === "number" ? String(value) : "";
 }
 
+type MarketOverride = {
+  market_cap?: number;
+  trailing_market_cap?: number;
+  share_price?: number;
+};
+
+function payloadFromFiling(
+  filing: Filing,
+  overrides?: MarketOverride,
+): AnalysisPayload {
+  const asNumber = (value?: number | null) =>
+    typeof value === "number" ? value : undefined;
+  return {
+    snapshot: {
+      symbol: filing.symbol,
+      filing_date: filing.filing_date,
+      total_debt: asNumber(filing.total_debt),
+      cash_equiv: asNumber(filing.cash_equiv),
+      revenue: asNumber(filing.revenue),
+      interest_income: asNumber(filing.interest_income),
+      dividend_income: asNumber(filing.dividend_income),
+      non_permissible_income: undefined,
+    },
+    market_data: {
+      market_cap: asNumber(
+        overrides?.market_cap ?? filing.market_cap_used ?? undefined,
+      ),
+      trailing_market_cap: asNumber(
+        overrides?.trailing_market_cap ?? filing.trailing_cap_used ?? undefined,
+      ),
+      share_price: asNumber(overrides?.share_price),
+    },
+  };
+}
+
 function FilingDetails({
   filing,
   marketStatus,
@@ -689,7 +920,7 @@ async function handleAnalyzeFiling(
   setForm: Dispatch<SetStateAction<FormState>>,
   setSelectedFiling: (filing: Filing) => void,
   setMarketStatus: (status: string | null) => void,
-  analyzeForm: () => Promise<void>,
+  runAnalysis: () => Promise<void>,
   setWatchlistSymbol: (value: string) => void,
 ) {
   setSelectedFiling(filing);
@@ -700,7 +931,7 @@ async function handleAnalyzeFiling(
   } else {
     await fetchAndApplyMarketData(filing.symbol, setForm, setMarketStatus);
   }
-  await analyzeForm();
+  await runAnalysis();
 }
 
 function handleSelectFiling(

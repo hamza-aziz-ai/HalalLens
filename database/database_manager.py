@@ -34,11 +34,11 @@ class BSEDatabaseManager:
     """Production-ready PostgreSQL integration for BSE financial data"""
 
     def __init__(self,
-                 host: str = "localhost",
-                 port: int = 5432,
-                 database: str = "Halal-Lens",
-                 user: str = None,
-                 password: str = None,
+                 host: Optional[str] = None,
+                 port: Optional[int] = None,
+                 database: Optional[str] = None,
+                 user: Optional[str] = None,
+                 password: Optional[str] = None,
                  min_connections: int = 2,
                  max_connections: int = 20):
 
@@ -370,6 +370,121 @@ class BSEDatabaseManager:
                         filing_date,
                         exc,
                     )
+                    raise
+
+    def record_quality_issue(
+        self, symbol: str, filing_date: datetime, issue_type: str, details: str
+    ) -> None:
+        """Persist or update a data-quality issue for a filing."""
+
+        with self.get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    INSERT INTO data_quality_issues (
+                        symbol, filing_date, issue_type, details
+                    ) VALUES (%(symbol)s, %(filing_date)s, %(issue_type)s, %(details)s)
+                    ON CONFLICT (symbol, filing_date, issue_type)
+                    DO UPDATE SET
+                        details = EXCLUDED.details,
+                        resolved_at = NULL,
+                        created_at = NOW()
+                    """,
+                    {
+                        "symbol": symbol,
+                        "filing_date": filing_date,
+                        "issue_type": issue_type,
+                        "details": details,
+                    },
+                )
+                conn.commit()
+
+    def resolve_quality_issues(self, symbol: str, filing_date: datetime) -> None:
+        """Mark open data-quality issues as resolved."""
+
+        with self.get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    UPDATE data_quality_issues
+                       SET resolved_at = NOW()
+                     WHERE symbol = %(symbol)s
+                       AND filing_date = %(filing_date)s
+                       AND resolved_at IS NULL
+                    """,
+                    {"symbol": symbol, "filing_date": filing_date},
+                )
+                conn.commit()
+
+    def get_quality_issues(self, symbol: str, filing_date: datetime) -> List[str]:
+        """Return unresolved quality issues for a filing."""
+
+        with self.get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT issue_type, details
+                      FROM data_quality_issues
+                     WHERE symbol = %(symbol)s
+                       AND filing_date = %(filing_date)s
+                       AND resolved_at IS NULL
+                     ORDER BY created_at ASC
+                    """,
+                    {"symbol": symbol, "filing_date": filing_date},
+                )
+                rows = cursor.fetchall()
+        return [
+            (row["details"] or row["issue_type"]).strip()
+            for row in rows
+            if (row.get("details") or row.get("issue_type"))
+        ]
+
+    def insert_feedback(
+        self,
+        *,
+        symbol: Optional[str],
+        filing_date: Optional[datetime],
+        verdict: Optional[str],
+        message: str,
+        contact: Optional[str] = None,
+        source: str = "ui",
+    ) -> None:
+        """Persist a feedback report."""
+
+        with self.get_connection() as conn:
+            with conn.cursor() as cursor:
+                try:
+                    cursor.execute(
+                        """
+                        INSERT INTO feedback_reports (
+                            symbol,
+                            filing_date,
+                            verdict,
+                            message,
+                            contact,
+                            source
+                        ) VALUES (
+                            %(symbol)s,
+                            %(filing_date)s,
+                            %(verdict)s,
+                            %(message)s,
+                            %(contact)s,
+                            %(source)s
+                        )
+                        """,
+                        {
+                            "symbol": symbol,
+                            "filing_date": filing_date,
+                            "verdict": verdict,
+                            "message": message,
+                            "contact": contact,
+                            "source": source,
+                        },
+                    )
+                    conn.commit()
+                except Exception as exc:
+                    conn.rollback()
+                    logger.error("Failed to store feedback for %s: %s", symbol, exc)
                     raise
 
     @staticmethod

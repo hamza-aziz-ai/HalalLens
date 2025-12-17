@@ -42,6 +42,9 @@ class DummyDB:
     def get_database_stats(self):
         return {"total_announcements": 1}
 
+    def insert_feedback(self, **kwargs):
+        self.last_feedback = kwargs
+
 
 @pytest.fixture(autouse=True)
 def patch_db(monkeypatch):
@@ -75,3 +78,21 @@ def test_recent_filings_uses_db():
     rows = run_async(api_module.recent_filings())
     assert len(rows) == 1
     assert rows[0].symbol == "ABC"
+
+
+def test_feedback_endpoint_stores_message():
+    payload = api_module.FeedbackPayload(
+        symbol="ABC",
+        verdict="compliant",
+        message="Numbers look off",
+        contact="qa@example.com",
+    )
+    response = run_async(api_module.submit_feedback(payload))
+    assert response["status"] == "received"
+    assert api_module.DB_MANAGER.last_feedback["symbol"] == "ABC"
+
+
+def test_feedback_requires_message():
+    payload = api_module.FeedbackPayload(symbol="ABC", message="   ")
+    with pytest.raises(Exception):
+        run_async(api_module.submit_feedback(payload))

@@ -89,40 +89,9 @@ class BhavcopyClient:
         day = as_of.strftime("%d%m%y")
         raw_csv = self._load_local_bse_csv(as_of)
         if raw_csv is None:
-            url = self.BSE_URL.format(day=day)
-            tokens = self._retrieve_bse_tokens()
-            self._submit_bse_form(tokens, as_of)
-
-            try:
-                response = self.session.get(url, timeout=60)
-                response.raise_for_status()
-            except requests.HTTPError as exc:
-                if response.status_code == 403:
-                    LOGGER.debug("403 from BSE bhavcopy (%s); refreshing session", day)
-                    tokens = self._retrieve_bse_tokens()
-                    self._submit_bse_form(tokens, as_of)
-                    try:
-                        response = self.session.get(url, timeout=60)
-                        response.raise_for_status()
-                    except requests.RequestException as retry_exc:
-                        raise BhavcopyError(
-                            f"Unable to download BSE bhavcopy for {day}: {retry_exc}"
-                        ) from retry_exc
-                else:
-                    raise BhavcopyError(
-                        f"Unable to download BSE bhavcopy for {day}: {exc}"
-                    ) from exc
-            except requests.RequestException as exc:
-                raise BhavcopyError(
-                    f"Unable to download BSE bhavcopy for {day}: {exc}"
-                ) from exc
-
-            try:
-                archive = zipfile.ZipFile(io.BytesIO(response.content))
-            except zipfile.BadZipFile as exc:
-                raise BhavcopyError(f"BSE bhavcopy zip corrupt for {day}") from exc
-
-            raw_csv = self._extract_csv_from_archive(archive)
+            raw_csv = self._download_direct_bse_csv(as_of)
+        if raw_csv is None:
+            raw_csv = self._download_form_based_bse_csv(as_of)
         records = self._parse_bse_csv(raw_csv, day)
         self._last_bse_records = records
         return records
@@ -133,15 +102,7 @@ class BhavcopyClient:
         day = as_of.strftime("%d%m%Y")
         csv_text = self._load_local_nse_csv(as_of)
         if csv_text is None:
-            url = self.NSE_URL.format(day=day)
-            try:
-                response = self.session.get(url, timeout=60)
-                response.raise_for_status()
-                csv_text = response.text
-            except requests.RequestException as exc:
-                raise BhavcopyError(
-                    f"Unable to download NSE mcap file for {day}: {exc}"
-                ) from exc
+            csv_text = self._download_nse_market_caps(day)
 
         reader = csv.DictReader(io.StringIO(csv_text))
         fieldnames = [field or "" for field in (reader.fieldnames or [])]
@@ -211,17 +172,103 @@ class BhavcopyClient:
             try:
                 with zipfile.ZipFile(candidate) as archive:
                     LOGGER.debug("Using local BSE zip %s", candidate)
-                    return self._extract_csv_from_archive(archive)
+                    csv_data = self._extract_csv_from_archive(archive)
+                    if self._is_csv_empty(csv_data):
+                        continue
+                    return csv_data
             except Exception as exc:
                 LOGGER.warning("Local BSE zip %s invalid: %s", candidate, exc)
         # Fallback to CSVs (e.g., already extracted)
         for candidate in sorted(self.bse_local_dir.glob(f"{prefix}*.csv")):
             try:
                 LOGGER.debug("Using local BSE csv %s", candidate)
-                return candidate.read_text(encoding="utf-8")
+                csv_data = candidate.read_text(encoding="utf-8")
+                if self._is_csv_empty(csv_data):
+                    continue
+                return csv_data
             except Exception as exc:
                 LOGGER.warning("Unable to read local BSE csv %s: %s", candidate, exc)
         return None
+
+    def _download_direct_bse_csv(self, as_of: date) -> Optional[str]:
+        day = as_of.strftime("%d%m%y")
+        urls = [
+            self.BSE_URL.format(day=day),
+            f"https://www.bseindia.com/download/BhavCopy/Equity/EQ_ISINCODE_{day}_T0.zip",
+            f"https://www.bseindia.com/download/BhavCopy/Equity/EQ_ISINCODE_{day}_T0.CSV",
+            f"https://www.bseindia.com/download/BhavCopy/Equity/EQ_ISINCODE_{day}.CSV",
+            f"https://www.bseindia.com/download/BhavCopy/Equity/EQ_ISINCODE_{day}.ZIP",
+        ]
+        last_error = None
+        for url in urls:
+            try:
+                response = self.session.get(url, timeout=60)
+                if response.status_code == 404:
+                    continue
+                response.raise_for_status()
+            except requests.RequestException as exc:
+                last_error = exc
+                continue
+            if url.lower().endswith(".csv"):
+                if self._is_csv_empty(response.text):
+                    continue
+                return response.text
+            try:
+                archive = zipfile.ZipFile(io.BytesIO(response.content))
+            except zipfile.BadZipFile as exc:
+                last_error = exc
+                continue
+            csv_text = self._extract_csv_from_archive(archive)
+            if self._is_csv_empty(csv_text):
+                continue
+            return csv_text
+        if last_error:
+            LOGGER.debug("Direct BSE download failed: %s", last_error)
+        return None
+
+    def _download_form_based_bse_csv(self, as_of: date) -> str:
+        day = as_of.strftime("%d%m%y")
+        url = self.BSE_URL.format(day=day)
+        tokens = self._retrieve_bse_tokens()
+        self._submit_bse_form(tokens, as_of)
+
+        try:
+            response = self.session.get(url, timeout=60)
+            response.raise_for_status()
+        except requests.HTTPError as exc:
+            if response.status_code == 403:
+                LOGGER.debug("403 from BSE bhavcopy (%s); refreshing session", day)
+                tokens = self._retrieve_bse_tokens()
+                self._submit_bse_form(tokens, as_of)
+                try:
+                    response = self.session.get(url, timeout=60)
+                    response.raise_for_status()
+                except requests.RequestException as retry_exc:
+                    raise BhavcopyError(
+                        f"Unable to download BSE bhavcopy for {day}: {retry_exc}"
+                    ) from retry_exc
+            else:
+                raise BhavcopyError(
+                    f"Unable to download BSE bhavcopy for {day}: {exc}"
+                ) from exc
+        except requests.RequestException as exc:
+            raise BhavcopyError(
+                f"Unable to download BSE bhavcopy for {day}: {exc}"
+            ) from exc
+
+        try:
+            archive = zipfile.ZipFile(io.BytesIO(response.content))
+        except zipfile.BadZipFile as exc:
+            raise BhavcopyError(f"BSE bhavcopy zip corrupt for {day}") from exc
+
+        return self._extract_csv_from_archive(archive)
+
+    @staticmethod
+    def _is_csv_empty(payload: str) -> bool:
+        if not payload:
+            return True
+        lines = [line for line in payload.splitlines() if line.strip()]
+        return len(lines) <= 1
 
     def _load_local_nse_csv(self, as_of: date) -> Optional[str]:
         if not self.nse_local_dir:
@@ -244,6 +291,33 @@ class BhavcopyClient:
                 except Exception as exc:
                     LOGGER.warning("Unable to read local NSE file %s: %s", candidate, exc)
         return None
+
+    def _download_nse_market_caps(self, day: str) -> str:
+        urls = [
+            self.NSE_URL.format(day=day),
+            f"https://archives.nseindia.com/content/equities/mcap/MCAP{day}.csv",
+            f"https://archives.nseindia.com/content/equities/mcap/MCAP{day}.xlsx",
+        ]
+        for url in urls:
+            try:
+                response = self.session.get(url, timeout=60)
+                if response.status_code == 404:
+                    continue
+                response.raise_for_status()
+            except requests.RequestException:
+                continue
+            if url.lower().endswith(".xlsx"):
+                return self._excel_bytes_to_csv(response.content)
+            return response.text
+        raise BhavcopyError(f"Unable to download NSE mcap file for {day}")
+
+    def _excel_bytes_to_csv(self, payload: bytes) -> str:
+        try:
+            import pandas as pd
+        except ImportError as exc:  # pragma: no cover
+            raise BhavcopyError("pandas required to parse NSE Excel file") from exc
+        df = pd.read_excel(io.BytesIO(payload))
+        return df.to_csv(index=False)
 
     def _read_excel_as_csv(self, path: Path) -> str:
         try:

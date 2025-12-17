@@ -26,14 +26,14 @@ def _as_int(value: str | None, default: int) -> int:
         return default
 
 
-POSTGRES_HOST = "localhost"
-POSTGRES_PORT = 5432
-POSTGRES_DB = "Halal-Lens"
+POSTGRES_HOST = os.getenv("POSTGRES_HOST", "localhost")
+POSTGRES_PORT = _as_int(os.getenv("POSTGRES_PORT"), 5432)
+POSTGRES_DB = os.getenv("POSTGRES_DB", "Halal-Lens")
 POSTGRES_USER = os.getenv("POSTGRES_USER")
 POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD")
 
-MINIO_HOST = "localhost"
-MINIO_PORT = 9000
+MINIO_HOST = os.getenv("MINIO_HOST", "host.docker.internal")
+MINIO_PORT = _as_int(os.getenv("MINIO_PORT"), 9000)
 MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY")
 MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY")
 
@@ -45,6 +45,7 @@ LLM_API_KEY = os.getenv("LLM_API_KEY")
 LLM_TEMPERATURE = _as_float(os.getenv("LLM_TEMPERATURE"), 0.0)
 LLM_MAX_TOKENS = _as_int(os.getenv("LLM_MAX_TOKENS"), 400)
 LLM_TIMEOUT = _as_float(os.getenv("LLM_TIMEOUT"), 30.0)
+TIINGO_API_TOKEN = os.getenv("TIINGO_API_TOKEN")
 TICKER_MAP_PATH = Path(__file__).resolve().parent / "ticker_map.json"
 TICKER_MAP: Dict[str, str] = {}
 if TICKER_MAP_PATH.exists():
