@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import logging
+import os
 import time
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -99,6 +100,13 @@ class HalalScoreResponse(BaseModel):
     is_compliant: bool
     ratios: Dict[str, RatioComputationPayload]
     missing_inputs: Dict[str, str]
+
+
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+logging.basicConfig(
+    level=getattr(logging, LOG_LEVEL, logging.INFO),
+    format="%(asctime)s %(levelname)s [api] %(message)s",
+)
 
 
 app = FastAPI(title="Halal-Lens Ratio API", version="0.1.0")

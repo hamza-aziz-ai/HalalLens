@@ -1,5 +1,27 @@
 services:
+  preflight:
+    image: halal-lens-api
+    build:
+      context: .
+      dockerfile: api.Dockerfile
+    env_file:
+      - .env
+    environment:
+      POSTGRES_HOST: ${POSTGRES_HOST:-host.docker.internal}
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      MINIO_HOST: ${MINIO_HOST:-host.docker.internal}
+      MINIO_PORT: ${MINIO_PORT:-9000}
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:?set in .env}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:?set in .env}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    command: ["python3", "-m", "tools.preflight"]
+    restart: "no"
+
   api:
+    image: halal-lens-api
     build:
       context: .
       dockerfile: api.Dockerfile
@@ -15,6 +37,11 @@ services:
       MINIO_PORT: ${MINIO_PORT:-9000}
       MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:?set in .env}
       MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:?set in .env}
+      INGESTION_HEARTBEAT: /tmp/ingestion_heartbeat.txt
+      INGESTION_INTERVAL_MINUTES: ${INGESTION_INTERVAL_MINUTES:-60}
+    depends_on:
+      preflight:
+        condition: service_completed_successfully
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
@@ -22,6 +49,11 @@ services:
     volumes:
       - ./:/app
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python3", "-m", "tools.http_probe", "http://127.0.0.1:8001/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
 
   ui:
     build:
@@ -32,12 +64,22 @@ services:
     environment:
       NEXT_PUBLIC_HALAL_API_BASE_URL: ${NEXT_PUBLIC_HALAL_API_BASE_URL:-http://api:8001}
     depends_on:
-      - api
+      api:
+        condition: service_healthy
     ports:
       - "3001:3000"
     volumes:
       - ./ui:/app/ui
     restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "node -e \"fetch('http://127.0.0.1:3000',{method:'GET'}).then(r=>{if(!r.ok){process.exit(1);}process.exit(0);}).catch(()=>process.exit(1));\"",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
 
   ingestion:
     build:
@@ -61,5 +103,11 @@ services:
       - ./:/app
     entrypoint: ["python3", "-m", "jobs.schedule_ingestion"]
     depends_on:
-      - api
+      api:
+        condition: service_healthy
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python3", "-m", "jobs.ingestion_health"]
+      interval: 1m
+      timeout: 10s
+      retries: 3
