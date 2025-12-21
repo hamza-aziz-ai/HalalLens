@@ -61,6 +61,15 @@ export type Filing = {
   revenue?: number;
   interest_income?: number;
   dividend_income?: number;
+  accounts_receivable?: number;
+  liquid_assets?: number;
+  non_halal_income?: number;
+  governance_notes?: string;
+  governance_override_applied?: boolean;
+  governance_override_source?: string | null;
+  governance_override_reason?: string | null;
+  governance_override_reviewer?: string | null;
+  governance_override_updated_at?: string | null;
   audit_status?: string;
   is_compliant?: boolean | null;
   verdict?: string | null;
@@ -69,12 +78,15 @@ export type Filing = {
   ratios?: Record<string, RatioComputation> | null;
   market_cap_used?: number | null;
   trailing_cap_used?: number | null;
+  market_data_provider?: string | null;
+  quality_issues?: string[];
 };
 
 export type MarketQuote = {
   symbol: string;
   market_cap?: number | null;
   share_price?: number | null;
+  provider?: string | null;
 };
 
 export type WatchlistEntry = {
@@ -103,4 +115,58 @@ export type FeedbackPayload = {
   verdict?: string | null;
   message: string;
   contact?: string;
+};
+
+export type FeedbackReport = {
+  id: number;
+  symbol?: string | null;
+  filing_date?: string | null;
+  verdict?: string | null;
+  message: string;
+  contact?: string | null;
+  source?: string | null;
+  status: string;
+  review_notes?: string | null;
+  resolved_at?: string | null;
+  resolved_by?: string | null;
+  public_token?: string | null;
+  status_updated_at: string;
+  reevaluated_at?: string | null;
+  reevaluation_notes?: string | null;
+  created_at: string;
+};
+
+export type FeedbackSubmissionResponse = {
+  status: string;
+  ticket_id: number;
+  tracking_token: string;
+};
+
+export type FeedbackTrackingStatus = {
+  ticket_id: number;
+  symbol?: string | null;
+  filing_date?: string | null;
+  verdict?: string | null;
+  message: string;
+  status: string;
+  review_notes?: string | null;
+  created_at: string;
+  status_updated_at: string;
+  resolved_at?: string | null;
+  reevaluated_at?: string | null;
+  reevaluation_notes?: string | null;
+};
+
+export type GovernanceOverride = {
+  symbol: string;
+  filing_date: string;
+  accounts_receivable?: number | null;
+  liquid_assets?: number | null;
+  non_halal_income?: number | null;
+  governance_notes?: string | null;
+  reviewer?: string | null;
+  reason?: string | null;
+  source?: string | null;
+  created_at: string;
+  updated_at: string;
 };

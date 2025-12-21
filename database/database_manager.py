@@ -9,7 +9,7 @@ with proper connection pooling, error handling, and transaction management.
 
 import logging
 from contextlib import contextmanager
-from datetime import datetime, date
+from datetime import datetime, date, timezone
 from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
@@ -26,7 +26,6 @@ from config import (
 )
 from utils.datetime_parser import parse_bse_datetime
 
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
@@ -202,10 +201,12 @@ class BSEDatabaseManager:
                         insert_query = """
                         INSERT INTO financial_snapshots (
                             symbol, filing_date, fy_end, quarter, audit_status,
-                            total_debt, cash_equiv, revenue, interest_income, dividend_income
+                            total_debt, cash_equiv, revenue, interest_income, dividend_income,
+                            accounts_receivable, liquid_assets, non_halal_income, governance_notes
                         ) VALUES (
                             %(symbol)s, %(filing_date)s, %(fy_end)s, %(quarter)s, %(audit_status)s,
-                            %(total_debt)s, %(cash_equiv)s, %(revenue)s, %(interest_income)s, %(dividend_income)s
+                            %(total_debt)s, %(cash_equiv)s, %(revenue)s, %(interest_income)s, %(dividend_income)s,
+                            %(accounts_receivable)s, %(liquid_assets)s, %(non_halal_income)s, %(governance_notes)s
                         ) ON CONFLICT (symbol, filing_date)
                         DO UPDATE SET
                             fy_end = EXCLUDED.fy_end,
@@ -216,6 +217,10 @@ class BSEDatabaseManager:
                             revenue = EXCLUDED.revenue,
                             interest_income = EXCLUDED.interest_income,
                             dividend_income = EXCLUDED.dividend_income,
+                            accounts_receivable = EXCLUDED.accounts_receivable,
+                            liquid_assets = EXCLUDED.liquid_assets,
+                            non_halal_income = EXCLUDED.non_halal_income,
+                            governance_notes = EXCLUDED.governance_notes,
                             parsed_at = now()
                         """
 
@@ -282,7 +287,7 @@ class BSEDatabaseManager:
             with conn.cursor() as cursor:
                 cursor.execute(
                     """
-                    SELECT market_cap, share_price
+                    SELECT market_cap, share_price, provider
                     FROM market_data_snapshots
                     WHERE symbol = %(symbol)s
                       AND (%(as_of)s IS NULL OR captured_at <= %(as_of)s)
@@ -294,7 +299,7 @@ class BSEDatabaseManager:
                 row = cursor.fetchone()
                 if not row:
                     return None
-                return row["market_cap"], row["share_price"]
+                return row["market_cap"], row["share_price"], row.get("provider")
 
     def upsert_filing_evaluation(
         self,
@@ -308,6 +313,7 @@ class BSEDatabaseManager:
         narration_source: str,
         market_cap_used: Optional[float],
         trailing_cap_used: Optional[float],
+        market_data_provider: Optional[str] = None,
     ) -> None:
         """Persist computed ratio evaluations for a filing."""
 
@@ -325,7 +331,8 @@ class BSEDatabaseManager:
                             verdict,
                             narration_source,
                             market_cap_used,
-                            trailing_cap_used
+                            trailing_cap_used,
+                            market_data_provider
                         )
                         VALUES (
                             %(symbol)s,
@@ -336,7 +343,8 @@ class BSEDatabaseManager:
                             %(verdict)s,
                             %(narration_source)s,
                             %(market_cap_used)s,
-                            %(trailing_cap_used)s
+                            %(trailing_cap_used)s,
+                            %(market_data_provider)s
                         )
                         ON CONFLICT (symbol, filing_date)
                         DO UPDATE SET
@@ -347,6 +355,7 @@ class BSEDatabaseManager:
                             narration_source = EXCLUDED.narration_source,
                             market_cap_used = EXCLUDED.market_cap_used,
                             trailing_cap_used = EXCLUDED.trailing_cap_used,
+                            market_data_provider = EXCLUDED.market_data_provider,
                             evaluated_at = NOW()
                         """,
                         {
@@ -359,6 +368,7 @@ class BSEDatabaseManager:
                             "narration_source": narration_source,
                             "market_cap_used": market_cap_used,
                             "trailing_cap_used": trailing_cap_used,
+                            "market_data_provider": market_data_provider,
                         },
                     )
                     conn.commit()
@@ -448,8 +458,10 @@ class BSEDatabaseManager:
         message: str,
         contact: Optional[str] = None,
         source: str = "ui",
-    ) -> None:
-        """Persist a feedback report."""
+        status: str = "open",
+        public_token: str,
+    ) -> Dict:
+        """Persist a feedback report and return the stored row."""
 
         with self.get_connection() as conn:
             with conn.cursor() as cursor:
@@ -462,15 +474,36 @@ class BSEDatabaseManager:
                             verdict,
                             message,
                             contact,
-                            source
+                            source,
+                            status,
+                            public_token
                         ) VALUES (
                             %(symbol)s,
                             %(filing_date)s,
                             %(verdict)s,
                             %(message)s,
                             %(contact)s,
-                            %(source)s
+                            %(source)s,
+                            %(status)s,
+                            %(public_token)s
                         )
+                        RETURNING
+                            id,
+                            symbol,
+                            filing_date,
+                            verdict,
+                            message,
+                            contact,
+                            source,
+                            status,
+                            review_notes,
+                            resolved_at,
+                            resolved_by,
+                            public_token,
+                            status_updated_at,
+                            reevaluated_at,
+                            reevaluation_notes,
+                            created_at
                         """,
                         {
                             "symbol": symbol,
@@ -479,13 +512,333 @@ class BSEDatabaseManager:
                             "message": message,
                             "contact": contact,
                             "source": source,
+                            "status": status,
+                            "public_token": public_token,
                         },
                     )
+                    row = cursor.fetchone()
                     conn.commit()
+                    return dict(row)
                 except Exception as exc:
                     conn.rollback()
                     logger.error("Failed to store feedback for %s: %s", symbol, exc)
                     raise
+
+    def list_feedback_reports(
+        self,
+        status: Optional[str] = None,
+        limit: int = 50,
+    ) -> List[Dict]:
+        """Return recent feedback reports filtered by status."""
+
+        with self.get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT
+                        id,
+                        symbol,
+                        filing_date,
+                        verdict,
+                        message,
+                        contact,
+                        source,
+                        status,
+                        review_notes,
+                        resolved_at,
+                        resolved_by,
+                        public_token,
+                        status_updated_at,
+                        reevaluated_at,
+                        reevaluation_notes,
+                        created_at
+                    FROM feedback_reports
+                    WHERE (%(status)s IS NULL OR status = %(status)s)
+                    ORDER BY created_at DESC
+                    LIMIT %(limit)s
+                    """,
+                    {"status": status, "limit": limit},
+                )
+                rows = cursor.fetchall()
+                return [dict(row) for row in rows]
+
+    def update_feedback_report(
+        self,
+        feedback_id: int,
+        status: str,
+        reviewer: Optional[str] = None,
+        review_notes: Optional[str] = None,
+    ) -> Optional[Dict]:
+        """Update the status/notes for a feedback report."""
+
+        resolved_at = datetime.now(timezone.utc) if status == "resolved" else None
+
+        with self.get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    UPDATE feedback_reports
+                       SET status = %(status)s,
+                           review_notes = COALESCE(%(review_notes)s, review_notes),
+                           resolved_at = CASE
+                               WHEN %(status)s = 'resolved' THEN %(resolved_at)s
+                               ELSE NULL
+                           END,
+                           resolved_by = CASE
+                               WHEN %(status)s = 'resolved' THEN COALESCE(%(resolved_by)s, resolved_by)
+                               ELSE NULL
+                           END,
+                           status_updated_at = NOW()
+                     WHERE id = %(feedback_id)s
+                 RETURNING
+                        id,
+                        symbol,
+                        filing_date,
+                        verdict,
+                        message,
+                        contact,
+                        source,
+                        status,
+                        review_notes,
+                        resolved_at,
+                        resolved_by,
+                        public_token,
+                        status_updated_at,
+                        reevaluated_at,
+                        reevaluation_notes,
+                        created_at
+                    """,
+                    {
+                        "feedback_id": feedback_id,
+                        "status": status,
+                        "review_notes": review_notes,
+                        "resolved_at": resolved_at,
+                        "resolved_by": reviewer,
+                    },
+                )
+                row = cursor.fetchone()
+                if not row:
+                    conn.rollback()
+                    return None
+                conn.commit()
+                return dict(row)
+
+    def record_feedback_reevaluation(
+        self, feedback_id: int, notes: Optional[str]
+    ) -> Optional[Dict]:
+        """Store re-evaluation metadata for a feedback report."""
+
+        with self.get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    UPDATE feedback_reports
+                       SET reevaluated_at = NOW(),
+                           reevaluation_notes = %(notes)s
+                     WHERE id = %(feedback_id)s
+                 RETURNING
+                        id,
+                        symbol,
+                        filing_date,
+                        verdict,
+                        message,
+                        contact,
+                        source,
+                        status,
+                        review_notes,
+                        resolved_at,
+                        resolved_by,
+                        public_token,
+                        status_updated_at,
+                        reevaluated_at,
+                        reevaluation_notes,
+                        created_at
+                    """,
+                    {"feedback_id": feedback_id, "notes": notes},
+                )
+                row = cursor.fetchone()
+                if not row:
+                    conn.rollback()
+                    return None
+                conn.commit()
+                return dict(row)
+
+    def get_feedback_report(self, feedback_id: int) -> Optional[Dict]:
+        """Return a single feedback report."""
+
+        with self.get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT
+                        id,
+                        symbol,
+                        filing_date,
+                        verdict,
+                        message,
+                        contact,
+                        source,
+                        status,
+                        review_notes,
+                        resolved_at,
+                        resolved_by,
+                        public_token,
+                        status_updated_at,
+                        reevaluated_at,
+                        reevaluation_notes,
+                        created_at
+                    FROM feedback_reports
+                    WHERE id = %(feedback_id)s
+                    """,
+                    {"feedback_id": feedback_id},
+                )
+                row = cursor.fetchone()
+                return dict(row) if row else None
+
+    def get_feedback_by_token(self, token: str) -> Optional[Dict]:
+        """Return a feedback report via public token."""
+
+        if not token:
+            return None
+
+        with self.get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT
+                        id,
+                        symbol,
+                        filing_date,
+                        verdict,
+                        message,
+                        status,
+                        review_notes,
+                        resolved_at,
+                        status_updated_at,
+                        reevaluated_at,
+                        reevaluation_notes,
+                        created_at
+                    FROM feedback_reports
+                    WHERE public_token = %(token)s
+                    """,
+                    {"token": token},
+                )
+                row = cursor.fetchone()
+                return dict(row) if row else None
+
+    def upsert_governance_override(
+        self,
+        *,
+        symbol: str,
+        filing_date: datetime,
+        accounts_receivable: Optional[float] = None,
+        liquid_assets: Optional[float] = None,
+        non_halal_income: Optional[float] = None,
+        governance_notes: Optional[str] = None,
+        reviewer: Optional[str] = None,
+        reason: Optional[str] = None,
+        source: str = "manual",
+    ) -> Dict:
+        """Insert or update a governance override record."""
+
+        with self.get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    INSERT INTO governance_overrides (
+                        symbol,
+                        filing_date,
+                        accounts_receivable,
+                        liquid_assets,
+                        non_halal_income,
+                        governance_notes,
+                        reviewer,
+                        reason,
+                        source
+                    ) VALUES (
+                        %(symbol)s,
+                        %(filing_date)s,
+                        %(accounts_receivable)s,
+                        %(liquid_assets)s,
+                        %(non_halal_income)s,
+                        %(governance_notes)s,
+                        %(reviewer)s,
+                        %(reason)s,
+                        %(source)s
+                    )
+                    ON CONFLICT (symbol, filing_date)
+                    DO UPDATE SET
+                        accounts_receivable = EXCLUDED.accounts_receivable,
+                        liquid_assets = EXCLUDED.liquid_assets,
+                        non_halal_income = EXCLUDED.non_halal_income,
+                        governance_notes = EXCLUDED.governance_notes,
+                        reviewer = EXCLUDED.reviewer,
+                        reason = EXCLUDED.reason,
+                        source = EXCLUDED.source
+                    RETURNING *
+                    """,
+                    {
+                        "symbol": symbol.strip().upper(),
+                        "filing_date": filing_date,
+                        "accounts_receivable": accounts_receivable,
+                        "liquid_assets": liquid_assets,
+                        "non_halal_income": non_halal_income,
+                        "governance_notes": governance_notes,
+                        "reviewer": reviewer,
+                        "reason": reason,
+                        "source": source,
+                    },
+                )
+                row = cursor.fetchone()
+                conn.commit()
+                return dict(row)
+
+    def delete_governance_override(self, symbol: str, filing_date: datetime) -> bool:
+        """Delete an override; returns True if a row was removed."""
+
+        with self.get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    DELETE FROM governance_overrides
+                    WHERE symbol = %(symbol)s AND filing_date = %(filing_date)s
+                    """,
+                    {"symbol": symbol.strip().upper(), "filing_date": filing_date},
+                )
+                deleted = cursor.rowcount > 0
+                conn.commit()
+                return deleted
+
+    def list_governance_overrides(
+        self, symbol: Optional[str] = None, limit: int = 50
+    ) -> List[Dict]:
+        """Return latest governance overrides."""
+
+        with self.get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT
+                        symbol,
+                        filing_date,
+                        accounts_receivable,
+                        liquid_assets,
+                        non_halal_income,
+                        governance_notes,
+                        reviewer,
+                        reason,
+                        source,
+                        created_at,
+                        updated_at
+                    FROM governance_overrides
+                    WHERE (%(symbol)s IS NULL OR symbol = %(symbol)s)
+                    ORDER BY updated_at DESC
+                    LIMIT %(limit)s
+                    """,
+                    {"symbol": symbol.strip().upper() if symbol else None, "limit": limit},
+                )
+                rows = cursor.fetchall()
+                return [dict(row) for row in rows]
 
     @staticmethod
     def parse_iso_datetime(dt_str: str) -> datetime:
@@ -596,7 +949,13 @@ class BSEDatabaseManager:
                 'cash_equiv': extracted_data.get('cash_equiv'),
                 'revenue': extracted_data.get('revenue'),
                 'interest_income': extracted_data.get('interest_income'),
-                'dividend_income': extracted_data.get('dividend_income')
+                'dividend_income': extracted_data.get('dividend_income'),
+                'accounts_receivable': extracted_data.get('accounts_receivable'),
+                'liquid_assets': extracted_data.get('liquid_assets'),
+                'non_halal_income': extracted_data.get(
+                    'non_halal_income', extracted_data.get('non_permissible_income')
+                ),
+                'governance_notes': extracted_data.get('governance_notes'),
             }
         except Exception as e:
             logger.error(f"Error preparing snapshot data: {e}")
@@ -648,7 +1007,9 @@ class BSEDatabaseManager:
                 SELECT a.symbol, a.company_name, a.filing_date, a.category,
                        f.quarter, f.audit_status, f.fy_end,
                        f.total_debt, f.cash_equiv, f.revenue,
-                       f.interest_income, f.dividend_income
+                       f.interest_income, f.dividend_income,
+                       f.accounts_receivable, f.liquid_assets, f.non_halal_income,
+                       f.governance_notes
                 FROM announcements a
                 JOIN financial_snapshots f ON a.symbol = f.symbol AND a.filing_date = f.filing_date
                 """
@@ -682,6 +1043,10 @@ class BSEDatabaseManager:
                     fs.revenue,
                     fs.interest_income,
                     fs.dividend_income,
+                    COALESCE(go.accounts_receivable, fs.accounts_receivable) AS accounts_receivable,
+                    COALESCE(go.liquid_assets, fs.liquid_assets) AS liquid_assets,
+                    COALESCE(go.non_halal_income, fs.non_halal_income) AS non_halal_income,
+                    COALESCE(go.governance_notes, fs.governance_notes) AS governance_notes,
                     fs.audit_status,
                     fe.is_compliant,
                     fe.verdict,
@@ -689,7 +1054,13 @@ class BSEDatabaseManager:
                     fe.narration_source,
                     fe.ratios,
                     fe.market_cap_used,
-                    fe.trailing_cap_used
+                    fe.trailing_cap_used,
+                    fe.market_data_provider,
+                    (go.symbol IS NOT NULL) AS governance_override_applied,
+                    go.source AS governance_override_source,
+                    go.reviewer AS governance_override_reviewer,
+                    go.reason AS governance_override_reason,
+                    go.updated_at AS governance_override_updated_at
                 FROM announcements a
                 JOIN financial_snapshots fs
                   ON a.symbol = fs.symbol
@@ -702,6 +1073,9 @@ class BSEDatabaseManager:
                 LEFT JOIN filing_evaluations fe
                   ON a.symbol = fe.symbol
                  AND a.filing_date = fe.filing_date
+                LEFT JOIN governance_overrides go
+                  ON a.symbol = go.symbol
+                 AND a.filing_date = go.filing_date
                 ORDER BY a.filing_date DESC
                 LIMIT %(limit)s
                 """
@@ -722,6 +1096,68 @@ class BSEDatabaseManager:
                         a.symbol,
                         a.company_name,
                         a.filing_date,
+                    a.category,
+                    a.headline,
+                    a.confidence,
+                    fs.total_debt,
+                    fs.cash_equiv,
+                    fs.revenue,
+                    fs.interest_income,
+                    fs.dividend_income,
+                    COALESCE(go.accounts_receivable, fs.accounts_receivable) AS accounts_receivable,
+                    COALESCE(go.liquid_assets, fs.liquid_assets) AS liquid_assets,
+                    COALESCE(go.non_halal_income, fs.non_halal_income) AS non_halal_income,
+                    COALESCE(go.governance_notes, fs.governance_notes) AS governance_notes,
+                    fs.audit_status,
+                    fe.is_compliant,
+                    fe.verdict,
+                    fe.summary,
+                    fe.narration_source,
+                    fe.ratios,
+                    fe.market_cap_used,
+                    fe.trailing_cap_used,
+                    fe.market_data_provider,
+                    (go.symbol IS NOT NULL) AS governance_override_applied,
+                    go.source AS governance_override_source,
+                    go.reviewer AS governance_override_reviewer,
+                    go.reason AS governance_override_reason,
+                    go.updated_at AS governance_override_updated_at
+                FROM announcements a
+                JOIN financial_snapshots fs
+                  ON a.symbol = fs.symbol
+                 AND a.filing_date = fs.filing_date
+                LEFT JOIN filing_evaluations fe
+                  ON a.symbol = fe.symbol
+                 AND a.filing_date = fe.filing_date
+                LEFT JOIN governance_overrides go
+                  ON a.symbol = go.symbol
+                 AND a.filing_date = go.filing_date
+                WHERE a.symbol = %(symbol)s
+                   OR a.symbol_alias = %(symbol)s
+                ORDER BY a.filing_date DESC
+                LIMIT 1
+                    """,
+                    {"symbol": symbol.strip().upper()},
+                )
+                row = cursor.fetchone()
+                if not row:
+                    return None
+                return dict(row)
+
+    def get_filing(self, symbol: str, filing_date: datetime) -> Optional[Dict]:
+        """Return a specific filing joined with financial/evaluation data."""
+
+        if not symbol or not filing_date:
+            return None
+
+        with self.get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT
+                        a.symbol,
+                        a.company_name,
+                        a.filing_date,
                         a.category,
                         a.headline,
                         a.confidence,
@@ -730,6 +1166,10 @@ class BSEDatabaseManager:
                         fs.revenue,
                         fs.interest_income,
                         fs.dividend_income,
+                        COALESCE(go.accounts_receivable, fs.accounts_receivable) AS accounts_receivable,
+                        COALESCE(go.liquid_assets, fs.liquid_assets) AS liquid_assets,
+                        COALESCE(go.non_halal_income, fs.non_halal_income) AS non_halal_income,
+                        COALESCE(go.governance_notes, fs.governance_notes) AS governance_notes,
                         fs.audit_status,
                         fe.is_compliant,
                         fe.verdict,
@@ -737,7 +1177,13 @@ class BSEDatabaseManager:
                         fe.narration_source,
                         fe.ratios,
                         fe.market_cap_used,
-                        fe.trailing_cap_used
+                        fe.trailing_cap_used,
+                        fe.market_data_provider,
+                        (go.symbol IS NOT NULL) AS governance_override_applied,
+                        go.source AS governance_override_source,
+                        go.reviewer AS governance_override_reviewer,
+                        go.reason AS governance_override_reason,
+                        go.updated_at AS governance_override_updated_at
                     FROM announcements a
                     JOIN financial_snapshots fs
                       ON a.symbol = fs.symbol
@@ -745,17 +1191,80 @@ class BSEDatabaseManager:
                     LEFT JOIN filing_evaluations fe
                       ON a.symbol = fe.symbol
                      AND a.filing_date = fe.filing_date
+                    LEFT JOIN governance_overrides go
+                      ON a.symbol = go.symbol
+                     AND a.filing_date = go.filing_date
                     WHERE a.symbol = %(symbol)s
-                       OR a.symbol_alias = %(symbol)s
-                    ORDER BY a.filing_date DESC
+                      AND a.filing_date = %(filing_date)s
                     LIMIT 1
                     """,
-                    {"symbol": symbol.strip().upper()},
+                    {
+                        "symbol": symbol.strip().upper(),
+                        "filing_date": filing_date,
+                    },
                 )
                 row = cursor.fetchone()
-                if not row:
-                    return None
-                return dict(row)
+                return dict(row) if row else None
+
+    def get_filing_history(self, symbol: str, limit: int = 10) -> List[Dict]:
+        """Return recent filings for a single symbol ordered by filing date."""
+
+        if not symbol:
+            return []
+
+        with self.get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT
+                        a.symbol,
+                        a.company_name,
+                        a.filing_date,
+                        a.category,
+                    a.headline,
+                    a.confidence,
+                    fs.total_debt,
+                    fs.cash_equiv,
+                    fs.revenue,
+                    fs.interest_income,
+                    fs.dividend_income,
+                    fs.audit_status,
+                    fe.is_compliant,
+                    fe.verdict,
+                    fe.summary,
+                    fe.narration_source,
+                    fe.ratios,
+                    fe.market_cap_used,
+                    fe.trailing_cap_used,
+                    fe.market_data_provider,
+                    COALESCE(go.accounts_receivable, fs.accounts_receivable) AS accounts_receivable,
+                    COALESCE(go.liquid_assets, fs.liquid_assets) AS liquid_assets,
+                    COALESCE(go.non_halal_income, fs.non_halal_income) AS non_halal_income,
+                    COALESCE(go.governance_notes, fs.governance_notes) AS governance_notes,
+                    (go.symbol IS NOT NULL) AS governance_override_applied,
+                    go.source AS governance_override_source,
+                    go.reviewer AS governance_override_reviewer,
+                    go.reason AS governance_override_reason,
+                    go.updated_at AS governance_override_updated_at
+                FROM announcements a
+                JOIN financial_snapshots fs
+                  ON a.symbol = fs.symbol
+                 AND a.filing_date = fs.filing_date
+                LEFT JOIN filing_evaluations fe
+                  ON a.symbol = fe.symbol
+                 AND a.filing_date = fe.filing_date
+                LEFT JOIN governance_overrides go
+                  ON a.symbol = go.symbol
+                 AND a.filing_date = go.filing_date
+                WHERE a.symbol = %(symbol)s
+                   OR a.symbol_alias = %(symbol)s
+                ORDER BY a.filing_date DESC
+                LIMIT %(limit)s
+                    """,
+                    {"symbol": symbol.strip().upper(), "limit": limit},
+                )
+                rows = cursor.fetchall()
+                return [dict(row) for row in rows]
 
     def get_symbol_metadata(self, identifier: str) -> Optional[Dict[str, str]]:
         """Return numeric symbol and alias for an identifier (symbol or alias)."""

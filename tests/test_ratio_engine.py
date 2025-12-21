@@ -25,6 +25,9 @@ def make_snapshot(**overrides) -> FinancialSnapshotInput:
         interest_income=500_000,
         dividend_income=250_000,
         non_permissible_income=100_000,
+        accounts_receivable=15_000_000,
+        liquid_assets=30_000_000,
+        non_halal_income=50_000,
     )
     base.update(overrides)
     return FinancialSnapshotInput(**base)
@@ -40,7 +43,12 @@ def test_all_ratios_pass_when_under_thresholds():
     assert result.is_compliant is True
     assert pytest.approx(result.ratios["debt_to_market_cap"].value) == 0.125
     assert result.ratios["cash_to_market_cap"].passed is True
-    assert result.ratios["non_permissible_income_ratio"].note == "Non-permissible income / revenue"
+    assert result.ratios["receivables_to_market_cap"].passed is True
+    assert result.ratios["liquid_assets_to_market_cap"].passed is True
+    assert (
+        result.ratios["non_permissible_income_ratio"].note
+        == "Non-permissible income / revenue"
+    )
 
 
 def test_any_failed_ratio_marks_non_compliant():
@@ -54,6 +62,17 @@ def test_any_failed_ratio_marks_non_compliant():
     assert result.is_compliant is False
     assert result.ratios["debt_to_market_cap"].passed is False
     assert result.ratios["cash_to_market_cap"].passed is True
+
+
+def test_receivables_ratio_failure_marks_non_compliant():
+    engine = RatioEngine()
+    snapshot = make_snapshot(accounts_receivable=200_000_000)
+    market = MarketDataInput(market_cap=250_000_000)
+
+    result = engine.evaluate(snapshot, market)
+
+    assert result.is_compliant is False
+    assert result.ratios["receivables_to_market_cap"].passed is False
 
 
 def test_missing_inputs_reported_and_verdict_false():
@@ -81,5 +100,7 @@ def test_trailing_market_cap_fallback_and_income_aggregation():
     result = engine.evaluate(snapshot, market)
 
     assert result.ratios["debt_to_market_cap"].passed is True
-    assert result.ratios["cash_to_market_cap"].note == "Cash & equivalents / market cap"
+    assert (
+        result.ratios["cash_to_market_cap"].note == "Cash & equivalents / market cap"
+    )
     assert pytest.approx(result.ratios["non_permissible_income_ratio"].value) == 0.006

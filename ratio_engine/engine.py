@@ -57,7 +57,7 @@ class RatioEngine:
         )
 
         non_perm_income = (
-            (snapshot.non_permissible_income or 0.0)
+            (snapshot.non_permissible_income or snapshot.non_halal_income or 0.0)
             + (snapshot.interest_income or 0.0)
             + (snapshot.dividend_income or 0.0)
         )
@@ -72,6 +72,32 @@ class RatioEngine:
             np_ratio,
             self.thresholds.max_non_permissible_income,
             "Non-permissible income / revenue",
+        )
+
+        receivable_ratio = self._safe_ratio(
+            snapshot.accounts_receivable,
+            market_data.market_cap or market_data.trailing_market_cap,
+            "accounts_receivable",
+            "market_cap",
+            missing,
+        )
+        ratios["receivables_to_market_cap"] = self._build_computation(
+            receivable_ratio,
+            self.thresholds.max_receivables_to_market_cap,
+            "Accounts receivable / market cap",
+        )
+
+        liquid_ratio = self._safe_ratio(
+            snapshot.liquid_assets,
+            market_data.market_cap or market_data.trailing_market_cap,
+            "liquid_assets",
+            "market_cap",
+            missing,
+        )
+        ratios["liquid_assets_to_market_cap"] = self._build_computation(
+            liquid_ratio,
+            self.thresholds.max_liquid_assets_to_market_cap,
+            "Liquid assets / market cap",
         )
 
         is_compliant = self._aggregate_verdict(ratios)

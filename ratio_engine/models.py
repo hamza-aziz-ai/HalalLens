@@ -22,6 +22,9 @@ class FinancialSnapshotInput:
     interest_income: Optional[float] = None
     dividend_income: Optional[float] = None
     non_permissible_income: Optional[float] = None
+    accounts_receivable: Optional[float] = None
+    liquid_assets: Optional[float] = None
+    non_halal_income: Optional[float] = None
 
 
 @dataclass
@@ -40,6 +43,8 @@ class RatioThresholds:
     max_debt_to_market_cap: float = 0.30  # 30%
     max_cash_to_market_cap: float = 0.30  # 30%
     max_non_permissible_income: float = 0.05  # 5%
+    max_receivables_to_market_cap: float = 0.67  # 67%
+    max_liquid_assets_to_market_cap: float = 0.49  # 49%
 
     @classmethod
     def default(cls) -> "RatioThresholds":

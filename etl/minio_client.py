@@ -23,7 +23,6 @@ from config import (
 )
 from utils.datetime_parser import parse_bse_datetime
 
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 

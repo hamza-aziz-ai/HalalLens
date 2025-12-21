@@ -3,10 +3,20 @@
 import { HalalScoreResponse } from "@/lib/types";
 import clsx from "clsx";
 
-export function RatioTable({ evaluation }: { evaluation: HalalScoreResponse }) {
+export function RatioTable({
+  evaluation,
+  theme = "dark",
+}: {
+  evaluation: HalalScoreResponse;
+  theme?: "dark" | "light";
+}) {
   const rows = Object.entries(evaluation.ratios);
+  const baseCard =
+    theme === "dark"
+      ? "rounded-3xl border border-white/10 bg-gradient-to-br from-slate-900/80 via-slate-900/60 to-slate-950/80 shadow-2xl shadow-black/40"
+      : "rounded-3xl border border-black/5 bg-white/80 shadow-2xl shadow-black/10";
   return (
-    <article className="rounded-2xl border border-slate-800 bg-slate-900/60 p-6">
+    <article className={baseCard + " p-6"}>
       <header className="mb-4 flex items-center justify-between">
         <div>
           <h2 className="text-xl font-semibold text-white">
@@ -18,10 +28,12 @@ export function RatioTable({ evaluation }: { evaluation: HalalScoreResponse }) {
         </div>
         <span
           className={clsx(
-            "rounded-full px-3 py-1 text-sm font-medium",
+            "rounded-full px-3 py-1 text-sm font-semibold",
             evaluation.is_compliant
-              ? "bg-emerald-500/20 text-emerald-300"
-              : "bg-rose-500/20 text-rose-300",
+              ? "bg-emerald-400/20 text-emerald-300"
+              : "bg-rose-400/20 text-rose-300",
+            theme === "light" && evaluation.is_compliant && "text-emerald-600",
+            theme === "light" && !evaluation.is_compliant && "text-rose-600",
           )}
         >
           {evaluation.is_compliant ? "Compliant" : "Non-compliant"}
@@ -37,7 +49,7 @@ export function RatioTable({ evaluation }: { evaluation: HalalScoreResponse }) {
               <th className="pb-2">Status</th>
             </tr>
           </thead>
-          <tbody className="divide-y divide-slate-800 text-slate-100">
+          <tbody className="divide-y divide-white/10 text-slate-100">
             {rows.map(([key, computation]) => (
               <tr key={key}>
                 <td className="py-2">{humanize(key)}</td>
@@ -55,8 +67,8 @@ export function RatioTable({ evaluation }: { evaluation: HalalScoreResponse }) {
                       className={clsx(
                         "rounded-md px-2 py-1 text-xs font-semibold",
                         computation.passed
-                          ? "bg-emerald-500/15 text-emerald-300"
-                          : "bg-rose-500/15 text-rose-300",
+                          ? "bg-emerald-400/15 text-emerald-200"
+                          : "bg-rose-400/15 text-rose-200",
                       )}
                     >
                       {computation.passed ? "PASS" : "FAIL"}

@@ -51,6 +51,24 @@ def test_resolver_uses_lookback_days():
     assert price == 100.0
 
 
+def test_resolver_uses_nse_lookback_for_market_cap():
+    today = date(2024, 7, 10)
+    older = today - timedelta(days=30)
+    client = FakeBhavcopyClient()
+    client.bse[today] = {"500325": _record("500325", "INE8888Z", 2760.0)}
+    client.nse[older] = {"INE8888Z": 18_000_000_000.0}
+
+    resolver = BhavcopyMarketResolver(
+        client=client,
+        lookback_days=5,
+        nse_lookback_days=60,
+    )
+    cap, price = resolver.resolve("500325", datetime(2024, 7, 10, 9, 0))
+
+    assert cap == 18_000_000_000.0
+    assert price == 2760.0
+
+
 def test_resolver_returns_price_when_market_cap_missing():
     today = date(2024, 6, 30)
     client = FakeBhavcopyClient()
