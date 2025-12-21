@@ -31,7 +31,7 @@ def test_narration_contains_all_ratios():
     result = narrator.build(evaluation)
 
     assert "ABC" in result.summary
-    assert len(result.bullets) == 3
+    assert len(result.bullets) >= 3
     assert any("Debt to market cap" in bullet for bullet in result.bullets)
     assert result.verdict.lower().startswith("compliant")
 

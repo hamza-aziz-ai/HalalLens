@@ -30,6 +30,10 @@ CREATE TABLE IF NOT EXISTS financial_snapshots (
     revenue            NUMERIC,
     interest_income    NUMERIC,
     dividend_income    NUMERIC,
+    accounts_receivable NUMERIC,
+    liquid_assets      NUMERIC,
+    non_halal_income   NUMERIC,
+    governance_notes   TEXT,
     parsed_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     PRIMARY KEY (symbol, filing_date),
     CONSTRAINT fk_financials_announcement
@@ -92,6 +96,14 @@ CREATE TABLE IF NOT EXISTS feedback_reports (
     message         TEXT NOT NULL,
     contact         TEXT,
     source          TEXT DEFAULT 'ui',
+    status          TEXT NOT NULL DEFAULT 'open',
+    review_notes    TEXT,
+    resolved_at     TIMESTAMPTZ,
+    resolved_by     TEXT,
+    public_token    TEXT UNIQUE,
+    status_updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    reevaluated_at  TIMESTAMPTZ,
+    reevaluation_notes TEXT,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 

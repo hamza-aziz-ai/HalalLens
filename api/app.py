@@ -7,10 +7,11 @@ from dataclasses import asdict
 from datetime import datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple, Literal
 
 import logging
 import os
+import secrets
 import time
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -36,6 +37,7 @@ from config import (
     ALLOWED_ORIGIN_REGEX,
     DEFAULT_ALLOWED_ORIGINS,
 )
+from config.logging_config import configure_logging
 from narrator import NarrationEngine, NarratorConfig
 from ratio_engine import (
     FinancialSnapshotInput,
@@ -62,6 +64,9 @@ class FinancialSnapshotPayload(BaseModel):
     interest_income: Optional[float] = None
     dividend_income: Optional[float] = None
     non_permissible_income: Optional[float] = None
+    accounts_receivable: Optional[float] = None
+    liquid_assets: Optional[float] = None
+    non_halal_income: Optional[float] = None
 
 
 class MarketDataPayload(BaseModel):
@@ -103,9 +108,10 @@ class HalalScoreResponse(BaseModel):
 
 
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
-logging.basicConfig(
-    level=getattr(logging, LOG_LEVEL, logging.INFO),
-    format="%(asctime)s %(levelname)s [api] %(message)s",
+configure_logging(
+    "api",
+    level=LOG_LEVEL,
+    fmt="%(asctime)s %(levelname)s [api] %(message)s",
 )
 
 
@@ -150,7 +156,9 @@ email_notifier = EmailNotifier(
     ALERT_EMAIL_RECIPIENT,
 )
 market_logger = logging.getLogger("market_data")
-MARKET_CACHE: Dict[str, tuple[float, tuple[Optional[float], Optional[float]]]] = {}
+MARKET_CACHE: Dict[
+    str, tuple[float, tuple[Optional[float], Optional[float], Optional[str]]]
+] = {}
 CACHE_TTL_SECONDS = 300
 BACKOFF_SECONDS = 30
 bhavcopy_resolver = BhavcopyMarketResolver()
@@ -159,6 +167,8 @@ REALTIME_LOOKBACK_MULTIPLIER = 4
 _realtime_fetcher: Optional[BSEAnnouncementsFetcher] = None
 _realtime_processor: Optional[FinancialDataProcessor] = None
 api_logger = logging.getLogger("api")
+FEEDBACK_STATUSES = {"open", "in_review", "resolved"}
+TRACKING_TOKEN_LENGTH = 18
 
 
 def _get_db() -> BSEDatabaseManager:
@@ -329,6 +339,75 @@ class FeedbackPayload(BaseModel):
     verdict: Optional[str] = None
     message: str
     contact: Optional[str] = None
+    status: str = "open"
+    review_notes: Optional[str] = None
+    resolved_at: Optional[datetime] = None
+    resolved_by: Optional[str] = None
+    created_at: Optional[datetime] = None
+
+
+class FeedbackUpdatePayload(BaseModel):
+    status: Literal["open", "in_review", "resolved"]
+    review_notes: Optional[str] = None
+    reviewer: Optional[str] = None
+    trigger_recompute: bool = True
+
+
+class FeedbackReportResponse(BaseModel):
+    id: int
+    symbol: Optional[str] = None
+    filing_date: Optional[datetime] = None
+    verdict: Optional[str] = None
+    message: str
+    contact: Optional[str] = None
+    source: Optional[str] = None
+    status: str
+    review_notes: Optional[str] = None
+    resolved_at: Optional[datetime] = None
+    resolved_by: Optional[str] = None
+    public_token: Optional[str] = None
+    status_updated_at: datetime
+    reevaluated_at: Optional[datetime] = None
+    reevaluation_notes: Optional[str] = None
+    created_at: datetime
+
+
+class FeedbackSubmissionResponse(BaseModel):
+    status: str
+    ticket_id: int
+    tracking_token: str
+
+
+class FeedbackPublicStatusResponse(BaseModel):
+    ticket_id: int
+    symbol: Optional[str] = None
+    filing_date: Optional[datetime] = None
+    verdict: Optional[str] = None
+    message: str
+    status: str
+    review_notes: Optional[str] = None
+    created_at: datetime
+    status_updated_at: datetime
+    resolved_at: Optional[datetime] = None
+    reevaluated_at: Optional[datetime] = None
+    reevaluation_notes: Optional[str] = None
+
+
+class GovernanceOverridePayload(BaseModel):
+    symbol: str
+    filing_date: datetime
+    accounts_receivable: Optional[float] = None
+    liquid_assets: Optional[float] = None
+    non_halal_income: Optional[float] = None
+    governance_notes: Optional[str] = None
+    reviewer: Optional[str] = None
+    reason: Optional[str] = None
+    source: Optional[str] = "manual"
+
+
+class GovernanceOverrideResponse(GovernanceOverridePayload):
+    created_at: datetime
+    updated_at: datetime
 
 
 def _coerce_float(value: Any) -> Optional[float]:
@@ -358,11 +437,15 @@ def _snapshot_from_record(record: Dict[str, Any]) -> Optional[FinancialSnapshotI
         revenue=_coerce_float(record.get("revenue")),
         interest_income=_coerce_float(record.get("interest_income")),
         dividend_income=_coerce_float(record.get("dividend_income")),
-        non_permissible_income=None,
+        non_permissible_income=_coerce_float(record.get("non_halal_income")),
+        accounts_receivable=_coerce_float(record.get("accounts_receivable")),
+        liquid_assets=_coerce_float(record.get("liquid_assets")),
     )
 
 
-def _market_data_for_filing(symbol: str, as_of: datetime) -> tuple[Optional[float], Optional[float]]:
+def _market_data_for_filing(
+    symbol: str, as_of: datetime
+) -> tuple[Optional[float], Optional[float], Optional[str]]:
     key = symbol.strip().upper()
     db_snapshot = _get_db().get_cached_market_data(key, as_of)
     if db_snapshot:
@@ -372,7 +455,7 @@ def _market_data_for_filing(symbol: str, as_of: datetime) -> tuple[Optional[floa
 
 def _fetch_and_cache_market_data(
     symbol: str, as_of: Optional[datetime] = None
-) -> tuple[Optional[float], Optional[float]]:
+) -> tuple[Optional[float], Optional[float], Optional[str]]:
     key = symbol.strip().upper()
     now = time.time()
     cached = MARKET_CACHE.get(key)
@@ -387,8 +470,8 @@ def _fetch_and_cache_market_data(
         _get_db().insert_market_snapshot(
             symbol=key, market_cap=market_cap, share_price=share_price, provider="tiingo"
         )
-        MARKET_CACHE[key] = (now, (market_cap, share_price))
-        return market_cap, share_price
+        MARKET_CACHE[key] = (now, (market_cap, share_price, "tiingo"))
+        return market_cap, share_price, "tiingo"
 
     candidates = _ticker_candidates(symbol)
     for ticker in candidates:
@@ -400,18 +483,30 @@ def _fetch_and_cache_market_data(
         _get_db().insert_market_snapshot(
             symbol=key, market_cap=market_cap, share_price=share_price, provider="yahoo"
         )
-        MARKET_CACHE[key] = (now, (market_cap, share_price))
-        return market_cap, share_price
+        MARKET_CACHE[key] = (now, (market_cap, share_price, "yahoo"))
+        return market_cap, share_price, "yahoo"
     fallback_cap, fallback_price = bhavcopy_resolver.resolve(symbol, as_of)
-    if fallback_cap is not None or fallback_price is not None:
+    if fallback_cap is None and fallback_price is not None:
+        cached_any = _get_db().get_cached_market_data(key)
+        cached_cap = cached_any[0] if cached_any else None
+        if cached_cap is not None:
+            market_logger.info(
+                "Using cached market cap for %s due to missing NSE data", key
+            )
+            fallback_cap = cached_cap
+    if fallback_cap is not None:
         _get_db().insert_market_snapshot(
             symbol=key,
             market_cap=fallback_cap,
             share_price=fallback_price,
             provider="bhavcopy",
         )
-        MARKET_CACHE[key] = (now, (fallback_cap, fallback_price))
-        return fallback_cap, fallback_price
+        MARKET_CACHE[key] = (now, (fallback_cap, fallback_price, "bhavcopy"))
+        return fallback_cap, fallback_price, "bhavcopy"
+    if fallback_price is not None:
+        market_logger.warning(
+            "Bhavcopy returned share price but no market cap for %s", key
+        )
     raise HTTPException(status_code=404, detail="Market data unavailable")
 
 
@@ -431,6 +526,8 @@ FRIENDLY_LABELS = {
     "debt_to_market_cap": "Debt to market cap",
     "cash_to_market_cap": "Cash to market cap",
     "non_permissible_income_ratio": "Non-permissible income ratio",
+    "receivables_to_market_cap": "Receivables to market cap",
+    "liquid_assets_to_market_cap": "Liquid assets to market cap",
 }
 
 
@@ -562,6 +659,10 @@ class FilingResponse(BaseModel):
     revenue: Optional[float] = None
     interest_income: Optional[float] = None
     dividend_income: Optional[float] = None
+    accounts_receivable: Optional[float] = None
+    liquid_assets: Optional[float] = None
+    non_halal_income: Optional[float] = None
+    governance_notes: Optional[str] = None
     audit_status: Optional[str] = None
     is_compliant: Optional[bool] = None
     verdict: Optional[str] = None
@@ -570,7 +671,13 @@ class FilingResponse(BaseModel):
     ratios: Optional[Dict[str, RatioComputationPayload]] = None
     market_cap_used: Optional[float] = None
     trailing_cap_used: Optional[float] = None
+    market_data_provider: Optional[str] = None
     quality_issues: List[str] = Field(default_factory=list)
+    governance_override_applied: bool = False
+    governance_override_source: Optional[str] = None
+    governance_override_reason: Optional[str] = None
+    governance_override_reviewer: Optional[str] = None
+    governance_override_updated_at: Optional[datetime] = None
 
 
 class MarketQuoteResponse(BaseModel):
@@ -579,6 +686,7 @@ class MarketQuoteResponse(BaseModel):
     symbol: str
     market_cap: Optional[float] = None
     share_price: Optional[float] = None
+    provider: Optional[str] = None
 
 
 def _detect_quality_issues(
@@ -618,10 +726,11 @@ def _ensure_filing_evaluation(record: Dict[str, Any]) -> Optional[Dict[str, Rati
 
     market_cap = record.get("market_cap_used")
     trailing = record.get("trailing_cap_used")
+    provider = record.get("market_data_provider")
     share_price: Optional[float] = None
 
     if market_cap is None and trailing is None:
-        market_cap, share_price = _market_data_for_filing(
+        market_cap, share_price, provider = _market_data_for_filing(
             snapshot.symbol, snapshot.filing_date
         )
 
@@ -667,6 +776,7 @@ def _ensure_filing_evaluation(record: Dict[str, Any]) -> Optional[Dict[str, Rati
         narration_source="api",
         market_cap_used=market_cap,
         trailing_cap_used=trailing,
+        market_data_provider=provider,
     )
 
     record["is_compliant"] = (
@@ -677,10 +787,34 @@ def _ensure_filing_evaluation(record: Dict[str, Any]) -> Optional[Dict[str, Rati
     record["narration_source"] = "api"
     record["market_cap_used"] = market_cap
     record["trailing_cap_used"] = trailing
+    record["market_data_provider"] = provider
     record["ratios"] = ratios_dict
     record["quality_issues"] = quality_issues
 
     return _ratios_payload(ratios_dict)
+
+
+def _trigger_feedback_reevaluation(symbol: str, filing_date: datetime) -> str:
+    """Re-run evaluation for a feedback ticket and return a note."""
+
+    try:
+        record = _get_db().get_filing(symbol, filing_date)
+    except Exception:
+        record = None
+
+    if not record:
+        return "Re-evaluation skipped: filing not available."
+
+    try:
+        _ensure_filing_evaluation(record)
+    except HTTPException as exc:
+        return f"Re-evaluation failed: {exc.detail}"
+    except Exception as exc:  # pragma: no cover
+        return f"Re-evaluation errored: {exc}"
+
+    verdict = record.get("verdict") or "unknown"
+    summary = record.get("summary") or "Evaluation updated."
+    return f"Verdict {verdict}: {summary}"
 
 
 @app.get("/filings/recent", response_model=List[FilingResponse])
@@ -696,14 +830,38 @@ async def recent_filings(limit: int = 20) -> List[FilingResponse]:
     return [FilingResponse(**row) for row in rows]
 
 
+def _needs_financial_refresh(record: Dict[str, Any]) -> bool:
+    """Return True if the record lacks usable financial inputs."""
+
+    for key in (
+        "total_debt",
+        "cash_equiv",
+        "revenue",
+        "interest_income",
+        "dividend_income",
+    ):
+        if record.get(key) is not None:
+            return False
+    return True
+
+
 @app.get("/filings/{symbol}", response_model=FilingResponse)
-async def filing_detail(symbol: str) -> FilingResponse:
+async def filing_detail(symbol: str, refresh: bool = False) -> FilingResponse:
     """Return the latest filing and computed ratios for a symbol."""
 
     normalized = symbol.strip().upper()
-    record = _get_db().get_latest_filing(normalized)
-    if not record:
-        record = _fetch_latest_filing_from_bse(normalized)
+    record: Optional[Dict[str, Any]] = None
+
+    if not refresh:
+        record = _get_db().get_latest_filing(normalized)
+
+    if refresh or not record or _needs_financial_refresh(record):
+        latest = _fetch_latest_filing_from_bse(normalized)
+        if latest:
+            record = latest
+        elif not record:
+            record = None
+
     if not record:
         raise HTTPException(status_code=404, detail="No filing found for symbol")
 
@@ -722,6 +880,36 @@ async def filing_detail(symbol: str) -> FilingResponse:
     return FilingResponse(**record)
 
 
+@app.get("/filings/{symbol}/history", response_model=List[FilingResponse])
+async def filing_history(symbol: str, limit: int = 10) -> List[FilingResponse]:
+    """Return a symbol's recent filings for context/timeline views."""
+
+    normalized = symbol.strip().upper()
+    rows = _get_db().get_filing_history(normalized, limit=limit)
+    if not rows:
+        record = _fetch_latest_filing_from_bse(normalized)
+        if not record:
+            raise HTTPException(status_code=404, detail="No filings found for symbol")
+        rows = [record]
+
+    responses: List[FilingResponse] = []
+    for row in rows:
+        if not row.get("ratios"):
+            try:
+                ratio_payload = _ensure_filing_evaluation(row)
+                if ratio_payload is not None:
+                    row["ratios"] = ratio_payload
+            except HTTPException:
+                # Leave ratios empty; evaluation can be retried later.
+                pass
+        symbol_value = row.get("symbol")
+        filing_date = row.get("filing_date")
+        if symbol_value and filing_date:
+            row["quality_issues"] = _load_quality_issues(symbol_value, filing_date)
+        responses.append(FilingResponse(**row))
+    return responses
+
+
 @app.get("/market-data/{symbol}", response_model=MarketQuoteResponse)
 async def market_data(symbol: str) -> MarketQuoteResponse:
     """Fetch market cap/share price for a symbol via Yahoo Finance."""
@@ -730,17 +918,21 @@ async def market_data(symbol: str) -> MarketQuoteResponse:
     now = time.time()
     cached = MARKET_CACHE.get(key)
 
+    provider: Optional[str] = None
+
     if cached and now - cached[0] < CACHE_TTL_SECONDS:
-        market_cap, share_price = cached[1]
+        market_cap, share_price, provider = cached[1]
     else:
         db_snapshot = _get_db().get_cached_market_data(key)
         if db_snapshot:
-            market_cap, share_price = db_snapshot
+            market_cap, share_price, provider = db_snapshot
             MARKET_CACHE[key] = (now, db_snapshot)
         else:
-            market_cap, share_price = _fetch_and_cache_market_data(symbol)
+            market_cap, share_price, provider = _fetch_and_cache_market_data(symbol)
 
-    return MarketQuoteResponse(symbol=key, market_cap=market_cap, share_price=share_price)
+    return MarketQuoteResponse(
+        symbol=key, market_cap=market_cap, share_price=share_price, provider=provider
+    )
 
 
 @app.get("/ingestion/stats")
@@ -751,29 +943,177 @@ async def ingestion_stats() -> Dict[str, Any]:
     return stats
 
 
-@app.post("/feedback", status_code=201)
-async def submit_feedback(payload: FeedbackPayload) -> Dict[str, str]:
+@app.post("/feedback", response_model=FeedbackSubmissionResponse, status_code=201)
+async def submit_feedback(payload: FeedbackPayload) -> FeedbackSubmissionResponse:
     """Store user feedback about a filing or verdict."""
 
     message = payload.message.strip()
     if not message:
         raise HTTPException(status_code=400, detail="Feedback message is required")
 
+    token = secrets.token_urlsafe(TRACKING_TOKEN_LENGTH)
+
     try:
-        _get_db().insert_feedback(
+        row = _get_db().insert_feedback(
             symbol=(payload.symbol or "").strip().upper() or None,
             filing_date=payload.filing_date,
             verdict=payload.verdict,
             message=message,
             contact=payload.contact,
             source="ui",
+            public_token=token,
         )
     except HTTPException:
         raise
     except Exception as exc:  # pragma: no cover - logged upstream
         raise HTTPException(status_code=500, detail="Unable to store feedback") from exc
 
-    return {"status": "received"}
+    return FeedbackSubmissionResponse(
+        status="received",
+        ticket_id=row["id"],
+        tracking_token=row["public_token"],
+    )
+
+
+def _serialize_feedback(row: Dict[str, Any]) -> FeedbackReportResponse:
+    return FeedbackReportResponse(**row)
+
+
+def _parse_path_datetime(value: str) -> datetime:
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid filing_date format") from exc
+
+
+@app.get("/feedback", response_model=List[FeedbackReportResponse])
+async def list_feedback(
+    status: Optional[str] = None, limit: int = 50
+) -> List[FeedbackReportResponse]:
+    """List feedback reports for reviewers."""
+
+    normalized = status.lower() if status else None
+    if normalized and normalized not in FEEDBACK_STATUSES:
+        raise HTTPException(status_code=400, detail="Invalid feedback status filter")
+
+    rows = _get_db().list_feedback_reports(
+        status=normalized,
+        limit=max(1, min(limit, 200)),
+    )
+    return [_serialize_feedback(row) for row in rows]
+
+
+@app.patch("/feedback/{feedback_id}", response_model=FeedbackReportResponse)
+async def update_feedback(
+    feedback_id: int, payload: FeedbackUpdatePayload
+) -> FeedbackReportResponse:
+    """Update a feedback report (resolve/reopen, add reviewer notes)."""
+
+    status = payload.status.lower()
+    if status not in FEEDBACK_STATUSES:
+        raise HTTPException(status_code=400, detail="Invalid feedback status")
+
+    reviewer = payload.reviewer or "dashboard"
+    row = _get_db().update_feedback_report(
+        feedback_id,
+        status=status,
+        reviewer=reviewer,
+        review_notes=payload.review_notes,
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Feedback report not found")
+
+    if (
+        status == "resolved"
+        and payload.trigger_recompute
+        and row.get("symbol")
+        and row.get("filing_date")
+    ):
+        reevaluation_note = _trigger_feedback_reevaluation(
+            row["symbol"], row["filing_date"]
+        )
+        updated = _get_db().record_feedback_reevaluation(feedback_id, reevaluation_note)
+        if updated:
+            row = updated
+
+    return _serialize_feedback(row)
+
+
+@app.get("/feedback/status/{tracking_token}", response_model=FeedbackPublicStatusResponse)
+async def feedback_status(tracking_token: str) -> FeedbackPublicStatusResponse:
+    """Return sanitized status for a feedback ticket."""
+
+    row = _get_db().get_feedback_by_token(tracking_token.strip())
+    if not row:
+        raise HTTPException(status_code=404, detail="Feedback ticket not found")
+
+    return FeedbackPublicStatusResponse(
+        ticket_id=row["id"],
+        symbol=row.get("symbol"),
+        filing_date=row.get("filing_date"),
+        verdict=row.get("verdict"),
+        message=row.get("message"),
+        status=row.get("status"),
+        review_notes=row.get("review_notes"),
+        created_at=row.get("created_at"),
+        status_updated_at=row.get("status_updated_at"),
+        resolved_at=row.get("resolved_at"),
+        reevaluated_at=row.get("reevaluated_at"),
+        reevaluation_notes=row.get("reevaluation_notes"),
+    )
+
+
+@app.get("/governance/overrides", response_model=List[GovernanceOverrideResponse])
+async def list_governance_overrides(
+    symbol: Optional[str] = None, limit: int = 50
+) -> List[GovernanceOverrideResponse]:
+    """List governance overrides applied to filings."""
+
+    rows = _get_db().list_governance_overrides(symbol=symbol, limit=max(1, min(limit, 200)))
+    return [GovernanceOverrideResponse(**row) for row in rows]
+
+
+@app.put("/governance/overrides", response_model=GovernanceOverrideResponse)
+async def upsert_governance_override(
+    payload: GovernanceOverridePayload,
+) -> GovernanceOverrideResponse:
+    """Create or update a governance override entry."""
+
+    if not any(
+        [
+            payload.accounts_receivable is not None,
+            payload.liquid_assets is not None,
+            payload.non_halal_income is not None,
+            payload.governance_notes is not None,
+        ]
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="Provide at least one metric to override.",
+        )
+
+    row = _get_db().upsert_governance_override(
+        symbol=payload.symbol,
+        filing_date=payload.filing_date,
+        accounts_receivable=payload.accounts_receivable,
+        liquid_assets=payload.liquid_assets,
+        non_halal_income=payload.non_halal_income,
+        governance_notes=payload.governance_notes,
+        reviewer=payload.reviewer,
+        reason=payload.reason,
+        source=payload.source or "manual",
+    )
+    return GovernanceOverrideResponse(**row)
+
+
+@app.delete("/governance/overrides/{symbol}/{filing_date}", status_code=204)
+async def delete_governance_override(symbol: str, filing_date: str) -> None:
+    """Remove an override (switch back to raw extracted metrics)."""
+
+    parsed_date = _parse_path_datetime(filing_date)
+    deleted = _get_db().delete_governance_override(symbol, parsed_date)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Override not found")
 
 
 __all__ = ["app"]

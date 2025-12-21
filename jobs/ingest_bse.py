@@ -9,6 +9,7 @@ from dataclasses import asdict
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+from collections import defaultdict
 
 
 from crawler import BSEAnnouncementsFetcher
@@ -17,11 +18,14 @@ from etl import FinancialDataProcessor
 from market_data import fetch_yahoo_quote, fetch_tiingo_quote, BhavcopyMarketResolver
 from market_data.tickers import build_ticker_candidates, build_tiingo_tickers
 from ratio_engine import FinancialSnapshotInput, MarketDataInput, RatioEngine
+from config.logging_config import configure_logging as setup_file_logging
 
 
 logger = logging.getLogger("ingestion")
 ratio_engine = RatioEngine()
-MARKET_CACHE: Dict[str, Tuple[Optional[float], Optional[float]]] = {}
+MARKET_CACHE: Dict[str, Tuple[Optional[float], Optional[float], Optional[str]]] = {}
+FAILED_MARKET_LOOKUPS: Dict[str, int] = defaultdict(int)
+MARKET_FAILURE_THRESHOLD = 3
 bhavcopy_resolver = BhavcopyMarketResolver()
 
 
@@ -137,7 +141,11 @@ def _snapshot_from_record(
         revenue=_coerce_float(extracted.get("revenue")),
         interest_income=_coerce_float(extracted.get("interest_income")),
         dividend_income=_coerce_float(extracted.get("dividend_income")),
-        non_permissible_income=_coerce_float(extracted.get("non_permissible_income")),
+        non_permissible_income=_coerce_float(
+            extracted.get("non_permissible_income", extracted.get("non_halal_income"))
+        ),
+        accounts_receivable=_coerce_float(extracted.get("accounts_receivable")),
+        liquid_assets=_coerce_float(extracted.get("liquid_assets")),
     )
 
     has_metrics = any(
@@ -148,11 +156,36 @@ def _snapshot_from_record(
             snapshot.revenue,
             snapshot.interest_income,
             snapshot.dividend_income,
+            snapshot.accounts_receivable,
+            snapshot.liquid_assets,
         )
     )
     if not has_metrics:
         return None
     return snapshot
+
+
+def _clear_market_failure(symbol: str, filing_date: datetime, db: BSEDatabaseManager) -> None:
+    if FAILED_MARKET_LOOKUPS.pop(symbol, None):
+        try:
+            db.resolve_quality_issues(symbol, filing_date)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("Failed clearing market-data issue for %s: %s", symbol, exc)
+
+
+def _record_market_failure(symbol: str, filing_date: datetime, db: BSEDatabaseManager) -> None:
+    count = FAILED_MARKET_LOOKUPS[symbol] + 1
+    FAILED_MARKET_LOOKUPS[symbol] = count
+    if count >= MARKET_FAILURE_THRESHOLD:
+        details = (
+            f"Market data unavailable after {count} attempts "
+            "(Tiingo, Yahoo Finance, Bhavcopy)."
+        )
+        logger.warning("%s market data unavailable after %d attempts", symbol, count)
+        try:
+            db.record_quality_issue(symbol, filing_date, "market-data-missing", details)
+        except Exception as exc:  # pragma: no cover
+            logger.debug("Failed to record market-data issue for %s: %s", symbol, exc)
 
 def _lookup_market_data(
     symbol: str,
@@ -161,13 +194,16 @@ def _lookup_market_data(
 ) -> Tuple[Optional[float], Optional[float], Optional[str]]:
     cache_key = symbol.strip().upper()
     cached = MARKET_CACHE.get(cache_key)
-    if cached and any(value is not None for value in cached):
-        return cached[0], cached[1], None
+    if cached and any(value is not None for value in cached[:2]):
+        _clear_market_failure(cache_key, as_of, db)
+        return cached
 
     db_snapshot = db.get_cached_market_data(cache_key, as_of)
     if db_snapshot:
         MARKET_CACHE[cache_key] = db_snapshot
-        return db_snapshot[0], db_snapshot[1], None
+        _clear_market_failure(cache_key, as_of, db)
+        cap, price, provider = db_snapshot
+        return cap, price, provider or "cache"
 
     alias = db.get_symbol_alias(cache_key)
     tiingo_tickers = build_tiingo_tickers(cache_key, alias)
@@ -175,7 +211,14 @@ def _lookup_market_data(
         market_cap, share_price = fetch_tiingo_quote(ticker)
         if market_cap is None and share_price is None:
             continue
-        MARKET_CACHE[cache_key] = (market_cap, share_price)
+        db.insert_market_snapshot(
+            symbol=cache_key,
+            market_cap=market_cap,
+            share_price=share_price,
+            provider="tiingo",
+        )
+        MARKET_CACHE[cache_key] = (market_cap, share_price, "tiingo")
+        _clear_market_failure(cache_key, as_of, db)
         return market_cap, share_price, "tiingo"
 
     tickers = build_ticker_candidates(cache_key, alias)
@@ -186,12 +229,32 @@ def _lookup_market_data(
         )
         if market_cap is None and share_price is None:
             continue
-        MARKET_CACHE[cache_key] = (market_cap, share_price)
+        db.insert_market_snapshot(
+            symbol=cache_key,
+            market_cap=market_cap,
+            share_price=share_price,
+            provider="yahoo",
+        )
+        MARKET_CACHE[cache_key] = (market_cap, share_price, "yahoo")
+        _clear_market_failure(cache_key, as_of, db)
         return market_cap, share_price, "yahoo"
     fallback_cap, fallback_price = bhavcopy_resolver.resolve(symbol, as_of)
     if fallback_cap is not None or fallback_price is not None:
-        MARKET_CACHE[cache_key] = (fallback_cap, fallback_price)
+        if fallback_cap is None and fallback_price is not None:
+            cached_any = db.get_cached_market_data(cache_key)
+            cached_cap = cached_any[0] if cached_any else None
+            if cached_cap is not None:
+                fallback_cap = cached_cap
+        db.insert_market_snapshot(
+            symbol=cache_key,
+            market_cap=fallback_cap,
+            share_price=fallback_price,
+            provider="bhavcopy",
+        )
+        MARKET_CACHE[cache_key] = (fallback_cap, fallback_price, "bhavcopy")
+        _clear_market_failure(cache_key, as_of, db)
         return fallback_cap, fallback_price, "bhavcopy"
+    _record_market_failure(cache_key, as_of, db)
     return None, None, None
 
 
@@ -206,6 +269,8 @@ FRIENDLY_LABELS = {
     "debt_to_market_cap": "Debt to market cap",
     "cash_to_market_cap": "Cash to market cap",
     "non_permissible_income_ratio": "Non-permissible income ratio",
+    "receivables_to_market_cap": "Receivables to market cap",
+    "liquid_assets_to_market_cap": "Liquid assets to market cap",
 }
 
 
@@ -252,14 +317,6 @@ def _evaluate_and_store(
             )
             continue
 
-        if provider:
-            db.insert_market_snapshot(
-                snapshot_input.symbol,
-                market_cap,
-                share_price,
-                provider=provider,
-            )
-
         market_input = MarketDataInput(market_cap=market_cap, share_price=share_price)
         evaluation = ratio_engine.evaluate(snapshot_input, market_input)
 
@@ -281,6 +338,7 @@ def _evaluate_and_store(
             narration_source="ingestion",
             market_cap_used=market_cap,
             trailing_cap_used=None,
+            market_data_provider=provider,
         )
         evaluations += 1
 
@@ -361,10 +419,7 @@ def run_ingestion(
         save_cache=save_cache,
     )
     if configure_logging:
-        logging.basicConfig(
-            level=logging.INFO,
-            format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
-        )
+        setup_file_logging("ingestion")
     return _run_with_args(args)
 
 

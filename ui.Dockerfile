@@ -1,6 +1,9 @@
 FROM node:20-alpine
 
-ENV NEXT_TELEMETRY_DISABLED=1
+ENV NEXT_TELEMETRY_DISABLED=1 \
+    TZ=Asia/Kolkata
+
+RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 
 WORKDIR /app/ui
 
@@ -15,6 +18,9 @@ ENV NEXT_PUBLIC_HALAL_API_BASE_URL=${NEXT_PUBLIC_HALAL_API_BASE_URL}
 
 RUN npm run build && npm install --global serve
 
+COPY ui/docker-entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
 EXPOSE 3000
 
-CMD ["serve", "-s", "out", "-l", "3000"]
+CMD ["/entrypoint.sh"]

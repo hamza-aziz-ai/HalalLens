@@ -26,16 +26,17 @@ from config import (
     POSTGRES_PASSWORD,
     POSTGRES_PORT,
     POSTGRES_USER,
-LLM_ENDPOINT,
-NARRATOR_MODE,
-LLM_MODEL,
+    LLM_ENDPOINT,
+    LLM_MODEL,
 )
+from config.logging_config import configure_logging
 
 
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
-logging.basicConfig(
-    level=getattr(logging, LOG_LEVEL, logging.INFO),
-    format="%(asctime)s %(levelname)s [preflight] %(message)s",
+configure_logging(
+    "preflight",
+    level=LOG_LEVEL,
+    fmt="%(asctime)s %(levelname)s [preflight] %(message)s",
 )
 logger = logging.getLogger("preflight")
 

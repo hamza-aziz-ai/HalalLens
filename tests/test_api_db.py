@@ -22,7 +22,7 @@ class DummyDB:
         return self.filing
 
     def get_cached_market_data(self, symbol: str, as_of=None):
-        return (1_000_000_000, None)
+        return (1_000_000_000, None, "yahoo")
 
     def insert_market_snapshot(self, symbol, market_cap, share_price, provider="yahoo"):
         return None
@@ -39,11 +39,35 @@ class DummyDB:
     def upsert_filing_evaluation(self, **kwargs):
         return None
 
+    def resolve_quality_issues(self, symbol, filing_date):
+        return None
+
+    def record_quality_issue(self, symbol, filing_date, issue_type, details):
+        return None
+
     def get_database_stats(self):
         return {"total_announcements": 1}
 
     def insert_feedback(self, **kwargs):
         self.last_feedback = kwargs
+        return {
+            "id": 1,
+            "symbol": kwargs.get("symbol"),
+            "filing_date": kwargs.get("filing_date"),
+            "verdict": kwargs.get("verdict"),
+            "message": kwargs.get("message"),
+            "contact": kwargs.get("contact"),
+            "source": kwargs.get("source"),
+            "status": kwargs.get("status", "open"),
+            "review_notes": None,
+            "resolved_at": None,
+            "resolved_by": None,
+            "public_token": kwargs.get("public_token", "token"),
+            "status_updated_at": datetime.utcnow(),
+            "reevaluated_at": None,
+            "reevaluation_notes": None,
+            "created_at": datetime.utcnow(),
+        }
 
 
 @pytest.fixture(autouse=True)
@@ -88,7 +112,8 @@ def test_feedback_endpoint_stores_message():
         contact="qa@example.com",
     )
     response = run_async(api_module.submit_feedback(payload))
-    assert response["status"] == "received"
+    assert response.status == "received"
+    assert response.tracking_token
     assert api_module.DB_MANAGER.last_feedback["symbol"] == "ABC"
 
 

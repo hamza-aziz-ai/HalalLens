@@ -21,6 +21,7 @@ class BhavcopyMarketResolver:
         *,
         client: Optional[BhavcopyClient] = None,
         lookback_days: int = 5,
+        nse_lookback_days: Optional[int] = None,
         bse_cache_dir: Optional[Path] = None,
         nse_cache_dir: Optional[Path] = None,
     ) -> None:
@@ -29,6 +30,9 @@ class BhavcopyMarketResolver:
             nse_local_dir=nse_cache_dir or Path("cache/mcap"),
         )
         self.lookback_days = max(1, lookback_days)
+        self.nse_lookback_days = max(
+            self.lookback_days, (nse_lookback_days or self.lookback_days)
+        )
         self._bse_cache: Dict[date, Dict[str, BSEBhavRecord]] = {}
         self._nse_cache: Dict[date, Dict[str, float]] = {}
 
@@ -75,6 +79,14 @@ class BhavcopyMarketResolver:
             current = current - timedelta(days=1)
         return tuple(days)
 
+    def _nse_candidate_dates(self, start: date) -> Tuple[date, ...]:
+        days = []
+        current = start
+        for _ in range(self.nse_lookback_days):
+            days.append(current)
+            current = current - timedelta(days=1)
+        return tuple(days)
+
     def _load_bse(self, day: date) -> Dict[str, BSEBhavRecord]:
         if day in self._bse_cache:
             return self._bse_cache[day]
@@ -100,8 +112,12 @@ class BhavcopyMarketResolver:
     def _lookup_market_cap(self, isin: Optional[str], day: date) -> Optional[float]:
         if not isin:
             return None
-        mapping = self._load_nse(day)
-        return mapping.get(isin)
+        for candidate in self._nse_candidate_dates(day):
+            mapping = self._load_nse(candidate)
+            value = mapping.get(isin)
+            if value is not None:
+                return value
+        return None
 
 
 __all__ = ["BhavcopyMarketResolver"]

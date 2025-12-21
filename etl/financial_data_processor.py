@@ -12,19 +12,25 @@ import tempfile
 from datetime import datetime
 from pathlib import Path
 from io import BytesIO
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
-import camelot
 import warnings
+import camelot
 import requests
+from cryptography.utils import CryptographyDeprecationWarning
 from pdfminer.high_level import extract_text
+from lxml import etree
 
 from etl.minio_client import BSEPDFStorage
 from database.database_manager import BSEDatabaseManager
 
 warnings.filterwarnings("ignore", message="Cannot set non-stroke color.*")
+warnings.filterwarnings(
+    "ignore",
+    message="ARC4 has been moved to cryptography.hazmat.decrepit.ciphers.algorithms.ARC4",
+    category=CryptographyDeprecationWarning,
+)
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 logging.getLogger("pdfminer").setLevel(logging.ERROR)
 logging.getLogger("pdfminer.image").setLevel(logging.ERROR)
@@ -33,6 +39,50 @@ logging.getLogger("pdfminer.image").setLevel(logging.ERROR)
 # noinspection PyTypeChecker
 class FinancialDataProcessor:
     """Realistic processor for BSE financial announcements"""
+
+    STRUCTURED_EXTENSIONS = {".xbrl", ".xml", ".json"}
+    STRUCTURED_ALIASES = {
+        'revenue': [
+            'revenuefromoperations',
+            'totalrevenue',
+            'totalincome',
+            'grossincome',
+        ],
+        'total_debt': [
+            'borrowings',
+            'totalloans',
+            'securedloans',
+            'unsecuredloans',
+            'financialliabilities',
+        ],
+        'cash_equiv': [
+            'cashandcashequivalents',
+            'cashandbankbalances',
+            'bankbalances',
+        ],
+        'interest_income': [
+            'interestincome',
+            'financeincome',
+        ],
+        'dividend_income': [
+            'dividendincome',
+        ],
+        'accounts_receivable': [
+            'tradereceivables',
+            'receivablescurrent',
+            'accountsreceivable',
+            'sundrydebtors',
+        ],
+        'liquid_assets': [
+            'currentassets',
+            'netcurrentassets',
+        ],
+        'non_halal_income': [
+            'nonpermissibleincome',
+            'impermissibleincome',
+            'haramincome',
+        ],
+    }
 
     def __init__(
         self,
@@ -45,7 +95,7 @@ class FinancialDataProcessor:
         self.download_dir.mkdir(exist_ok=True)
         self.cache_dir.mkdir(exist_ok=True)
         self.db = db_manager or BSEDatabaseManager()
-        self.metric_cache_version = "v3"
+        self.metric_cache_version = "v4"
 
         self.session = requests.Session()
         self.session.headers.update({
@@ -142,7 +192,25 @@ class FinancialDataProcessor:
             ],
             'dividend_income': [
                 'dividend income'
-            ]
+            ],
+            'accounts_receivable': [
+                'trade receivables',
+                'accounts receivable',
+                'sundry debtors',
+                'bills receivable'
+            ],
+            'liquid_assets': [
+                'liquid assets',
+                'current assets',
+                'net current assets',
+                'cash and bank balances'
+            ],
+            'non_halal_income': [
+                'non permissible income',
+                'non-permissible income',
+                'impermissible income',
+                'haram income'
+            ],
         }
 
         # Add MinIO storage
@@ -194,7 +262,9 @@ class FinancialDataProcessor:
                     'confidence': self._determine_confidence(category, subject),
                     'extracted_data': None,
                     'pdf_url': None,
-                    'processing_status': 'pending'
+                    'processing_status': 'pending',
+                    'pdf_stored': False,
+                    'minio_path': None,
                 }
 
                 # Try to extract financial data
@@ -203,33 +273,49 @@ class FinancialDataProcessor:
                     is_absolute = attachment_str.lower().startswith('http')
                     pdf_url = attachment_str if is_absolute else f"{self.bse_attachment_live}/{attachment_str}"
                     processed_data['pdf_url'] = pdf_url
+                    attachment_ext = Path(attachment_str.lower()).suffix
+                    structured_metrics = {}
+                    if attachment_ext in self.STRUCTURED_EXTENSIONS:
+                        structured_metrics = self._extract_structured_data(pdf_url, scale_hint=scale_hint)
+                        if structured_metrics:
+                            self.stats['xbrl_found'] += 1
+                            logger.info("Structured data extracted for %s (%s)", company, symbol)
 
-                    # Download and store PDF in MinIO
-                    minio_path = self.pdf_storage.download_and_store_pdf(pdf_url, symbol, date)
-                    if (not is_absolute and isinstance(minio_path, str) and
-                            minio_path.lower() == "pdf moved"):
-                        pdf_url = f"{self.bse_attachment_moved}/{attachment_str}"
+                    numeric_metrics = {}
+                    if attachment_ext not in self.STRUCTURED_EXTENSIONS:
+                        # Download and store PDF in MinIO
                         minio_path = self.pdf_storage.download_and_store_pdf(pdf_url, symbol, date)
+                        if (not is_absolute and isinstance(minio_path, str) and
+                                minio_path.lower() == "pdf moved"):
+                            pdf_url = f"{self.bse_attachment_moved}/{attachment_str}"
+                            minio_path = self.pdf_storage.download_and_store_pdf(pdf_url, symbol, date)
 
-                    if minio_path:
-                        processed_data['pdf_stored'] = True
-                        logger.info(f"PDF stored in MinIO: {company} ({symbol})")
-                    else:
-                        processed_data['pdf_stored'] = False
-                        logger.warning(f"Failed to store PDF: {company} ({symbol})")
+                        if minio_path:
+                            processed_data['pdf_stored'] = True
+                            logger.info(f"PDF stored in MinIO: {company} ({symbol})")
+                        else:
+                            processed_data['pdf_stored'] = False
+                            logger.warning(f"Failed to store PDF: {company} ({symbol})")
 
-                    processed_data['minio_path'] = minio_path
-                    if processed_data['date']:
-                        self.updated_pdf_status(
-                            symbol, processed_data['date'], processed_data['minio_path'], processed_data['pdf_stored']
-                        )
+                        processed_data['minio_path'] = minio_path
+                        if processed_data['date']:
+                            self.updated_pdf_status(
+                                symbol, processed_data['date'], processed_data['minio_path'], processed_data['pdf_stored']
+                            )
 
                     # Extract basic financial information from announcement text/PDF
                     extracted_info = self._extract_financial_info_from_text(announcement) or {}
-                    numeric_metrics = self._get_or_extract_pdf_metrics(
-                        processed_data, scale_hint=scale_hint
-                    )
-                    combined_data = {**extracted_info, **numeric_metrics} if numeric_metrics else extracted_info
+                    if attachment_ext not in self.STRUCTURED_EXTENSIONS:
+                        numeric_metrics = self._get_or_extract_pdf_metrics(
+                            processed_data, scale_hint=scale_hint
+                        )
+                    combined_data: Dict[str, float] = {}
+                    if extracted_info:
+                        combined_data.update(extracted_info)
+                    if numeric_metrics:
+                        combined_data.update(numeric_metrics)
+                    if structured_metrics:
+                        combined_data.update(structured_metrics)
 
                     if combined_data:
                         processed_data['extracted_data'] = combined_data
@@ -249,6 +335,7 @@ class FinancialDataProcessor:
         logger.info(f"  Financial announcements: {self.stats['financial_announcements']}")
         logger.info(f"  Successful extractions: {self.stats['extraction_successful']}")
         logger.info(f"  Failed extractions: {self.stats['extraction_failed']}")
+        logger.info(f"  Structured (XBRL/JSON) hits: {self.stats['xbrl_found']}")
 
         return finance_data
 
@@ -487,11 +574,18 @@ class FinancialDataProcessor:
                 text = ""
             text_scale = self._detect_scale(text)
             effective_hint = max(scale_hint, text_scale)
+            governance_note = self._extract_governance_notes(text)
+            non_halal_from_text = self._extract_non_halal_from_text(text)
 
             tables = self._read_pdf_tables(temp_path)
             if not tables:
                 logger.info(f"No readable tables detected in {minio_path}")
-                return {}
+                metrics = {}
+                if governance_note:
+                    metrics["governance_notes"] = governance_note
+                if non_halal_from_text is not None:
+                    metrics["non_halal_income"] = non_halal_from_text
+                return metrics
 
             metrics = {}
 
@@ -512,6 +606,14 @@ class FinancialDataProcessor:
                 if len(metrics) == len(self.metric_patterns):
                     break
 
+            if governance_note:
+                metrics.setdefault("governance_notes", governance_note)
+            if (
+                non_halal_from_text is not None
+                and not metrics.get("non_halal_income")
+            ):
+                metrics["non_halal_income"] = non_halal_from_text
+
             self._store_cached_metrics(cache_key, metrics)
             return metrics
 
@@ -521,6 +623,34 @@ class FinancialDataProcessor:
         finally:
             if temp_path and os.path.exists(temp_path):
                 os.remove(temp_path)
+
+    def _extract_structured_data(
+        self, attachment_url: str, scale_hint: float = 1.0
+    ) -> Dict[str, float]:
+        """Fetch and parse structured (XBRL/JSON) attachments."""
+
+        if not attachment_url:
+            return {}
+
+        normalized_url = attachment_url.lower()
+        if not any(normalized_url.endswith(ext) for ext in self.STRUCTURED_EXTENSIONS):
+            return {}
+
+        try:
+            response = self.session.get(attachment_url, timeout=30)
+            response.raise_for_status()
+        except Exception as exc:
+            logger.warning("Structured attachment download failed (%s): %s", attachment_url, exc)
+            return {}
+
+        try:
+            if normalized_url.endswith(".json"):
+                payload = response.json()
+                return self._parse_structured_json(payload, scale_hint)
+            return self._parse_xbrl(response.content, scale_hint)
+        except Exception as exc:
+            logger.warning("Structured attachment parse failed (%s): %s", attachment_url, exc)
+            return {}
 
     def _parse_table_for_metrics(
         self, dataframe, existing_metrics: Dict[str, float], scale_hint: float = 1.0
@@ -602,7 +732,175 @@ class FinancialDataProcessor:
             return 1_000_000
         if 'lakh' in text or 'lac' in text:
             return 100_000
+        if 'thousand' in text or 'k ' in text:
+            return 1_000
         return 1.0
+
+    @staticmethod
+    def _scale_from_unit(unit: str) -> float:
+        key = (unit or "").strip().lower()
+        mapping = {
+            "crore": 10_000_000,
+            "cr": 10_000_000,
+            "million": 1_000_000,
+            "mn": 1_000_000,
+            "billion": 1_000_000_000,
+            "bn": 1_000_000_000,
+            "lakh": 100_000,
+            "lac": 100_000,
+            "thousand": 1_000,
+            "k": 1_000,
+        }
+        return mapping.get(key, 1.0)
+
+    @classmethod
+    def _extract_non_halal_from_text(cls, text: str) -> Optional[float]:
+        if not text:
+            return None
+        pattern = re.compile(
+            r"(non[\s-]?permissible income|impermissible income|haram income|prohibited income|interest income)"
+            r"(?:(?:fy\s*\d{2,4})|(?:q\d+\s*fy\s*\d{2,4})|[^\d])*?"
+            r"(?:inr|rs\.?|₹)?\s*([\d,]+(?:\.\d+)?)\s*(crore|cr|million|mn|billion|bn|lakh|lac|thousand|k)?",
+            re.IGNORECASE,
+        )
+        matches = list(pattern.finditer(text))
+        if not matches:
+            return None
+        selected = None
+        for match in matches:
+            snippet = match.group(0).lower()
+            if "inr" in snippet or "rs" in snippet or "₹" in snippet:
+                selected = match
+                break
+        if selected is None:
+            selected = matches[-1]
+        raw_value = selected.group(2).replace(",", "")
+        try:
+            value = float(raw_value)
+        except ValueError:
+            return None
+        unit = selected.group(3) or ""
+        scale = cls._scale_from_unit(unit)
+        if scale > 1:
+            return value * scale
+        surrounding = selected.group(0)
+        inferred_scale = cls._detect_scale(surrounding)
+        return value * max(1.0, inferred_scale)
+
+    @staticmethod
+    def _extract_governance_notes(text: str) -> Optional[str]:
+        if not text:
+            return None
+        keywords = [
+            "non permissible",
+            "non-permissible",
+            "impermissible",
+            "haram",
+            "shariah",
+            "cleansing",
+            "charity",
+            "donate",
+            "prohibited income",
+        ]
+        sentences = re.split(r"(?<=[\.\?\!])\s+", text)
+        priority = {"non permissible", "non-permissible", "impermissible", "haram"}
+        for sentence in sentences:
+            normalized = sentence.lower()
+            if any(word in normalized for word in priority):
+                snippet = " ".join(sentence.split())
+                return snippet[:320]
+        for sentence in sentences:
+            normalized = sentence.lower()
+            if any(keyword in normalized for keyword in keywords):
+                snippet = " ".join(sentence.split())
+                return snippet[:320]
+        return None
+
+    @classmethod
+    def _parse_xbrl(cls, payload: bytes, scale_hint: float = 1.0) -> Dict[str, float]:
+        metrics: Dict[str, float] = {}
+        if not payload:
+            return metrics
+        try:
+            root = etree.fromstring(payload)
+        except Exception as exc:
+            logger.warning("Invalid XBRL payload: %s", exc)
+            return metrics
+
+        for element in root.iter():
+            try:
+                tag = etree.QName(element).localname
+            except Exception:
+                tag = element.tag
+            normalized = cls._normalize_tag(tag)
+            metric = cls._match_structured_metric(normalized)
+            if not metric or metric in metrics:
+                continue
+            numeric = cls._coerce_numeric(element.text)
+            if numeric is None:
+                continue
+            metrics[metric] = cls._apply_structured_scale(numeric, scale_hint)
+        return metrics
+
+    @classmethod
+    def _parse_structured_json(cls, payload, scale_hint: float = 1.0) -> Dict[str, float]:
+        metrics: Dict[str, float] = {}
+
+        def walk(node, prefix: str = ""):
+            if isinstance(node, dict):
+                for key, value in node.items():
+                    combined = f"{prefix}_{key}" if prefix else str(key)
+                    if isinstance(value, (dict, list)):
+                        walk(value, combined)
+                    else:
+                        normalized = cls._normalize_tag(combined)
+                        metric = cls._match_structured_metric(normalized)
+                        if not metric or metric in metrics:
+                            continue
+                        numeric = cls._coerce_numeric(value)
+                        if numeric is None:
+                            continue
+                        metrics[metric] = cls._apply_structured_scale(numeric, scale_hint)
+            elif isinstance(node, list):
+                for item in node:
+                    walk(item, prefix)
+
+        walk(payload)
+        return metrics
+
+    @staticmethod
+    def _normalize_tag(name: str) -> str:
+        return re.sub(r"[^a-z0-9]", "", (name or "").lower())
+
+    @classmethod
+    def _match_structured_metric(cls, normalized_tag: str) -> Optional[str]:
+        if not normalized_tag:
+            return None
+        for metric, aliases in cls.STRUCTURED_ALIASES.items():
+            if any(alias in normalized_tag for alias in aliases):
+                return metric
+        return None
+
+    @staticmethod
+    def _coerce_numeric(value: Any) -> Optional[float]:
+        if value is None:
+            return None
+        if isinstance(value, (int, float)):
+            return float(value)
+        text = str(value).strip()
+        if not text:
+            return None
+        normalized = text.replace(",", "")
+        try:
+            return float(normalized)
+        except ValueError:
+            return None
+
+    @staticmethod
+    def _apply_structured_scale(value: float, scale_hint: float) -> float:
+        if scale_hint and scale_hint > 1.0:
+            return value * scale_hint
+        return value
 
     def save_financial_data(self, finance_data: List[Dict]) -> Path:
         """Save extracted financial data to JSON file"""

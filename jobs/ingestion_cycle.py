@@ -11,6 +11,7 @@ from typing import Optional, Tuple
 
 from jobs.ingest_bhavcopy import run_bhavcopy
 from jobs.ingest_bse import run_ingestion
+from config.logging_config import configure_logging
 
 logger = logging.getLogger("ingestion_cycle")
 
@@ -103,10 +104,7 @@ def run_cycle(
 
 def main() -> None:
     args = parse_args()
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
-    )
+    configure_logging("ingestion_cycle")
     run_cycle(
         from_date=args.from_date,
         to_date=args.to_date,

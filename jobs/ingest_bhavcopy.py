@@ -11,6 +11,7 @@ from typing import Iterator, Optional
 
 from database import BSEDatabaseManager
 from market_data import BhavcopyClient, BhavcopyError
+from config.logging_config import configure_logging
 
 logger = logging.getLogger("bhavcopy_ingestion")
 
@@ -101,10 +102,7 @@ def run_bhavcopy(
 
 def main() -> None:
     args = parse_args()
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
-    )
+    configure_logging("bhavcopy")
     run_bhavcopy(
         args.from_date,
         args.to_date,
