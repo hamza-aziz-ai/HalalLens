@@ -31,6 +31,9 @@ export type HalalScoreResponse = {
   is_compliant: boolean;
   ratios: Record<string, RatioComputation>;
   missing_inputs: Record<string, string>;
+  market_cap_used?: Numeric;
+  trailing_cap_used?: Numeric;
+  market_data_provider?: string | null;
 };
 
 export type NarrationResponse = {

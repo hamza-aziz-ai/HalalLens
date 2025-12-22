@@ -301,6 +301,66 @@ class BSEDatabaseManager:
                     return None
                 return row["market_cap"], row["share_price"], row.get("provider")
 
+    def upsert_bhavcopy_quote(
+        self,
+        *,
+        symbol: str,
+        trade_date: date,
+        share_price: Optional[float],
+        market_cap: Optional[float],
+        provider: str = "bhavcopy",
+    ) -> None:
+        """Persist Bhavcopy-derived quote data for reuse."""
+
+        if share_price is None and market_cap is None:
+            return
+
+        with self.get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    INSERT INTO bhavcopy_quotes (
+                        symbol, trade_date, share_price, market_cap, provider
+                    )
+                    VALUES (%(symbol)s, %(trade_date)s, %(share_price)s, %(market_cap)s, %(provider)s)
+                    ON CONFLICT (symbol, trade_date)
+                    DO UPDATE SET
+                        share_price = COALESCE(EXCLUDED.share_price, bhavcopy_quotes.share_price),
+                        market_cap = COALESCE(EXCLUDED.market_cap, bhavcopy_quotes.market_cap),
+                        provider = EXCLUDED.provider,
+                        created_at = NOW()
+                    """,
+                    {
+                        "symbol": symbol,
+                        "trade_date": trade_date,
+                        "share_price": share_price,
+                        "market_cap": market_cap,
+                        "provider": provider,
+                    },
+                )
+                conn.commit()
+
+    def get_bhavcopy_quote(
+        self, symbol: str, trade_date: date
+    ) -> Optional[Tuple[Optional[float], Optional[float], Optional[str]]]:
+        """Return a cached Bhavcopy quote for a specific trade date."""
+
+        with self.get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT share_price, market_cap, provider
+                      FROM bhavcopy_quotes
+                     WHERE symbol = %(symbol)s
+                       AND trade_date = %(trade_date)s
+                    """,
+                    {"symbol": symbol, "trade_date": trade_date},
+                )
+                row = cursor.fetchone()
+                if not row:
+                    return None
+                return row["market_cap"], row["share_price"], row.get("provider")
+
     def upsert_filing_evaluation(
         self,
         *,
@@ -409,21 +469,41 @@ class BSEDatabaseManager:
                 )
                 conn.commit()
 
-    def resolve_quality_issues(self, symbol: str, filing_date: datetime) -> None:
+    def resolve_quality_issues(
+        self,
+        symbol: str,
+        filing_date: datetime,
+        issue_types: Optional[List[str]] = None,
+    ) -> None:
         """Mark open data-quality issues as resolved."""
 
         with self.get_connection() as conn:
             with conn.cursor() as cursor:
-                cursor.execute(
-                    """
-                    UPDATE data_quality_issues
-                       SET resolved_at = NOW()
-                     WHERE symbol = %(symbol)s
-                       AND filing_date = %(filing_date)s
-                       AND resolved_at IS NULL
-                    """,
-                    {"symbol": symbol, "filing_date": filing_date},
-                )
+                params = {"symbol": symbol, "filing_date": filing_date}
+                if issue_types:
+                    params["issue_types"] = issue_types
+                    cursor.execute(
+                        """
+                        UPDATE data_quality_issues
+                           SET resolved_at = NOW()
+                         WHERE symbol = %(symbol)s
+                           AND filing_date = %(filing_date)s
+                           AND resolved_at IS NULL
+                           AND issue_type = ANY(%(issue_types)s)
+                        """,
+                        params,
+                    )
+                else:
+                    cursor.execute(
+                        """
+                        UPDATE data_quality_issues
+                           SET resolved_at = NOW()
+                         WHERE symbol = %(symbol)s
+                           AND filing_date = %(filing_date)s
+                           AND resolved_at IS NULL
+                        """,
+                        params,
+                    )
                 conn.commit()
 
     def get_quality_issues(self, symbol: str, filing_date: datetime) -> List[str]:

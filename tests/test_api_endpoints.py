@@ -135,13 +135,29 @@ class FeedbackDBStub:
     def insert_market_snapshot(self, symbol, market_cap, share_price, provider="yahoo"):
         return None
 
-    def resolve_quality_issues(self, symbol, filing_date):
+    def get_bhavcopy_quote(self, symbol, trade_date):
+        return None
+
+    def upsert_bhavcopy_quote(
+        self, *, symbol, trade_date, share_price, market_cap, provider="bhavcopy"
+    ):
+        return None
+
+    def resolve_quality_issues(self, symbol, filing_date, issue_types=None):
         return []
 
     def record_quality_issue(self, symbol, filing_date, issue_type, details):
         return None
 
     def upsert_filing_evaluation(self, **kwargs):
+        return None
+
+    def get_bhavcopy_quote(self, symbol, trade_date):
+        return None
+
+    def upsert_bhavcopy_quote(
+        self, *, symbol, trade_date, share_price, market_cap, provider="bhavcopy"
+    ):
         return None
 
     def list_feedback_reports(self, status=None, limit=50):
@@ -226,6 +242,14 @@ class GovernanceOverrideDBStub:
         self.rows = [r for r in self.rows if not (r["symbol"] == symbol and r["filing_date"] == filing_date)]
         return len(self.rows) < before
 
+    def get_bhavcopy_quote(self, symbol, trade_date):
+        return None
+
+    def upsert_bhavcopy_quote(
+        self, *, symbol, trade_date, share_price, market_cap, provider="bhavcopy"
+    ):
+        return None
+
 
 class HistoryDBStub:
     def __init__(self):
@@ -256,11 +280,14 @@ class HistoryDBStub:
         self.last_history_limit = limit
         return self.history[:limit]
 
-    def resolve_quality_issues(self, symbol, filing_date):
+    def resolve_quality_issues(self, symbol, filing_date, issue_types=None):
         return 0
 
     def upsert_filing_evaluation(self, **kwargs):
         return None
+
+    def get_symbol_metadata(self, identifier):
+        return {"symbol": "TCS", "symbol_alias": "TCS"} if identifier == "TCS" else None
 
 
 def test_feedback_queue_endpoints(monkeypatch):
@@ -276,6 +303,37 @@ def test_feedback_queue_endpoints(monkeypatch):
     assert updated.status == "resolved"
     assert updated.review_notes == "fixed"
     assert updated.reevaluation_notes is not None
+
+
+def test_resolve_bse_code_uses_indian_api(monkeypatch):
+    monkeypatch.setattr(api_module, "indian_api_enabled", lambda: True)
+
+    class DummySnapshot:
+        def __init__(self):
+            self.symbol = "TCS"
+            self.market_cap = None
+            self.share_price = None
+            self.shares_outstanding = None
+            self.end_date = None
+            self.metrics = {}
+            self.bse_code = "532540"
+            self.nse_code = "TCS"
+
+    monkeypatch.setattr(
+        api_module,
+        "fetch_indian_financial_snapshot",
+        lambda symbol, target_date=None: DummySnapshot(),
+    )
+    class NoopDB:
+        def get_symbol_metadata(self, identifier):
+            return None
+
+    monkeypatch.setattr(api_module, "DB_MANAGER", NoopDB())
+    api_module.SYMBOL_METADATA_CACHE.clear()
+
+    code = api_module._resolve_bse_script_code("TCS")
+    assert code == "532540"
+    assert api_module.SYMBOL_METADATA_CACHE["TCS"]["symbol"] == "532540"
 
 
 def test_feedback_public_status(monkeypatch):
@@ -327,7 +385,7 @@ def test_filing_detail_respects_governance_overrides(monkeypatch):
         def upsert_filing_evaluation(self, **kwargs):
             return None
 
-        def resolve_quality_issues(self, symbol, filing_date):
+        def resolve_quality_issues(self, symbol, filing_date, issue_types=None):
             return []
 
         def record_quality_issue(self, symbol, filing_date, issue_type, details):
@@ -344,6 +402,14 @@ def test_filing_detail_respects_governance_overrides(monkeypatch):
 
         def get_symbol_code(self, symbol):
             return "ABC"
+
+        def get_bhavcopy_quote(self, symbol, trade_date):
+            return None
+
+        def upsert_bhavcopy_quote(
+            self, *, symbol, trade_date, share_price, market_cap, provider="bhavcopy"
+        ):
+            return None
 
     db = OverrideDB()
     monkeypatch.setattr(api_module, "DB_MANAGER", db)

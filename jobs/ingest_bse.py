@@ -15,8 +15,11 @@ from collections import defaultdict
 from crawler import BSEAnnouncementsFetcher
 from database import BSEDatabaseManager
 from etl import FinancialDataProcessor
-from market_data import fetch_yahoo_quote, fetch_tiingo_quote, BhavcopyMarketResolver
-from market_data.tickers import build_ticker_candidates, build_tiingo_tickers
+from market_data import (
+    BhavcopyMarketResolver,
+    fetch_indian_financial_snapshot,
+    indian_api_enabled,
+)
 from ratio_engine import FinancialSnapshotInput, MarketDataInput, RatioEngine
 from config.logging_config import configure_logging as setup_file_logging
 
@@ -165,6 +168,75 @@ def _snapshot_from_record(
     return snapshot
 
 
+def _normalize_candidate(value: Optional[str]) -> Optional[str]:
+    if not value:
+        return None
+    token = value.strip().upper()
+    if not token:
+        return None
+    for suffix in (".BO", ".NS"):
+        if token.endswith(suffix):
+            token = token[: -len(suffix)]
+    return token or None
+
+
+def _indian_api_candidates(symbol: str, db: BSEDatabaseManager) -> List[str]:
+    alias = db.get_symbol_alias(symbol)
+    code = db.get_symbol_code(symbol)
+    candidates: List[str] = []
+    for candidate in (symbol, alias, code):
+        cleaned = _normalize_candidate(candidate)
+        if cleaned and cleaned not in candidates:
+            candidates.append(cleaned)
+    return candidates or ([symbol.strip().upper()] if symbol.strip() else [])
+
+
+def _enrich_snapshot_with_indian_api(
+    snapshot: FinancialSnapshotInput, db: BSEDatabaseManager
+) -> None:
+    if not indian_api_enabled():
+        return
+    fields = [
+        "total_debt",
+        "cash_equiv",
+        "revenue",
+        "interest_income",
+        "dividend_income",
+        "accounts_receivable",
+        "liquid_assets",
+        "non_permissible_income",
+        "non_halal_income",
+    ]
+    if all(getattr(snapshot, field, None) is not None for field in fields):
+        return
+
+    candidates = _indian_api_candidates(snapshot.symbol, db)
+    indian_snapshot = None
+    for candidate in candidates:
+        indian_snapshot = fetch_indian_financial_snapshot(
+            candidate, target_date=snapshot.filing_date
+        )
+        if indian_snapshot:
+            break
+    if not indian_snapshot:
+        return
+
+    metrics = indian_snapshot.metrics
+    for field in fields:
+        current = getattr(snapshot, field, None)
+        if current is not None:
+            continue
+        key = "non_halal_income" if field in (
+            "non_permissible_income",
+            "non_halal_income",
+        ) else field
+        value = metrics.get(key)
+        if value is not None:
+            setattr(snapshot, field, value)
+            if field == "non_permissible_income":
+                snapshot.non_halal_income = value
+
+
 def _clear_market_failure(symbol: str, filing_date: datetime, db: BSEDatabaseManager) -> None:
     if FAILED_MARKET_LOOKUPS.pop(symbol, None):
         try:
@@ -179,7 +251,7 @@ def _record_market_failure(symbol: str, filing_date: datetime, db: BSEDatabaseMa
     if count >= MARKET_FAILURE_THRESHOLD:
         details = (
             f"Market data unavailable after {count} attempts "
-            "(Tiingo, Yahoo Finance, Bhavcopy)."
+            "(Indian API and Bhavcopy)."
         )
         logger.warning("%s market data unavailable after %d attempts", symbol, count)
         try:
@@ -205,39 +277,27 @@ def _lookup_market_data(
         cap, price, provider = db_snapshot
         return cap, price, provider or "cache"
 
-    alias = db.get_symbol_alias(cache_key)
-    tiingo_tickers = build_tiingo_tickers(cache_key, alias)
-    for ticker in tiingo_tickers:
-        market_cap, share_price = fetch_tiingo_quote(ticker)
-        if market_cap is None and share_price is None:
-            continue
-        db.insert_market_snapshot(
-            symbol=cache_key,
-            market_cap=market_cap,
-            share_price=share_price,
-            provider="tiingo",
-        )
-        MARKET_CACHE[cache_key] = (market_cap, share_price, "tiingo")
-        _clear_market_failure(cache_key, as_of, db)
-        return market_cap, share_price, "tiingo"
+    if indian_api_enabled():
+        for candidate in _indian_api_candidates(cache_key, db):
+            snapshot = fetch_indian_financial_snapshot(candidate, target_date=as_of)
+            if not snapshot:
+                continue
+            if snapshot.market_cap is None and snapshot.share_price is None:
+                continue
+            db.insert_market_snapshot(
+                symbol=cache_key,
+                market_cap=snapshot.market_cap,
+                share_price=snapshot.share_price,
+                provider="indianapi",
+            )
+            MARKET_CACHE[cache_key] = (
+                snapshot.market_cap,
+                snapshot.share_price,
+                "indianapi",
+            )
+            _clear_market_failure(cache_key, as_of, db)
+            return snapshot.market_cap, snapshot.share_price, "indianapi"
 
-    tickers = build_ticker_candidates(cache_key, alias)
-
-    for ticker in tickers:
-        market_cap, share_price = fetch_yahoo_quote(
-            ticker, backoff_seconds=30, retries=3
-        )
-        if market_cap is None and share_price is None:
-            continue
-        db.insert_market_snapshot(
-            symbol=cache_key,
-            market_cap=market_cap,
-            share_price=share_price,
-            provider="yahoo",
-        )
-        MARKET_CACHE[cache_key] = (market_cap, share_price, "yahoo")
-        _clear_market_failure(cache_key, as_of, db)
-        return market_cap, share_price, "yahoo"
     fallback_cap, fallback_price = bhavcopy_resolver.resolve(symbol, as_of)
     if fallback_cap is not None or fallback_price is not None:
         if fallback_cap is None and fallback_price is not None:
@@ -305,6 +365,7 @@ def _evaluate_and_store(
         if not snapshot_input:
             continue
 
+        _enrich_snapshot_with_indian_api(snapshot_input, db)
         market_cap, share_price, provider = _lookup_market_data(
             snapshot_input.symbol,
             snapshot_input.filing_date,

@@ -32,7 +32,8 @@ services:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      TIINGO_API_TOKEN: ${TIINGO_API_TOKEN:?set in .env}
+      INDIAN_API_BASE_URL: ${INDIAN_API_BASE_URL:?set in .env}
+      INDIAN_API_KEY: ${INDIAN_API_KEY:?set in .env}
       MINIO_HOST: ${MINIO_HOST:-host.docker.internal}
       MINIO_PORT: ${MINIO_PORT:-9000}
       MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:?set in .env}
@@ -92,7 +93,8 @@ services:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      TIINGO_API_TOKEN: ${TIINGO_API_TOKEN:?set in .env}
+      INDIAN_API_BASE_URL: ${INDIAN_API_BASE_URL:?set in .env}
+      INDIAN_API_KEY: ${INDIAN_API_KEY:?set in .env}
       MINIO_HOST: ${MINIO_HOST:-host.docker.internal}
       MINIO_PORT: ${MINIO_PORT:-9000}
       MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:?set in .env}

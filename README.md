@@ -94,7 +94,7 @@ pipenv run uvicorn api.app:app --reload --port 8000
 - `POST /narrate` - generate explain-why text from the same request
 - `GET /filings/{symbol}` - fetch the latest stored filing + computed ratios for a symbol
 - `GET /filings/recent` - list the newest filings with AAOIFI verdict snapshots
-- `GET /market-data/{symbol}` - proxy/caches Yahoo Finance market caps & share prices
+- `GET /market-data/{symbol}` - proxy/caches Indian Stock API market caps & share prices (with Bhavcopy fallback)
 - `POST /watchlist` / `GET /watchlist/{user}` - manage compliance-watch entries
 - `POST /alerts/check` - run compliance-flip alert evaluation
 - `POST /feedback` - capture user-reported issues with filings/verdicts
@@ -140,13 +140,14 @@ All reviewer actions are stored in the `feedback_reports` table (columns added i
 
 The repository ships Dockerfiles for both the FastAPI backend and the Next.js dashboard plus a `docker-compose.yml` that stands up PostgreSQL, API, and UI together.
 
-1. Copy `.env` to the project root (or create one) with your existing PostgreSQL connection details plus the Tiingo token, e.g.:
+1. Copy `.env` to the project root (or create one) with your existing PostgreSQL connection details plus the Indian Stock Market API credentials, e.g.:
    ```env
    POSTGRES_HOST=host.docker.internal   # or the LAN IP of your DB server
    POSTGRES_DB=halallens
    POSTGRES_USER=halallens
    POSTGRES_PASSWORD=supersecret
-   TIINGO_API_TOKEN=your-tiingo-token
+    INDIAN_API_BASE_URL=https://api.indianstocks.local/v1   # provided by your vendor
+    INDIAN_API_KEY=supersecret-api-key
    NEXT_PUBLIC_HALAL_API_BASE_URL=http://api:8001
    ```
    If you run Docker on native Linux, `host.docker.internal` is provided via the `extra_hosts` entry in `docker-compose.yml`; you can also set `POSTGRES_HOST` to the IP/hostname of your Postgres instance explicitly.
@@ -165,7 +166,7 @@ The compose stack persists Postgres data in the `postgres_data` volume. Stop wit
 | Topic | Checklist |
 | ----- | --------- |
 | **Logs & retention** | All components respect `HALAL_LOG_ROOT` and follow `logs/<component>/<Year>/<Month>/<component>.log` rotation (daily rollovers, max 31 per folder). Compress/ship these to centralized storage (e.g., S3, Vector) and prune old months via `find logs -type f -mtime +90 -delete`. |
-| **Secrets** | Store DB credentials, SMTP keys, TIINGO tokens, and LLM tokens in `.env` or your orchestrator’s secret manager. Never bake them into Docker images. If rotating passwords, update `.env`, run the relevant migration (if schema changed), then restart containers (`docker compose up -d --no-deps api ingestion`). |
+| **Secrets** | Store DB credentials, SMTP keys, Indian API keys, and LLM tokens in `.env` or your orchestrator’s secret manager. Never bake them into Docker images. If rotating passwords, update `.env`, run the relevant migration (if schema changed), then restart containers (`docker compose up -d --no-deps api ingestion`). |
 | **Migrations** | Every schema change lands in `database/migrations/`. Apply them in chronological order: `psql -f database/migrations/<timestamp>.sql`. For Docker pilots, run the migration on the external Postgres first (from the host or a psql container) *before* redeploying. |
 | **Backfill jobs** | Use `pipenv run python -m jobs.backfill_evaluations --from-date YYYYMMDD --to-date YYYYMMDD` to recompute ratios for historical filings after logic tweaks. For bulk ingestion, schedule `jobs.schedule_ingestion` or run `jobs.ingest_bse` manually with `--save-cache`. Documented examples live in `README_ingestion.md`. |
 | **Cache dirs** | `cache/` stores raw announcements (JSON) and extracted financial data. `downloads/` holds temporary PDFs before uploading to MinIO. Clean them periodically (`rm -rf cache/* downloads/*`) once data lands in MinIO/Postgres. |

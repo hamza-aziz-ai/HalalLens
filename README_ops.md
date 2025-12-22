@@ -8,7 +8,7 @@ This guide captures day‑to‑day operations for running HalalLens in a pilot o
 | -------- | ------- |
 | `POSTGRES_*` | Database host, db name, user, password. Use external Postgres; Docker compose connects via `host.docker.internal`. |
 | `MINIO_*` | MinIO credentials if you override defaults from `jobs/ingest_bse.py`. |
-| `TIINGO_API_TOKEN` | Market-data provider token. |
+| `INDIAN_API_BASE_URL`, `INDIAN_API_KEY` | Indian Stock Market API endpoint + token for live market data/metrics. |
 | `OPS_*` | Ops alerting (SMTP + Slack). See README for full list. |
 | `HALAL_LOG_ROOT` | Where component logs live (default `./logs`). |
 | `LOG_LEVEL` | `DEBUG` / `INFO`. Set globally or per service. |
@@ -103,7 +103,7 @@ pipenv run python -m jobs.backfill_evaluations --from-date 20251009 --to-date 20
 ### Rotating secrets / credentials
 
 1. Store all sensitive values in your vault of choice (1Password, Vault, AWS SM, etc.). Never edit `.env` directly on production hosts.
-2. When a credential changes (Tiingo token, SMTP password, DB user):
+2. When a credential changes (Indian API key, SMTP password, DB user):
    - Update the vault and regenerate the `.env` from template (`cp .env.example .env && edit`).
    - Restart API/UI/scheduler containers so they pick up the new env values (`docker compose restart api ui ingestion`).
    - Confirm `GET /health` and the ingestion heartbeat update.
@@ -115,6 +115,6 @@ Keep this runbook alongside `README.md`; update both whenever operational requir
 
 - `GET /health` returns `{"status": "ok"}` – verifies FastAPI + DB connectivity.  
 - Scheduler heartbeat: check `/tmp/ingestion_heartbeat.txt` timestamp (or your custom path).  
-- Persistent Tiingo/Yahoo failures: inspect `logs/market_data/` and consider adjusting API rate limits or switching providers.  
+- Persistent Indian API failures: inspect `logs/market_data/` and consider adjusting API rate limits, refreshing the key, or falling back to Bhavcopy-only mode temporarily.  
 - LLM narration errors: confirm Ollama/vLLM endpoint reachable from containers (`curl http://host.docker.internal:11434/health`).  
 - Feedback queue empty but users reported issues: check `logs/api/.../api.log` for errors around `/feedback` endpoints.

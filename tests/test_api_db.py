@@ -27,6 +27,14 @@ class DummyDB:
     def insert_market_snapshot(self, symbol, market_cap, share_price, provider="yahoo"):
         return None
 
+    def get_bhavcopy_quote(self, symbol, trade_date):
+        return None
+
+    def upsert_bhavcopy_quote(
+        self, *, symbol, trade_date, share_price, market_cap, provider="bhavcopy"
+    ):
+        self.last_bhavcopy = (symbol, trade_date, share_price, market_cap, provider)
+
     def get_symbol_code(self, symbol: str):
         return "ABC"
 
@@ -39,7 +47,7 @@ class DummyDB:
     def upsert_filing_evaluation(self, **kwargs):
         return None
 
-    def resolve_quality_issues(self, symbol, filing_date):
+    def resolve_quality_issues(self, symbol, filing_date, issue_types=None):
         return None
 
     def record_quality_issue(self, symbol, filing_date, issue_type, details):

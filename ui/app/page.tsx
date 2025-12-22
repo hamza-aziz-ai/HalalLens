@@ -40,6 +40,7 @@ import {
   upsertGovernanceOverride,
   deleteGovernanceOverride,
 } from "@/lib/governance";
+import { getAutoProviderLabel } from "@/lib/providers";
 
 type SnapshotForm = {
   symbol: string;
@@ -102,12 +103,6 @@ const THEME_STORAGE_KEY = "halal-lens-theme";
 const HISTORY_DEFAULT_LIMIT = 12;
 const MANUAL_MARKET_MESSAGE =
   "Market data unavailable; please enter values manually.";
-const PROVIDER_LABELS: Record<string, string> = {
-  tiingo: "Tiingo",
-  yahoo: "Yahoo Finance",
-  bhavcopy: "BSE Bhavcopy",
-  cache: "Cached snapshot",
-};
 const CARD_CLASS = (theme: Theme) =>
   theme === "dark"
     ? "rounded-3xl border border-white/15 bg-gradient-to-br from-slate-900/90 via-slate-900/70 to-slate-950/80 shadow-2xl shadow-black/40 backdrop-blur"
@@ -367,6 +362,12 @@ export default function HomePage() {
     try {
       const data = await callAnalysis(payload);
       setResponse(data);
+      const providerLabel = getAutoProviderLabel(data.score.market_data_provider);
+      setMarketStatus(
+        providerLabel
+          ? `Auto-filled via ${providerLabel}`
+          : MANUAL_MARKET_MESSAGE,
+      );
       const alerts = await triggerAlertCheck({
         symbol: payload.snapshot.symbol,
         is_compliant: data.score.is_compliant,
@@ -427,7 +428,7 @@ export default function HomePage() {
                 : prev.market_data.share_price,
             },
           }));
-          const providerLabel = formatProviderLabel(quote.provider);
+          const providerLabel = getAutoProviderLabel(quote.provider);
           setMarketStatus(
             providerLabel
               ? `Auto-filled via ${providerLabel}`
@@ -1896,17 +1897,12 @@ function formatVerdict(verdict?: string | null) {
     .join(" ");
 }
 
-function formatProviderLabel(provider?: string | null) {
-  if (!provider) return "";
-  return PROVIDER_LABELS[provider] || provider.toUpperCase();
-}
-
 function applyMarketStatusForFiling(
   filing: Filing,
   setMarketStatus: (value: string | null) => void,
 ) {
   if (hasStoredMarketData(filing)) {
-    const label = formatProviderLabel(filing.market_data_provider);
+    const label = getAutoProviderLabel(filing.market_data_provider);
     setMarketStatus(
       label
         ? `Auto-filled via ${label}`
@@ -1975,7 +1971,7 @@ async function fetchAndApplyMarketData(
           : prev.market_data.share_price,
       },
     }));
-    const providerLabel = formatProviderLabel(quote.provider);
+    const providerLabel = getAutoProviderLabel(quote.provider);
     setStatus(
       providerLabel
         ? `Auto-filled via ${providerLabel}`
