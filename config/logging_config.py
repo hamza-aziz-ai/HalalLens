@@ -36,23 +36,34 @@ def configure_logging(
 
     log_root = Path(os.getenv("HALAL_LOG_ROOT", "logs"))
     now = datetime.now()
-    log_dir = (
-        log_root
-        / component
-        / now.strftime("%Y")
-        / now.strftime("%B")
-    )
+    log_dir = log_root / component / now.strftime("%Y") / now.strftime("%B")
     log_dir.mkdir(parents=True, exist_ok=True)
     log_file = log_dir / f"{component}.log"
-
-    file_handler = TimedRotatingFileHandler(
-        filename=log_file,
-        when="midnight",
-        interval=1,
-        backupCount=int(os.getenv("LOG_BACKUP_COUNT", "31")),
-        encoding="utf-8",
-        utc=False,
-    )
+    try:
+        file_handler = TimedRotatingFileHandler(
+            filename=log_file,
+            when="midnight",
+            interval=1,
+            backupCount=int(os.getenv("LOG_BACKUP_COUNT", "31")),
+            encoding="utf-8",
+            utc=False,
+        )
+    except PermissionError:
+        fallback_root = Path(os.getenv("HALAL_LOG_FALLBACK_ROOT", "logs_runtime"))
+        fallback_dir = fallback_root / component / now.strftime("%Y") / now.strftime("%B")
+        fallback_dir.mkdir(parents=True, exist_ok=True)
+        log_file = fallback_dir / f"{component}.log"
+        file_handler = TimedRotatingFileHandler(
+            filename=log_file,
+            when="midnight",
+            interval=1,
+            backupCount=int(os.getenv("LOG_BACKUP_COUNT", "31")),
+            encoding="utf-8",
+            utc=False,
+        )
+        logging.getLogger(component).warning(
+            "Log directory permission denied, using fallback %s", log_file
+        )
     file_handler.suffix = "%d-%m-%Y"
     file_handler.extMatch = re.compile(r"^\d{2}-\d{2}-\d{4}$")
 

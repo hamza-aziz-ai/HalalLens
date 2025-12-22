@@ -45,7 +45,8 @@ LLM_API_KEY = os.getenv("LLM_API_KEY")
 LLM_TEMPERATURE = _as_float(os.getenv("LLM_TEMPERATURE"), 0.0)
 LLM_MAX_TOKENS = _as_int(os.getenv("LLM_MAX_TOKENS"), 400)
 LLM_TIMEOUT = _as_float(os.getenv("LLM_TIMEOUT"), 30.0)
-TIINGO_API_TOKEN = os.getenv("TIINGO_API_TOKEN")
+INDIAN_API_BASE_URL = os.getenv("INDIAN_API_BASE_URL")
+INDIAN_API_KEY = os.getenv("INDIAN_API_KEY")
 TICKER_MAP_PATH = Path(__file__).resolve().parent / "ticker_map.json"
 TICKER_MAP: Dict[str, str] = {}
 if TICKER_MAP_PATH.exists():

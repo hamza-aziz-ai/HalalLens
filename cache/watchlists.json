@@ -1,14 +1,1 @@
-{
-  "demo-user:500325:compliance_flip": {
-    "user_id": "demo-user",
-    "symbol": "500325",
-    "trigger": "compliance_flip",
-    "last_is_compliant": false
-  },
-  "demo-user:532540:compliance_flip": {
-    "user_id": "demo-user",
-    "symbol": "532540",
-    "trigger": "compliance_flip",
-    "last_is_compliant": true
-  }
-}
+{}

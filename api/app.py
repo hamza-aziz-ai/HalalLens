@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Literal
@@ -45,10 +45,14 @@ from ratio_engine import (
     RatioEngine,
 )
 from database import BSEDatabaseManager
-from market_data import fetch_yahoo_quote, fetch_tiingo_quote, BhavcopyMarketResolver
-from market_data.tickers import build_ticker_candidates, build_tiingo_tickers
+from market_data import (
+    fetch_indian_financial_snapshot,
+    BhavcopyMarketResolver,
+    indian_api_enabled,
+)
 from crawler import BSEAnnouncementsFetcher
 from etl import FinancialDataProcessor
+from monitoring.notifier import OpsNotifier
 
 
 class FinancialSnapshotPayload(BaseModel):
@@ -105,6 +109,9 @@ class HalalScoreResponse(BaseModel):
     is_compliant: bool
     ratios: Dict[str, RatioComputationPayload]
     missing_inputs: Dict[str, str]
+    market_cap_used: Optional[float] = None
+    trailing_cap_used: Optional[float] = None
+    market_data_provider: Optional[str] = None
 
 
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
@@ -161,7 +168,6 @@ MARKET_CACHE: Dict[
 ] = {}
 CACHE_TTL_SECONDS = 300
 BACKOFF_SECONDS = 30
-bhavcopy_resolver = BhavcopyMarketResolver()
 REALTIME_LOOKBACK_DAYS = 30
 REALTIME_LOOKBACK_MULTIPLIER = 4
 _realtime_fetcher: Optional[BSEAnnouncementsFetcher] = None
@@ -169,12 +175,137 @@ _realtime_processor: Optional[FinancialDataProcessor] = None
 api_logger = logging.getLogger("api")
 FEEDBACK_STATUSES = {"open", "in_review", "resolved"}
 TRACKING_TOKEN_LENGTH = 18
+market_notifier = OpsNotifier(component="market_data")
+MARKET_FAILURES: Dict[str, int] = {}
+MARKET_FAILURE_ALERT_THRESHOLD = int(
+    os.getenv("MARKET_FAILURE_ALERT_THRESHOLD", "3")
+)
 
 
 def _get_db() -> BSEDatabaseManager:
     if DB_MANAGER is None:
         raise HTTPException(status_code=503, detail="Database unavailable")
     return DB_MANAGER
+
+
+def _load_cached_bhavcopy_quote(
+    symbol: str, trade_date: date
+) -> Optional[Tuple[Optional[float], Optional[float], Optional[str]]]:
+    try:
+        return _get_db().get_bhavcopy_quote(symbol, trade_date)
+    except Exception:  # pragma: no cover - defensive
+        return None
+
+
+def _persist_bhavcopy_quote(
+    symbol: str,
+    trade_date: date,
+    share_price: Optional[float],
+    market_cap: Optional[float],
+    provider: str = "bhavcopy",
+) -> None:
+    try:
+        _get_db().upsert_bhavcopy_quote(
+            symbol=symbol,
+            trade_date=trade_date,
+            share_price=share_price,
+            market_cap=market_cap,
+            provider=provider,
+        )
+    except Exception:  # pragma: no cover - defensive
+        api_logger.debug(
+            "Failed to persist Bhavcopy quote for %s@%s", symbol, trade_date
+        )
+
+
+def _record_market_issue(
+    symbol: str,
+    filing_date: Optional[datetime],
+    issue_type: str,
+    details: str,
+) -> None:
+    if filing_date is None:
+        return
+    try:
+        _get_db().record_quality_issue(symbol, filing_date, issue_type, details)
+    except Exception:
+        pass
+
+
+def _maybe_enrich_record_with_indian_api(record: Dict[str, Any]) -> None:
+    """Populate missing financial metrics using the Indian market API."""
+
+    if not indian_api_enabled():
+        return
+    symbol = record.get("symbol")
+    filing_date = record.get("filing_date")
+    if not symbol or not filing_date:
+        return
+
+    fields = [
+        "total_debt",
+        "cash_equiv",
+        "revenue",
+        "interest_income",
+        "dividend_income",
+        "non_halal_income",
+        "accounts_receivable",
+        "liquid_assets",
+    ]
+    missing_fields = [field for field in fields if record.get(field) is None]
+    needs_market_cap = record.get("market_cap_used") is None
+    if not missing_fields and not needs_market_cap:
+        return
+
+    snapshot = None
+    for candidate in _indian_api_candidates(symbol):
+        snapshot = fetch_indian_financial_snapshot(candidate, target_date=filing_date)
+        if snapshot:
+            break
+    if not snapshot:
+        return
+
+    notes = []
+    for field in missing_fields:
+        value = snapshot.metrics.get(field)
+        if value is not None:
+            record[field] = value
+            notes.append(field.replace("_", " "))
+    if notes:
+        message = f"Enriched via Indian API for {', '.join(notes)}."
+        existing = record.get("governance_notes")
+        record["governance_notes"] = (
+            f"{existing} {message}".strip() if existing else message
+        )
+
+    if needs_market_cap and snapshot.market_cap is not None:
+        record["market_cap_used"] = snapshot.market_cap
+        record["market_data_provider"] = "indianapi"
+
+
+def _reset_market_failure(symbol: str) -> None:
+    MARKET_FAILURES.pop(symbol, None)
+
+
+def _handle_market_failure(symbol: str, details: str) -> None:
+    threshold = MARKET_FAILURE_ALERT_THRESHOLD
+    if threshold <= 0:
+        return
+    count = MARKET_FAILURES.get(symbol, 0) + 1
+    if count >= threshold:
+        market_notifier.notify(
+            "ERROR",
+            f"Market data fetch repeatedly failing for {symbol}",
+            details=details,
+        )
+        MARKET_FAILURES[symbol] = 0
+    else:
+        MARKET_FAILURES[symbol] = count
+
+
+bhavcopy_resolver = BhavcopyMarketResolver(
+    cache_loader=_load_cached_bhavcopy_quote, cache_writer=_persist_bhavcopy_quote
+)
 
 
 def _get_realtime_fetcher() -> BSEAnnouncementsFetcher:
@@ -202,6 +333,13 @@ def _fetch_latest_filing_from_bse(symbol: str) -> Optional[Dict[str, Any]]:
     processor = _get_realtime_processor()
     today = datetime.utcnow().date()
     db = _get_db()
+    normalized = (symbol or "").strip().upper()
+    script_code = _resolve_bse_script_code(symbol)
+    target_codes: List[str] = []
+    if script_code:
+        target_codes.append(script_code)
+    if normalized and normalized not in target_codes:
+        target_codes.append(normalized)
 
     lookbacks = [
         REALTIME_LOOKBACK_DAYS,
@@ -211,35 +349,41 @@ def _fetch_latest_filing_from_bse(symbol: str) -> Optional[Dict[str, Any]]:
     for window in lookbacks:
         start = (today - timedelta(days=window)).strftime("%Y%m%d")
         end = today.strftime("%Y%m%d")
-        try:
-            announcements = fetcher.get_company_announcements(symbol, start, end)
-        except Exception as exc:  # pragma: no cover - network failures
-            api_logger.warning("Realtime BSE fetch failed for %s: %s", symbol, exc)
-            break
-
-        if not announcements:
-            continue
-
-        try:
-            db.insert_announcements(announcements)
-        except Exception as exc:  # pragma: no cover - logged upstream
-            api_logger.warning("Failed to persist realtime announcements for %s: %s", symbol, exc)
-
-        try:
-            snapshots = processor.process_announcements(announcements)
-        except Exception as exc:  # pragma: no cover - extraction failures
-            api_logger.warning("Realtime processing failed for %s: %s", symbol, exc)
-            snapshots = []
-
-        if snapshots:
+        for code in target_codes:
             try:
-                db.insert_financial_snapshots(snapshots)
-            except Exception as exc:  # pragma: no cover
-                api_logger.warning("Failed to store snapshots for %s: %s", symbol, exc)
+                announcements = fetcher.get_company_announcements(code, start, end)
+            except Exception as exc:  # pragma: no cover - network failures
+                api_logger.warning("Realtime BSE fetch failed for %s: %s", code, exc)
+                continue
 
-        record = db.get_latest_filing(symbol)
-        if record:
-            return record
+            if not announcements:
+                continue
+
+            try:
+                db.insert_announcements(announcements)
+            except Exception as exc:  # pragma: no cover - logged upstream
+                api_logger.warning(
+                    "Failed to persist realtime announcements for %s: %s", code, exc
+                )
+
+            try:
+                snapshots = processor.process_announcements(announcements)
+            except Exception as exc:  # pragma: no cover - extraction failures
+                api_logger.warning("Realtime processing failed for %s: %s", code, exc)
+                snapshots = []
+
+            if snapshots:
+                try:
+                    db.insert_financial_snapshots(snapshots)
+                except Exception as exc:  # pragma: no cover
+                    api_logger.warning("Failed to store snapshots for %s: %s", code, exc)
+
+            for key in target_codes:
+                record = db.get_latest_filing(key)
+                if record:
+                    if normalized and normalized != record.get("symbol"):
+                        record.setdefault("symbol_alias", normalized)
+                    return record
 
     return None
 
@@ -263,26 +407,76 @@ def _load_quality_issues(symbol: str, filing_date: datetime) -> List[str]:
         return []
 
 
-def _ticker_candidates(symbol: str) -> List[str]:
+def _normalize_candidate(value: Optional[str]) -> Optional[str]:
+    if not value:
+        return None
+    token = value.strip().upper()
+    if not token:
+        return None
+    for suffix in (".BO", ".NS"):
+        if token.endswith(suffix):
+            token = token[: -len(suffix)]
+    return token or None
+
+
+def _indian_api_candidates(symbol: str) -> List[str]:
     normalized = (symbol or "").strip().upper()
     metadata = _get_symbol_metadata_cached(normalized)
     alias = metadata.get("symbol_alias") if metadata else None
     primary = metadata.get("symbol") if metadata else normalized
-    additional = []
-    if normalized and normalized != primary:
-        additional.append(normalized)
-    return build_ticker_candidates(primary, alias, additional=additional)
+    candidates: List[str] = []
+    for candidate in (normalized, alias, primary):
+        cleaned = _normalize_candidate(candidate)
+        if cleaned and cleaned not in candidates:
+            candidates.append(cleaned)
+    return candidates or ([normalized] if normalized else [])
 
 
-def _tiingo_candidates(symbol: str) -> List[str]:
+def _prime_symbol_metadata(
+    identifier: Optional[str], symbol_code: Optional[str], alias: Optional[str]
+) -> None:
+    key = (identifier or "").strip().upper()
+    if not key or not symbol_code:
+        return
+    cached = SYMBOL_METADATA_CACHE.get(key, {})
+    SYMBOL_METADATA_CACHE[key] = {
+        "symbol": symbol_code,
+        "symbol_alias": alias or cached.get("symbol_alias"),
+    }
+
+
+def _resolve_bse_script_code(symbol: str) -> Optional[str]:
     normalized = (symbol or "").strip().upper()
+    if not normalized:
+        return None
+
     metadata = _get_symbol_metadata_cached(normalized)
-    alias = metadata.get("symbol_alias") if metadata else None
-    primary = metadata.get("symbol") if metadata else normalized
-    additional = []
-    if normalized and normalized != primary:
-        additional.append(normalized)
-    return build_tiingo_tickers(primary, alias, additional=additional)
+    if metadata:
+        for field in ("symbol", "symbol_alias"):
+            candidate = (metadata.get(field) or "").strip().upper()
+            if candidate.isdigit():
+                return candidate
+
+    if normalized.isdigit():
+        return normalized
+
+    if not indian_api_enabled():
+        return normalized
+
+    for candidate in _indian_api_candidates(normalized):
+        snapshot = fetch_indian_financial_snapshot(candidate)
+        if not snapshot or not snapshot.bse_code:
+            continue
+        code = snapshot.bse_code.strip()
+        if not code.isdigit():
+            continue
+        alias = snapshot.nse_code or candidate
+        _prime_symbol_metadata(candidate, code, alias)
+        if normalized != candidate:
+            _prime_symbol_metadata(normalized, code, alias)
+        return code
+
+    return normalized
 
 
 @app.get("/health")
@@ -462,29 +656,52 @@ def _fetch_and_cache_market_data(
     if cached and now - cached[0] < CACHE_TTL_SECONDS:
         return cached[1]
 
-    tiingo_candidates = _tiingo_candidates(symbol)
-    for ticker in tiingo_candidates:
-        market_cap, share_price = fetch_tiingo_quote(ticker)
-        if market_cap is None and share_price is None:
-            continue
-        _get_db().insert_market_snapshot(
-            symbol=key, market_cap=market_cap, share_price=share_price, provider="tiingo"
-        )
-        MARKET_CACHE[key] = (now, (market_cap, share_price, "tiingo"))
-        return market_cap, share_price, "tiingo"
+    attempt_details: List[str] = []
 
-    candidates = _ticker_candidates(symbol)
-    for ticker in candidates:
-        market_cap, share_price = fetch_yahoo_quote(
-            ticker, backoff_seconds=BACKOFF_SECONDS
+    primary_failed = True
+    if indian_api_enabled():
+        for candidate in _indian_api_candidates(symbol):
+            indian_snapshot = fetch_indian_financial_snapshot(
+                candidate, target_date=as_of
+            )
+            if not indian_snapshot:
+                continue
+            if (
+                indian_snapshot.market_cap is None
+                and indian_snapshot.share_price is None
+            ):
+                continue
+            _get_db().insert_market_snapshot(
+                symbol=key,
+                market_cap=indian_snapshot.market_cap,
+                share_price=indian_snapshot.share_price,
+                provider="indianapi",
+            )
+            MARKET_CACHE[key] = (
+                now,
+                (indian_snapshot.market_cap, indian_snapshot.share_price, "indianapi"),
+            )
+            primary_failed = False
+            _reset_market_failure(key)
+            return (
+                indian_snapshot.market_cap,
+                indian_snapshot.share_price,
+                "indianapi",
+            )
+        attempt_details.append(
+            "Indian API lookup unavailable or returned no data for configured candidates."
         )
-        if market_cap is None and share_price is None:
-            continue
-        _get_db().insert_market_snapshot(
-            symbol=key, market_cap=market_cap, share_price=share_price, provider="yahoo"
+    else:
+        attempt_details.append("Indian API integration disabled; skipping live quote.")
+
+    if as_of and primary_failed:
+        _record_market_issue(
+            key,
+            as_of,
+            "market_data_fetch_failed",
+            "Indian API quotes unavailable; attempting Bhavcopy fallback.",
         )
-        MARKET_CACHE[key] = (now, (market_cap, share_price, "yahoo"))
-        return market_cap, share_price, "yahoo"
+
     fallback_cap, fallback_price = bhavcopy_resolver.resolve(symbol, as_of)
     if fallback_cap is None and fallback_price is not None:
         cached_any = _get_db().get_cached_market_data(key)
@@ -494,6 +711,7 @@ def _fetch_and_cache_market_data(
                 "Using cached market cap for %s due to missing NSE data", key
             )
             fallback_cap = cached_cap
+
     if fallback_cap is not None:
         _get_db().insert_market_snapshot(
             symbol=key,
@@ -502,11 +720,40 @@ def _fetch_and_cache_market_data(
             provider="bhavcopy",
         )
         MARKET_CACHE[key] = (now, (fallback_cap, fallback_price, "bhavcopy"))
+        if primary_failed and as_of:
+            _record_market_issue(
+                key,
+                as_of,
+                "market_data_fetch_failed",
+                "Used Bhavcopy fallback due to upstream failure.",
+            )
+        _reset_market_failure(key)
         return fallback_cap, fallback_price, "bhavcopy"
+
     if fallback_price is not None:
         market_logger.warning(
             "Bhavcopy returned share price but no market cap for %s", key
         )
+        attempt_details.append("Bhavcopy returned share price but no market cap.")
+        if as_of:
+            _record_market_issue(
+                key,
+                as_of,
+                "market_cap_missing",
+                "Bhavcopy share price found but market cap unavailable",
+            )
+    else:
+        attempt_details.append("Bhavcopy returned no quote.")
+
+    if as_of:
+        _record_market_issue(
+            key,
+            as_of,
+            "market_data_unavailable",
+            "Indian API and Bhavcopy lookups all failed",
+        )
+    detail_text = "\n".join(attempt_details)
+    _handle_market_failure(key, detail_text or "No providers responded.")
     raise HTTPException(status_code=404, detail="Market data unavailable")
 
 
@@ -582,6 +829,9 @@ async def halal_score(payload: HalalScoreRequest) -> HalalScoreResponse:
         is_compliant=evaluation.is_compliant,
         ratios=ratios,
         missing_inputs=evaluation.missing_inputs,
+        market_cap_used=payload.market_data.market_cap,
+        trailing_cap_used=payload.market_data.trailing_market_cap,
+        market_data_provider="manual",
     )
 
 
@@ -716,6 +966,7 @@ def _detect_quality_issues(
 
 
 def _ensure_filing_evaluation(record: Dict[str, Any]) -> Optional[Dict[str, RatioComputationPayload]]:
+    _maybe_enrich_record_with_indian_api(record)
     ratios = _ratios_payload(record.get("ratios"))
     if ratios is not None:
         return ratios
@@ -761,7 +1012,9 @@ def _ensure_filing_evaluation(record: Dict[str, Any]) -> Optional[Dict[str, Rati
         summary = "Flagged for manual review due to anomalous ratios."
         record["is_compliant"] = None
     else:
-        db.resolve_quality_issues(snapshot.symbol, snapshot.filing_date)
+        db.resolve_quality_issues(
+            snapshot.symbol, snapshot.filing_date, issue_types=["ratio_anomaly"]
+        )
         quality_issues = _load_quality_issues(snapshot.symbol, snapshot.filing_date)
 
     db.upsert_filing_evaluation(
@@ -912,7 +1165,7 @@ async def filing_history(symbol: str, limit: int = 10) -> List[FilingResponse]:
 
 @app.get("/market-data/{symbol}", response_model=MarketQuoteResponse)
 async def market_data(symbol: str) -> MarketQuoteResponse:
-    """Fetch market cap/share price for a symbol via Yahoo Finance."""
+    """Fetch market cap/share price for a symbol via the Indian market API."""
 
     key = symbol.strip().upper()
     now = time.time()

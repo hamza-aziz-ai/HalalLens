@@ -5,12 +5,16 @@ from __future__ import annotations
 
 import logging
 from dataclasses import asdict
-from typing import Dict, Optional
+from datetime import datetime
+from typing import Dict, Optional, List, Tuple
 from collections import defaultdict
 
 from database import BSEDatabaseManager
-from market_data import fetch_yahoo_quote, fetch_tiingo_quote, BhavcopyMarketResolver
-from market_data.tickers import build_ticker_candidates, build_tiingo_tickers
+from market_data import (
+    BhavcopyMarketResolver,
+    fetch_indian_financial_snapshot,
+    indian_api_enabled,
+)
 from ratio_engine import FinancialSnapshotInput, MarketDataInput, RatioEngine
 from config.logging_config import configure_logging
 
@@ -19,6 +23,7 @@ engine = RatioEngine()
 bhavcopy_resolver = BhavcopyMarketResolver()
 FAILED_MARKET_LOOKUPS: Dict[str, int] = defaultdict(int)
 MARKET_FAILURE_THRESHOLD = 3
+MARKET_CACHE: Dict[str, Tuple[Optional[float], Optional[float], Optional[str]]] = {}
 
 
 def _coerce_float(value) -> Optional[float]:
@@ -51,9 +56,73 @@ def _snapshot_from_record(record: Dict) -> Optional[FinancialSnapshotInput]:
     )
 
 
-def _ticker_candidates(symbol: str, db: BSEDatabaseManager):
+def _normalize_candidate(value: Optional[str]) -> Optional[str]:
+    if not value:
+        return None
+    token = value.strip().upper()
+    if not token:
+        return None
+    for suffix in (".BO", ".NS"):
+        if token.endswith(suffix):
+            token = token[: -len(suffix)]
+    return token or None
+
+
+def _indian_api_candidates(symbol: str, db: BSEDatabaseManager) -> List[str]:
     alias = db.get_symbol_alias(symbol)
-    return build_ticker_candidates(symbol, alias)
+    code = db.get_symbol_code(symbol)
+    candidates: List[str] = []
+    for candidate in (symbol, alias, code):
+        cleaned = _normalize_candidate(candidate)
+        if cleaned and cleaned not in candidates:
+            candidates.append(cleaned)
+    return candidates or ([symbol.strip().upper()] if symbol.strip() else [])
+
+
+def _enrich_snapshot_with_indian_api(
+    snapshot: FinancialSnapshotInput, db: BSEDatabaseManager
+) -> None:
+    if not indian_api_enabled():
+        return
+    fields = [
+        "total_debt",
+        "cash_equiv",
+        "revenue",
+        "interest_income",
+        "dividend_income",
+        "accounts_receivable",
+        "liquid_assets",
+        "non_permissible_income",
+        "non_halal_income",
+    ]
+    if all(getattr(snapshot, field, None) is not None for field in fields):
+        return
+
+    candidates = _indian_api_candidates(snapshot.symbol, db)
+    indian_snapshot = None
+    for candidate in candidates:
+        indian_snapshot = fetch_indian_financial_snapshot(
+            candidate, target_date=snapshot.filing_date
+        )
+        if indian_snapshot:
+            break
+    if not indian_snapshot:
+        return
+
+    metrics = indian_snapshot.metrics
+    for field in fields:
+        current = getattr(snapshot, field, None)
+        if current is not None:
+            continue
+        key = "non_halal_income" if field in (
+            "non_permissible_income",
+            "non_halal_income",
+        ) else field
+        value = metrics.get(key)
+        if value is not None:
+            setattr(snapshot, field, value)
+            if field == "non_permissible_income":
+                snapshot.non_halal_income = value
 
 
 def _clear_market_failure(symbol: str, filing_date: datetime, db: BSEDatabaseManager) -> None:
@@ -70,13 +139,73 @@ def _record_market_failure(symbol: str, filing_date: datetime, db: BSEDatabaseMa
     if count >= MARKET_FAILURE_THRESHOLD:
         details = (
             f"Market data unavailable after {count} attempts "
-            "(Tiingo, Yahoo Finance, Bhavcopy)."
+            "(Indian API and Bhavcopy)."
         )
         logger.warning("%s market data unavailable after %d attempts", symbol, count)
         try:
             db.record_quality_issue(symbol, filing_date, "market-data-missing", details)
         except Exception as exc:  # pragma: no cover
             logger.debug("Failed recording market-data issue for %s: %s", symbol, exc)
+
+
+def _lookup_market_data(
+    symbol: str, filing_date: datetime, db: BSEDatabaseManager
+) -> Tuple[Optional[float], Optional[float], Optional[str]]:
+    cache_key = symbol.strip().upper()
+    cached = MARKET_CACHE.get(cache_key)
+    if cached and any(value is not None for value in cached[:2]):
+        _clear_market_failure(cache_key, filing_date, db)
+        return cached
+
+    db_snapshot = db.get_cached_market_data(cache_key, filing_date)
+    if db_snapshot and any(value is not None for value in db_snapshot[:2]):
+        MARKET_CACHE[cache_key] = db_snapshot
+        _clear_market_failure(cache_key, filing_date, db)
+        cap, price, provider = db_snapshot
+        return cap, price, provider or "cache"
+
+    if indian_api_enabled():
+        for candidate in _indian_api_candidates(cache_key, db):
+            snapshot = fetch_indian_financial_snapshot(
+                candidate, target_date=filing_date
+            )
+            if not snapshot:
+                continue
+            if snapshot.market_cap is None and snapshot.share_price is None:
+                continue
+            db.insert_market_snapshot(
+                symbol=cache_key,
+                market_cap=snapshot.market_cap,
+                share_price=snapshot.share_price,
+                provider="indianapi",
+            )
+            MARKET_CACHE[cache_key] = (
+                snapshot.market_cap,
+                snapshot.share_price,
+                "indianapi",
+            )
+            _clear_market_failure(cache_key, filing_date, db)
+            return snapshot.market_cap, snapshot.share_price, "indianapi"
+
+    fallback_cap, fallback_price = bhavcopy_resolver.resolve(symbol, filing_date)
+    if fallback_cap is not None or fallback_price is not None:
+        if fallback_cap is None and fallback_price is not None:
+            cached_any = db.get_cached_market_data(cache_key)
+            cached_cap = cached_any[0] if cached_any else None
+            if cached_cap is not None:
+                fallback_cap = cached_cap
+        db.insert_market_snapshot(
+            symbol=cache_key,
+            market_cap=fallback_cap,
+            share_price=fallback_price,
+            provider="bhavcopy",
+        )
+        MARKET_CACHE[cache_key] = (fallback_cap, fallback_price, "bhavcopy")
+        _clear_market_failure(cache_key, filing_date, db)
+        return fallback_cap, fallback_price, "bhavcopy"
+
+    _record_market_failure(cache_key, filing_date, db)
+    return None, None, None
 
 
 def main(limit: int = 500) -> None:
@@ -97,7 +226,7 @@ def main(limit: int = 500) -> None:
             if not snapshot:
                 continue
 
-            tickers = _ticker_candidates(snapshot.symbol, db)
+            _enrich_snapshot_with_indian_api(snapshot, db)
             market_cap = share_price = None
             provider = None
             filing_dt = snapshot.filing_date
@@ -107,50 +236,9 @@ def main(limit: int = 500) -> None:
                 except Exception:
                     filing_dt = datetime.fromisoformat(filing_dt)
 
-            cached = db.get_cached_market_data(snapshot.symbol, filing_dt)
-            if cached and any(value is not None for value in cached[:2]):
-                market_cap, share_price, provider = cached
-            else:
-                tiingo_tickers = build_tiingo_tickers(
-                    snapshot.symbol, db.get_symbol_alias(snapshot.symbol)
-                )
-                for ticker in tiingo_tickers:
-                    market_cap, share_price = fetch_tiingo_quote(ticker)
-                    if market_cap is not None or share_price is not None:
-                        provider = "tiingo"
-                        db.insert_market_snapshot(
-                            snapshot.symbol, market_cap, share_price, provider=provider
-                        )
-                        break
-                if market_cap is None:
-                    for ticker in tickers:
-                        market_cap, share_price = fetch_yahoo_quote(
-                            ticker, backoff_seconds=30, retries=3
-                        )
-                        if market_cap is not None or share_price is not None:
-                            provider = "yahoo"
-                            db.insert_market_snapshot(
-                                snapshot.symbol,
-                                market_cap,
-                                share_price,
-                                provider=provider,
-                            )
-                            break
-                if market_cap is None:
-                    fallback_cap, fallback_price = bhavcopy_resolver.resolve(
-                        snapshot.symbol, snapshot.filing_date
-                    )
-                    market_cap = fallback_cap
-                    if share_price is None:
-                        share_price = fallback_price
-                    if market_cap is not None or share_price is not None:
-                        provider = "bhavcopy"
-                        db.insert_market_snapshot(
-                            snapshot.symbol,
-                            market_cap,
-                            share_price,
-                            provider=provider,
-                        )
+            market_cap, share_price, provider = _lookup_market_data(
+                snapshot.symbol, filing_dt, db
+            )
 
             if market_cap is None:
                 _record_market_failure(snapshot.symbol, filing_dt, db)

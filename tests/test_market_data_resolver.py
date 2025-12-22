@@ -4,7 +4,6 @@
 from datetime import date, datetime, timedelta
 
 from market_data.resolver import BhavcopyMarketResolver
-from market_data.tickers import build_tiingo_tickers
 from market_data.bhavcopy import BSEBhavRecord
 
 
@@ -82,7 +81,29 @@ def test_resolver_returns_price_when_market_cap_missing():
     assert price == 88.5
 
 
-def test_tiingo_ticker_builder_normalizes_suffixes():
-    tickers = build_tiingo_tickers("531779", "DEE DEV", additional=["DEEDEV.BO"])
-    assert "BOM:531779" in tickers
-    assert "BOM:DEEDEV" in tickers
+def test_resolver_prefers_cached_quotes():
+    today = date(2024, 7, 20)
+    calls = []
+
+    def loader(symbol: str, trade_date: date):
+        calls.append(trade_date)
+        if trade_date == today:
+            return (1_000_000_000.0, 123.45, "bhavcopy")
+        return None
+
+    writer_calls = []
+
+    def writer(symbol, trade_date, share_price, market_cap, provider):
+        writer_calls.append((symbol, trade_date, share_price, market_cap, provider))
+
+    client = FakeBhavcopyClient()
+    resolver = BhavcopyMarketResolver(
+        client=client, cache_loader=loader, cache_writer=writer
+    )
+
+    cap, price = resolver.resolve("500325", datetime(2024, 7, 20, 9, 0))
+
+    assert cap == 1_000_000_000.0
+    assert price == 123.45
+    assert writer_calls == []
+    assert today in calls
