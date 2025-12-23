@@ -10,6 +10,8 @@ export type AnalysisPayload = {
     interest_income?: Numeric;
     dividend_income?: Numeric;
     non_permissible_income?: Numeric;
+    accounts_receivable?: Numeric;
+    liquid_assets?: Numeric;
   };
   market_data: {
     market_cap?: Numeric;

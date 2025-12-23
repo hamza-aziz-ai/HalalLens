@@ -8,6 +8,7 @@ with proper connection pooling, error handling, and transaction management.
 """
 
 import logging
+import json
 from contextlib import contextmanager
 from datetime import datetime, date, timezone
 from typing import Dict, List, Optional, Tuple
@@ -276,6 +277,51 @@ class BSEDatabaseManager:
                     conn.rollback()
                     logger.warning(
                         "Failed to insert market snapshot for %s: %s", symbol, exc
+                    )
+
+    def insert_indianapi_snapshot(
+        self,
+        *,
+        symbol: str,
+        symbol_alias: Optional[str],
+        company_name: Optional[str],
+        snapshot_date: Optional[date],
+        payload: Dict,
+    ) -> None:
+        """Archive raw Indian API responses for historical analysis."""
+
+        if not payload:
+            return
+
+        with self.get_connection() as conn:
+            with conn.cursor() as cursor:
+                try:
+                    cursor.execute(
+                        """
+                        INSERT INTO indianapi_snapshots (
+                            symbol, symbol_alias, company_name, snapshot_date, payload
+                        )
+                        VALUES (%(symbol)s, %(symbol_alias)s, %(company_name)s, %(snapshot_date)s, %(payload)s)
+                        ON CONFLICT (symbol, snapshot_date)
+                        DO UPDATE SET
+                            symbol_alias = EXCLUDED.symbol_alias,
+                            company_name = EXCLUDED.company_name,
+                            payload = EXCLUDED.payload,
+                            fetched_at = NOW()
+                        """,
+                        {
+                            "symbol": symbol,
+                            "symbol_alias": symbol_alias,
+                            "company_name": company_name,
+                            "snapshot_date": snapshot_date,
+                            "payload": Json(payload),
+                        },
+                    )
+                    conn.commit()
+                except Exception as exc:  # pragma: no cover - logging path
+                    conn.rollback()
+                    logger.warning(
+                        "Failed to insert Indian API snapshot for %s: %s", symbol, exc
                     )
 
     def get_cached_market_data(
@@ -931,16 +977,26 @@ class BSEDatabaseManager:
         """Prepare announcement data for database insertion"""
         try:
             # Handle filing_date conversion
-            symbol = str(announcement.get("SCRIP_CD") or '').strip()
+            symbol = self._normalize_symbol_value(
+                announcement.get("SCRIP_CD")
+                or announcement.get("symbol")
+                or announcement.get("symbol_code")
+            )
             symbol_alias = self._extract_symbol_alias(announcement)
-            filing_date = announcement.get('NEWS_DT') or announcement.get('DT_TM')
+            if not symbol and symbol_alias:
+                symbol = symbol_alias
+            filing_date = (
+                announcement.get('NEWS_DT')
+                or announcement.get('DT_TM')
+                or announcement.get('filing_date')
+            )
 
-            # ── SKIP rows that break the NOT-NULL PK ─────────────────────
+            # ?"??"? SKIP rows that break the NOT-NULL PK ?"??"??"??"??"??"??"??"??"??"??"??"??"??"??"??"??"??"??"??"?
             if not symbol or not filing_date:
                 logger.warning("Skipping: missing symbol/filing_date NEWSID=%s",
                                announcement.get("NEWSID"))
                 return None
-            # ─────────────────────────────────────────────────────────────
+            # ?"??"??"??"??"??"??"??"??"??"??"??"??"??"??"??"??"??"??"??"??"??"??"??"??"??"??"??"??"??"??"??"??"??"??"??"??"??"??"??"??"??"??"??"??"??"??"??"??"??"??"??"??"??"??"?
 
             if isinstance(filing_date, str):
                 # Parse ISO format with timezone
@@ -950,22 +1006,30 @@ class BSEDatabaseManager:
                     logger.error(f"Failed parsing filing_date '{filing_date}': {e}")
                     raise
 
-            if announcement.get("CATEGORYNAME") == "Result":
-                confidence = "HIGH"
-            elif announcement.get("CATEGORYNAME") == "Board Meeting":
-                confidence = "MEDIUM"
-            else:
-                confidence = "LOW"
+            confidence = announcement.get("confidence")
+            if not confidence:
+                if announcement.get("CATEGORYNAME") == "Result":
+                    confidence = "HIGH"
+                elif announcement.get("CATEGORYNAME") == "Board Meeting":
+                    confidence = "MEDIUM"
+                else:
+                    confidence = "LOW"
+
+            raw_payload = announcement.get("raw_json") or announcement
+            raw_json = Json(
+                raw_payload,
+                dumps=lambda obj: json.dumps(obj, default=self._json_default),
+            )
 
             return {
                 'symbol': symbol,
                 'symbol_alias': symbol_alias,
-                'company_name': (announcement.get("SLONGNAME") or "").strip(),
+                'company_name': (announcement.get("SLONGNAME") or announcement.get("company_name") or "").strip(),
                 'filing_date': filing_date,
-                'category': (announcement.get("CATEGORYNAME") or "").strip(),
-                'headline': announcement.get("NEWSSUB", "")[:600],
+                'category': (announcement.get("CATEGORYNAME") or announcement.get("category") or "").strip(),
+                'headline': (announcement.get("NEWSSUB") or announcement.get("headline") or "")[:600],
                 'confidence': confidence,
-                'raw_json': Json(announcement),  # Store complete original data
+                'raw_json': raw_json,  # Store complete original data
                 'minio_path': announcement.get('minio_path', None),
                 'pdf_stored': announcement.get('pdf_stored', False)
             }
@@ -976,7 +1040,14 @@ class BSEDatabaseManager:
 
     @staticmethod
     def _extract_symbol_alias(announcement: Dict) -> str:
+        direct_alias = announcement.get("symbol_alias")
+        if direct_alias:
+            cleaned = str(direct_alias).strip()
+            if cleaned:
+                return cleaned.replace(" ", "").upper()
+
         alias_sources = [
+            announcement.get("symbol"),
             announcement.get("SYMBOL"),
             announcement.get("SYMBOL_TICKER"),
             announcement.get("SecurityId"),
@@ -1002,6 +1073,21 @@ class BSEDatabaseManager:
                 if alias and not alias.isdigit():
                     return alias
         return ""
+
+    @staticmethod
+    def _normalize_symbol_value(value: Optional[str]) -> str:
+        if not value:
+            return ""
+        token = str(value).strip()
+        return token.upper()
+
+    @staticmethod
+    def _json_default(value):
+        if isinstance(value, datetime):
+            return value.isoformat()
+        if isinstance(value, date):
+            return value.isoformat()
+        return str(value)
 
     def _prepare_snapshot_data(self, snapshot: Dict) -> Dict:
         """Prepare financial snapshot data for database insertion"""
@@ -1156,7 +1242,7 @@ class BSEDatabaseManager:
                 LEFT JOIN governance_overrides go
                   ON a.symbol = go.symbol
                  AND a.filing_date = go.filing_date
-                ORDER BY a.filing_date DESC
+                ORDER BY (fe.ratios IS NOT NULL)::int DESC, a.filing_date DESC
                 LIMIT %(limit)s
                 """
                 cursor.execute(query, {"limit": limit})

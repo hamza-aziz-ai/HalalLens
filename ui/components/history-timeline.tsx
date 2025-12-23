@@ -7,6 +7,7 @@ const RATIO_ROWS = [
   { key: "debt_to_market_cap", label: "Debt / Cap" },
   { key: "cash_to_market_cap", label: "Cash / Cap" },
   { key: "receivables_to_market_cap", label: "Receivables / Cap" },
+  { key: "liquid_assets_to_market_cap", label: "Liquid / Cap" },
   { key: "non_permissible_income_ratio", label: "Non-permissible / Rev" },
 ];
 

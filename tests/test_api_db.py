@@ -96,6 +96,7 @@ def patch_db(monkeypatch):
     }
     dummy = DummyDB(record)
     monkeypatch.setattr(api_module, "DB_MANAGER", dummy)
+    monkeypatch.setattr(api_module, "indian_api_enabled", lambda: False)
     yield
 
 

@@ -107,4 +107,18 @@ CREATE TABLE IF NOT EXISTS feedback_reports (
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS indianapi_snapshots (
+    id              BIGSERIAL PRIMARY KEY,
+    symbol          VARCHAR(32) NOT NULL,
+    symbol_alias    VARCHAR(64),
+    company_name    TEXT,
+    snapshot_date   DATE,
+    fetched_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    payload         JSONB NOT NULL,
+    UNIQUE (symbol, snapshot_date)
+);
+
+CREATE INDEX IF NOT EXISTS idx_indianapi_snapshots_fetched_at
+    ON indianapi_snapshots (fetched_at DESC);
+
 COMMIT;

@@ -17,7 +17,9 @@ tail -F "$LOG_FILE" &
 TAIL_PID=$!
 
 cleanup() {
+  # shellcheck disable=SC2317
   kill "$TAIL_PID" 2>/dev/null || true
+  # shellcheck disable=SC2317
   if [ -n "$SERVER_PID" ]; then
     kill "$SERVER_PID" 2>/dev/null || true
   fi

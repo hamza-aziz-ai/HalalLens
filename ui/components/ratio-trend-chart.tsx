@@ -24,6 +24,12 @@ const RATIO_SERIES = [
     threshold: 0.67,
   },
   {
+    key: "liquid_assets_to_market_cap",
+    label: "Liquid / Cap",
+    color: "#a78bfa",
+    threshold: 0.49,
+  },
+  {
     key: "non_permissible_income_ratio",
     label: "Non-permissible / Rev",
     color: "#fbbf24",

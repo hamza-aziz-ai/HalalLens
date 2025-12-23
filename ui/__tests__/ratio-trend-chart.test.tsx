@@ -42,6 +42,12 @@ const sampleEntry = (overrides?: Partial<Filing>): Filing => ({
       threshold: 0.67,
       note: "",
     },
+    liquid_assets_to_market_cap: {
+      value: 0.4,
+      passed: true,
+      threshold: 0.49,
+      note: "",
+    },
     non_permissible_income_ratio: {
       value: 0.01,
       passed: true,
