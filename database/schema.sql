@@ -107,6 +107,35 @@ CREATE TABLE IF NOT EXISTS feedback_reports (
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS governance_overrides (
+    symbol              VARCHAR(32) NOT NULL,
+    filing_date         TIMESTAMPTZ NOT NULL,
+    accounts_receivable NUMERIC,
+    liquid_assets       NUMERIC,
+    non_halal_income    NUMERIC,
+    governance_notes    TEXT,
+    source              TEXT,
+    reviewer            TEXT,
+    reason              TEXT,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (symbol, filing_date)
+);
+
+CREATE OR REPLACE FUNCTION update_governance_overrides_updated_at()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = NOW();
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_governance_overrides_updated ON governance_overrides;
+CREATE TRIGGER trg_governance_overrides_updated
+BEFORE UPDATE ON governance_overrides
+FOR EACH ROW
+EXECUTE PROCEDURE update_governance_overrides_updated_at();
+
 CREATE TABLE IF NOT EXISTS indianapi_snapshots (
     id              BIGSERIAL PRIMARY KEY,
     symbol          VARCHAR(32) NOT NULL,
@@ -120,5 +149,18 @@ CREATE TABLE IF NOT EXISTS indianapi_snapshots (
 
 CREATE INDEX IF NOT EXISTS idx_indianapi_snapshots_fetched_at
     ON indianapi_snapshots (fetched_at DESC);
+
+CREATE TABLE IF NOT EXISTS bhavcopy_quotes (
+    symbol      VARCHAR(32) NOT NULL,
+    trade_date  DATE NOT NULL,
+    share_price NUMERIC,
+    market_cap  NUMERIC,
+    provider    TEXT NOT NULL DEFAULT 'bhavcopy',
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (symbol, trade_date)
+);
+
+CREATE INDEX IF NOT EXISTS idx_bhavcopy_quotes_trade_date
+    ON bhavcopy_quotes (trade_date);
 
 COMMIT;
