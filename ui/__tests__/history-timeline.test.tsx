@@ -34,6 +34,7 @@ const baseEntry = (overrides?: Partial<Filing>): Filing => ({
     debt_to_market_cap: ratio(0.1, true),
     cash_to_market_cap: ratio(0.2, true),
     receivables_to_market_cap: ratio(0.3, true),
+    liquid_assets_to_market_cap: ratio(0.4, true),
     non_permissible_income_ratio: ratio(0.01, true),
   },
   market_cap_used: 100,
@@ -74,6 +75,7 @@ describe("HistoryTimeline", () => {
         debt_to_market_cap: ratio(null, null),
         cash_to_market_cap: ratio(null, null),
         receivables_to_market_cap: ratio(null, null),
+        liquid_assets_to_market_cap: ratio(null, null),
         non_permissible_income_ratio: ratio(null, null),
       },
     });

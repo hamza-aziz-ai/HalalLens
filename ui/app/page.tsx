@@ -51,6 +51,8 @@ type SnapshotForm = {
   interest_income: string;
   dividend_income: string;
   non_permissible_income: string;
+  accounts_receivable: string;
+  liquid_assets: string;
 };
 
 type MarketForm = {
@@ -88,6 +90,8 @@ const defaultPayload: FormState = {
     interest_income: "",
     dividend_income: "",
     non_permissible_income: "",
+    accounts_receivable: "",
+    liquid_assets: "",
   },
   market_data: {
     market_cap: "",
@@ -865,6 +869,8 @@ export default function HomePage() {
                 ["non_permissible_income", "Non-permissible income"],
                 ["interest_income", "Interest income"],
                 ["dividend_income", "Dividend income"],
+                ["accounts_receivable", "Accounts receivable"],
+                ["liquid_assets", "Liquid assets"],
               ].map(([key, label]) => (
                 <TextInput
                   key={key}
@@ -1682,6 +1688,8 @@ function normalizePayload(formState: FormState): AnalysisPayload {
       ),
       interest_income: parseNumber(formState.snapshot.interest_income),
       dividend_income: parseNumber(formState.snapshot.dividend_income),
+      accounts_receivable: parseNumber(formState.snapshot.accounts_receivable),
+      liquid_assets: parseNumber(formState.snapshot.liquid_assets),
     },
     market_data: {
       market_cap: parseNumber(formState.market_data.market_cap),
@@ -1709,6 +1717,8 @@ function setFormFromFiling(
       non_permissible_income: stringifyNumber(
         filing.non_halal_income ?? filing.non_halal_income,
       ),
+      accounts_receivable: stringifyNumber(filing.accounts_receivable),
+      liquid_assets: stringifyNumber(filing.liquid_assets),
     },
     market_data: {
       market_cap: stringifyNumber(filing.market_cap_used),
@@ -1744,6 +1754,8 @@ function payloadFromFiling(
       interest_income: asNumber(filing.interest_income),
       dividend_income: asNumber(filing.dividend_income),
       non_permissible_income: asNumber(filing.non_halal_income),
+      accounts_receivable: asNumber(filing.accounts_receivable),
+      liquid_assets: asNumber(filing.liquid_assets),
     },
     market_data: {
       market_cap: asNumber(

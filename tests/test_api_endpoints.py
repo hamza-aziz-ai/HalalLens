@@ -318,6 +318,8 @@ def test_resolve_bse_code_uses_indian_api(monkeypatch):
             self.metrics = {}
             self.bse_code = "532540"
             self.nse_code = "TCS"
+            self.company_name = "Tata Consultancy Services"
+            self.raw = {}
 
     monkeypatch.setattr(
         api_module,

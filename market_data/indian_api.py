@@ -6,9 +6,9 @@ from __future__ import annotations
 import functools
 import logging
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime
-from typing import Dict, Iterable, Optional, Tuple
+from typing import Any, Dict, Iterable, Optional, Tuple
 
 import requests
 
@@ -16,6 +16,9 @@ from config import INDIAN_API_BASE_URL, INDIAN_API_KEY
 
 LOGGER = logging.getLogger("market_data")
 SESSION = requests.Session()
+# Ignore host machine proxy settings so the hosted API can be reached directly.
+# Without this, requests may attempt to tunnel through a non-existent proxy and fail.
+SESSION.trust_env = False
 
 BASE_URL = INDIAN_API_BASE_URL.rstrip("/") if INDIAN_API_BASE_URL else None
 API_KEY = INDIAN_API_KEY
@@ -39,6 +42,8 @@ class IndianAPISnapshot:
     metrics: Dict[str, float]
     bse_code: Optional[str] = None
     nse_code: Optional[str] = None
+    company_name: Optional[str] = None
+    raw: Dict[str, Any] = field(default_factory=dict)
 
 
 def fetch_financial_snapshot(
@@ -64,6 +69,7 @@ def fetch_financial_snapshot(
     market_cap = _extract_market_cap(payload, share_price, shares_outstanding)
     bse_code = _normalize_bse_code(payload.get("exchangeCodeBse"))
     nse_code = _normalize_symbol(payload.get("exchangeCodeNse"))
+    company_name = payload.get("companyName")
 
     entry = _select_financial_entry(payload.get("financials") or [], target_date)
     entry_date = _parse_date(entry.get("EndDate")) if entry else None
@@ -79,6 +85,8 @@ def fetch_financial_snapshot(
         metrics=metrics,
         bse_code=bse_code,
         nse_code=nse_code,
+        company_name=company_name,
+        raw=payload,
     )
 
 

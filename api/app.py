@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Literal
@@ -384,6 +384,76 @@ def _fetch_latest_filing_from_bse(symbol: str) -> Optional[Dict[str, Any]]:
                     if normalized and normalized != record.get("symbol"):
                         record.setdefault("symbol_alias", normalized)
                     return record
+
+    fallback = _build_record_from_indian_api(symbol)
+    if fallback:
+        return fallback
+    return None
+
+
+def _build_record_from_indian_api(symbol: str) -> Optional[Dict[str, Any]]:
+    """Create an in-memory filing record using Indian API metrics."""
+
+    if not indian_api_enabled():
+        return None
+
+    normalized = (symbol or "").strip().upper()
+    if not normalized:
+        return None
+
+    for candidate in _indian_api_candidates(normalized):
+        snapshot = fetch_indian_financial_snapshot(candidate)
+        if not snapshot:
+            continue
+
+        filing_date = snapshot.end_date or datetime.utcnow().date()
+        filing_dt = datetime(
+            filing_date.year,
+            filing_date.month,
+            filing_date.day,
+            tzinfo=timezone.utc,
+        )
+
+        if snapshot.bse_code:
+            _prime_symbol_metadata(
+                normalized,
+                snapshot.bse_code,
+                snapshot.nse_code or candidate,
+            )
+
+        record: Dict[str, Any] = {
+            "symbol": normalized,
+            "symbol_alias": snapshot.nse_code or candidate,
+            "company_name": snapshot.company_name or normalized,
+            "filing_date": filing_dt,
+            "category": "Realtime Snapshot",
+            "headline": "Metrics sourced from Indian market API",
+            "confidence": "LOW",
+            "governance_notes": "Derived from Indian API snapshot",
+            "quality_issues": [],
+            "_transient": True,
+        }
+
+        metric_fields = [
+            "total_debt",
+            "cash_equiv",
+            "revenue",
+            "interest_income",
+            "dividend_income",
+            "non_halal_income",
+            "accounts_receivable",
+            "liquid_assets",
+        ]
+        for field in metric_fields:
+            value = snapshot.metrics.get(field)
+            if value is not None:
+                record[field] = value
+
+        if snapshot.market_cap is not None:
+            record["market_cap_used"] = snapshot.market_cap
+            record["market_data_provider"] = "indianapi"
+
+        return record
 
     return None
 
@@ -975,6 +1045,7 @@ def _ensure_filing_evaluation(record: Dict[str, Any]) -> Optional[Dict[str, Rati
     if not snapshot:
         return None
 
+    transient = bool(record.get("_transient"))
     market_cap = record.get("market_cap_used")
     trailing = record.get("trailing_cap_used")
     provider = record.get("market_data_provider")
@@ -1002,35 +1073,40 @@ def _ensure_filing_evaluation(record: Dict[str, Any]) -> Optional[Dict[str, Rati
     ratios_dict = {name: asdict(comp) for name, comp in evaluation.ratios.items()}
 
     quality_issues = _detect_quality_issues(snapshot, evaluation)
-    db = _get_db()
     if quality_issues:
-        for issue in quality_issues:
-            db.record_quality_issue(
-                snapshot.symbol, snapshot.filing_date, "ratio_anomaly", issue
-            )
         verdict = "needs-review"
         summary = "Flagged for manual review due to anomalous ratios."
         record["is_compliant"] = None
-    else:
-        db.resolve_quality_issues(
-            snapshot.symbol, snapshot.filing_date, issue_types=["ratio_anomaly"]
-        )
-        quality_issues = _load_quality_issues(snapshot.symbol, snapshot.filing_date)
 
-    db.upsert_filing_evaluation(
-        symbol=snapshot.symbol,
-        filing_date=snapshot.filing_date,
-        is_compliant=evaluation.is_compliant
-        if verdict != "insufficient-data"
-        else None,
-        ratios=ratios_dict,
-        summary=summary,
-        verdict=verdict,
-        narration_source="api",
-        market_cap_used=market_cap,
-        trailing_cap_used=trailing,
-        market_data_provider=provider,
-    )
+    if not transient:
+        db = _get_db()
+        if quality_issues:
+            for issue in quality_issues:
+                db.record_quality_issue(
+                    snapshot.symbol, snapshot.filing_date, "ratio_anomaly", issue
+                )
+        else:
+            db.resolve_quality_issues(
+                snapshot.symbol, snapshot.filing_date, issue_types=["ratio_anomaly"]
+            )
+            quality_issues = _load_quality_issues(snapshot.symbol, snapshot.filing_date)
+
+        db.upsert_filing_evaluation(
+            symbol=snapshot.symbol,
+            filing_date=snapshot.filing_date,
+            is_compliant=evaluation.is_compliant
+            if verdict != "insufficient-data"
+            else None,
+            ratios=ratios_dict,
+            summary=summary,
+            verdict=verdict,
+            narration_source="api",
+            market_cap_used=market_cap,
+            trailing_cap_used=trailing,
+            market_data_provider=provider,
+        )
+    else:
+        record["quality_issues"] = quality_issues
 
     record["is_compliant"] = (
         None if quality_issues else evaluation.is_compliant

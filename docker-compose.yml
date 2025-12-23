@@ -69,8 +69,6 @@ services:
         condition: service_healthy
     ports:
       - "3001:3000"
-    volumes:
-      - ./ui:/app/ui
     restart: unless-stopped
     healthcheck:
       test:

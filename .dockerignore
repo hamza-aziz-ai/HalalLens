@@ -3,14 +3,12 @@
 __pycache__/
 .pytest_cache/
 .mypy_cache/
-*.pyc
 *.pyo
 *.pyd
 .DS_Store
 cache/
 downloads/
 node_modules/
-ui/node_modules/
 ui/.next/
 ui/out/
 ui/.env.local
