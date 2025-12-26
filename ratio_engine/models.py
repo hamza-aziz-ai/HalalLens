@@ -34,6 +34,7 @@ class MarketDataInput:
     market_cap: Optional[float] = None
     trailing_market_cap: Optional[float] = None
     share_price: Optional[float] = None
+    provider: Optional[str] = None
 
 
 @dataclass
@@ -59,6 +60,7 @@ class RatioComputation:
     threshold: float
     passed: Optional[bool]
     note: str = ""
+    provider: Optional[str] = None
 
 
 @dataclass

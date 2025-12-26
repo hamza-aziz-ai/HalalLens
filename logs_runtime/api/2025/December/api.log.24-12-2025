@@ -1,0 +1,504 @@
+Wednesday 24-12-2025 03:56:02 PM INFO [api] Logging to logs_runtime/api/2025/December/api.log
+Wednesday 24-12-2025 03:56:02 PM ERROR [api] Database connection failed: 
+Wednesday 24-12-2025 03:56:02 PM WARNING [api] Database unavailable; DB-backed endpoints will return 503
+Wednesday 24-12-2025 04:00:26 PM INFO [api] Logging to logs_runtime/api/2025/December/api.log
+Wednesday 24-12-2025 04:00:26 PM ERROR [api] Database connection failed: 
+Wednesday 24-12-2025 04:00:26 PM WARNING [api] Database unavailable; DB-backed endpoints will return 503
+Wednesday 24-12-2025 04:00:39 PM INFO [api] Logging to logs_runtime/api/2025/December/api.log
+Wednesday 24-12-2025 04:00:40 PM ERROR [api] Database connection failed: 
+Wednesday 24-12-2025 04:00:40 PM WARNING [api] Database unavailable; DB-backed endpoints will return 503
+Wednesday 24-12-2025 04:00:57 PM INFO [api] Logging to logs_runtime/api/2025/December/api.log
+Wednesday 24-12-2025 04:00:57 PM ERROR [api] Database connection failed: 
+Wednesday 24-12-2025 04:00:57 PM WARNING [api] Database unavailable; DB-backed endpoints will return 503
+Wednesday 24-12-2025 04:00:57 PM WARNING [api] LLM narration failed for TCS, falling back to rule-based
+Traceback (most recent call last):
+  File "/home/hamza/.local/share/virtualenvs/Halal-Lens-in2oJq3B/lib/python3.10/site-packages/urllib3/connection.py", line 198, in _new_conn
+    sock = connection.create_connection(
+  File "/home/hamza/.local/share/virtualenvs/Halal-Lens-in2oJq3B/lib/python3.10/site-packages/urllib3/util/connection.py", line 85, in create_connection
+    raise err
+  File "/home/hamza/.local/share/virtualenvs/Halal-Lens-in2oJq3B/lib/python3.10/site-packages/urllib3/util/connection.py", line 64, in create_connection
+    sock = socket.socket(af, socktype, proto)
+  File "/usr/lib/python3.10/socket.py", line 232, in __init__
+    _socket.socket.__init__(self, family, type, proto, fileno)
+PermissionError: [Errno 1] Operation not permitted
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/hamza/.local/share/virtualenvs/Halal-Lens-in2oJq3B/lib/python3.10/site-packages/urllib3/connectionpool.py", line 787, in urlopen
+    response = self._make_request(
+  File "/home/hamza/.local/share/virtualenvs/Halal-Lens-in2oJq3B/lib/python3.10/site-packages/urllib3/connectionpool.py", line 493, in _make_request
+    conn.request(
+  File "/home/hamza/.local/share/virtualenvs/Halal-Lens-in2oJq3B/lib/python3.10/site-packages/urllib3/connection.py", line 494, in request
+    self.endheaders()
+  File "/usr/lib/python3.10/http/client.py", line 1278, in endheaders
+    self._send_output(message_body, encode_chunked=encode_chunked)
+  File "/usr/lib/python3.10/http/client.py", line 1038, in _send_output
+    self.send(msg)
+  File "/usr/lib/python3.10/http/client.py", line 976, in send
+    self.connect()
+  File "/home/hamza/.local/share/virtualenvs/Halal-Lens-in2oJq3B/lib/python3.10/site-packages/urllib3/connection.py", line 325, in connect
+    self.sock = self._new_conn()
+  File "/home/hamza/.local/share/virtualenvs/Halal-Lens-in2oJq3B/lib/python3.10/site-packages/urllib3/connection.py", line 213, in _new_conn
+    raise NewConnectionError(
+urllib3.exceptions.NewConnectionError: <urllib3.connection.HTTPConnection object at 0x7b752fd94340>: Failed to establish a new connection: [Errno 1] Operation not permitted
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/hamza/.local/share/virtualenvs/Halal-Lens-in2oJq3B/lib/python3.10/site-packages/requests/adapters.py", line 667, in send
+    resp = conn.urlopen(
+  File "/home/hamza/.local/share/virtualenvs/Halal-Lens-in2oJq3B/lib/python3.10/site-packages/urllib3/connectionpool.py", line 841, in urlopen
+    retries = retries.increment(
+  File "/home/hamza/.local/share/virtualenvs/Halal-Lens-in2oJq3B/lib/python3.10/site-packages/urllib3/util/retry.py", line 519, in increment
+    raise MaxRetryError(_pool, url, reason) from reason  # type: ignore[arg-type]
+urllib3.exceptions.MaxRetryError: HTTPConnectionPool(host='192.168.1.4', port=11434): Max retries exceeded with url: /v1/chat/completions (Caused by NewConnectionError('<urllib3.connection.HTTPConnection object at 0x7b752fd94340>: Failed to establish a new connection: [Errno 1] Operation not permitted'))
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/hamza/BusinessProjects/Halal-Lens/narrator/llm.py", line 68, in complete
+    response = self.session.post(
+  File "/home/hamza/.local/share/virtualenvs/Halal-Lens-in2oJq3B/lib/python3.10/site-packages/requests/sessions.py", line 637, in post
+    return self.request("POST", url, data=data, json=json, **kwargs)
+  File "/home/hamza/.local/share/virtualenvs/Halal-Lens-in2oJq3B/lib/python3.10/site-packages/requests/sessions.py", line 589, in request
+    resp = self.send(prep, **send_kwargs)
+  File "/home/hamza/.local/share/virtualenvs/Halal-Lens-in2oJq3B/lib/python3.10/site-packages/requests/sessions.py", line 703, in send
+    r = adapter.send(request, **kwargs)
+  File "/home/hamza/.local/share/virtualenvs/Halal-Lens-in2oJq3B/lib/python3.10/site-packages/requests/adapters.py", line 700, in send
+    raise ConnectionError(e, request=request)
+requests.exceptions.ConnectionError: HTTPConnectionPool(host='192.168.1.4', port=11434): Max retries exceeded with url: /v1/chat/completions (Caused by NewConnectionError('<urllib3.connection.HTTPConnection object at 0x7b752fd94340>: Failed to establish a new connection: [Errno 1] Operation not permitted'))
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/hamza/BusinessProjects/Halal-Lens/narrator/explainer.py", line 94, in build
+    return self.llm_engine.build(evaluation)
+  File "/home/hamza/BusinessProjects/Halal-Lens/narrator/llm.py", line 142, in build
+    raw = self.client.complete(
+  File "/home/hamza/BusinessProjects/Halal-Lens/narrator/llm.py", line 73, in complete
+    raise LLMNarrationError(f"LLM request failed: {exc}") from exc
+narrator.llm.LLMNarrationError: LLM request failed: HTTPConnectionPool(host='192.168.1.4', port=11434): Max retries exceeded with url: /v1/chat/completions (Caused by NewConnectionError('<urllib3.connection.HTTPConnection object at 0x7b752fd94340>: Failed to establish a new connection: [Errno 1] Operation not permitted'))
+Wednesday 24-12-2025 04:00:57 PM WARNING [api] LLM narration failed for FALL, falling back to rule-based
+Traceback (most recent call last):
+  File "/home/hamza/BusinessProjects/Halal-Lens/narrator/explainer.py", line 94, in build
+    return self.llm_engine.build(evaluation)
+  File "/home/hamza/BusinessProjects/Halal-Lens/narrator/llm.py", line 142, in build
+    raw = self.client.complete(
+  File "/home/hamza/BusinessProjects/Halal-Lens/tests/test_narrator.py", line 117, in complete
+    raise LLMNarrationError("boom")
+narrator.llm.LLMNarrationError: boom
+Wednesday 24-12-2025 04:03:15 PM INFO [api] Logging to logs_runtime/api/2025/December/api.log
+Wednesday 24-12-2025 04:03:15 PM INFO [api] Database connection pool initialized (2-20 connections)
+Wednesday 24-12-2025 04:03:15 PM INFO [api] Connected to PostgreSQL: PostgreSQL 14.20 (Ubuntu 14.20-0ubuntu0.22.04.1) o...
+Wednesday 24-12-2025 04:03:25 PM WARNING [api] LLM narration failed for FALL, falling back to rule-based
+Traceback (most recent call last):
+  File "/home/hamza/BusinessProjects/Halal-Lens/narrator/explainer.py", line 94, in build
+    return self.llm_engine.build(evaluation)
+  File "/home/hamza/BusinessProjects/Halal-Lens/narrator/llm.py", line 142, in build
+    raw = self.client.complete(
+  File "/home/hamza/BusinessProjects/Halal-Lens/tests/test_narrator.py", line 117, in complete
+    raise LLMNarrationError("boom")
+narrator.llm.LLMNarrationError: boom
+Wednesday 24-12-2025 04:03:51 PM INFO [api] Logging to logs_runtime/api/2025/December/api.log
+Wednesday 24-12-2025 04:03:51 PM INFO [api] Database connection pool initialized (2-20 connections)
+Wednesday 24-12-2025 04:03:51 PM INFO [api] Connected to PostgreSQL: PostgreSQL 14.20 (Ubuntu 14.20-0ubuntu0.22.04.1) o...
+Wednesday 24-12-2025 04:03:58 PM WARNING [api] LLM narration failed for FALL, falling back to rule-based
+Traceback (most recent call last):
+  File "/home/hamza/BusinessProjects/Halal-Lens/narrator/explainer.py", line 94, in build
+    return self.llm_engine.build(evaluation)
+  File "/home/hamza/BusinessProjects/Halal-Lens/narrator/llm.py", line 142, in build
+    raw = self.client.complete(
+  File "/home/hamza/BusinessProjects/Halal-Lens/tests/test_narrator.py", line 117, in complete
+    raise LLMNarrationError("boom")
+narrator.llm.LLMNarrationError: boom
+Wednesday 24-12-2025 04:05:06 PM INFO [api] Logging to logs_runtime/api/2025/December/api.log
+Wednesday 24-12-2025 04:05:06 PM ERROR [api] Database connection failed: 
+Wednesday 24-12-2025 04:05:06 PM WARNING [api] Database unavailable; DB-backed endpoints will return 503
+Wednesday 24-12-2025 04:05:48 PM INFO [api] Logging to logs_runtime/api/2025/December/api.log
+Wednesday 24-12-2025 04:05:48 PM INFO [api] Database connection pool initialized (2-20 connections)
+Wednesday 24-12-2025 04:05:48 PM INFO [api] Connected to PostgreSQL: PostgreSQL 14.20 (Ubuntu 14.20-0ubuntu0.22.04.1) o...
+Wednesday 24-12-2025 04:06:00 PM WARNING [api] LLM narration failed for FALL, falling back to rule-based
+Traceback (most recent call last):
+  File "/home/hamza/BusinessProjects/Halal-Lens/narrator/explainer.py", line 94, in build
+    return self.llm_engine.build(evaluation)
+  File "/home/hamza/BusinessProjects/Halal-Lens/narrator/llm.py", line 142, in build
+    raw = self.client.complete(
+  File "/home/hamza/BusinessProjects/Halal-Lens/tests/test_narrator.py", line 117, in complete
+    raise LLMNarrationError("boom")
+narrator.llm.LLMNarrationError: boom
+Wednesday 24-12-2025 04:07:59 PM INFO [api] Logging to logs_runtime/api/2025/December/api.log
+Wednesday 24-12-2025 04:07:59 PM ERROR [api] Database connection failed: 
+Wednesday 24-12-2025 04:07:59 PM WARNING [api] Database unavailable; DB-backed endpoints will return 503
+Wednesday 24-12-2025 04:08:16 PM INFO [api] Logging to logs_runtime/api/2025/December/api.log
+Wednesday 24-12-2025 04:08:16 PM ERROR [api] Database connection failed: 
+Wednesday 24-12-2025 04:08:16 PM WARNING [api] Database unavailable; DB-backed endpoints will return 503
+Wednesday 24-12-2025 04:08:16 PM WARNING [api] LLM narration failed for TCS, falling back to rule-based
+Traceback (most recent call last):
+  File "/home/hamza/.local/share/virtualenvs/Halal-Lens-in2oJq3B/lib/python3.10/site-packages/urllib3/connection.py", line 198, in _new_conn
+    sock = connection.create_connection(
+  File "/home/hamza/.local/share/virtualenvs/Halal-Lens-in2oJq3B/lib/python3.10/site-packages/urllib3/util/connection.py", line 85, in create_connection
+    raise err
+  File "/home/hamza/.local/share/virtualenvs/Halal-Lens-in2oJq3B/lib/python3.10/site-packages/urllib3/util/connection.py", line 64, in create_connection
+    sock = socket.socket(af, socktype, proto)
+  File "/usr/lib/python3.10/socket.py", line 232, in __init__
+    _socket.socket.__init__(self, family, type, proto, fileno)
+PermissionError: [Errno 1] Operation not permitted
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/hamza/.local/share/virtualenvs/Halal-Lens-in2oJq3B/lib/python3.10/site-packages/urllib3/connectionpool.py", line 787, in urlopen
+    response = self._make_request(
+  File "/home/hamza/.local/share/virtualenvs/Halal-Lens-in2oJq3B/lib/python3.10/site-packages/urllib3/connectionpool.py", line 493, in _make_request
+    conn.request(
+  File "/home/hamza/.local/share/virtualenvs/Halal-Lens-in2oJq3B/lib/python3.10/site-packages/urllib3/connection.py", line 494, in request
+    self.endheaders()
+  File "/usr/lib/python3.10/http/client.py", line 1278, in endheaders
+    self._send_output(message_body, encode_chunked=encode_chunked)
+  File "/usr/lib/python3.10/http/client.py", line 1038, in _send_output
+    self.send(msg)
+  File "/usr/lib/python3.10/http/client.py", line 976, in send
+    self.connect()
+  File "/home/hamza/.local/share/virtualenvs/Halal-Lens-in2oJq3B/lib/python3.10/site-packages/urllib3/connection.py", line 325, in connect
+    self.sock = self._new_conn()
+  File "/home/hamza/.local/share/virtualenvs/Halal-Lens-in2oJq3B/lib/python3.10/site-packages/urllib3/connection.py", line 213, in _new_conn
+    raise NewConnectionError(
+urllib3.exceptions.NewConnectionError: <urllib3.connection.HTTPConnection object at 0x715e5214cf10>: Failed to establish a new connection: [Errno 1] Operation not permitted
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/hamza/.local/share/virtualenvs/Halal-Lens-in2oJq3B/lib/python3.10/site-packages/requests/adapters.py", line 667, in send
+    resp = conn.urlopen(
+  File "/home/hamza/.local/share/virtualenvs/Halal-Lens-in2oJq3B/lib/python3.10/site-packages/urllib3/connectionpool.py", line 841, in urlopen
+    retries = retries.increment(
+  File "/home/hamza/.local/share/virtualenvs/Halal-Lens-in2oJq3B/lib/python3.10/site-packages/urllib3/util/retry.py", line 519, in increment
+    raise MaxRetryError(_pool, url, reason) from reason  # type: ignore[arg-type]
+urllib3.exceptions.MaxRetryError: HTTPConnectionPool(host='192.168.1.4', port=11434): Max retries exceeded with url: /v1/chat/completions (Caused by NewConnectionError('<urllib3.connection.HTTPConnection object at 0x715e5214cf10>: Failed to establish a new connection: [Errno 1] Operation not permitted'))
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/hamza/BusinessProjects/Halal-Lens/narrator/llm.py", line 68, in complete
+    response = self.session.post(
+  File "/home/hamza/.local/share/virtualenvs/Halal-Lens-in2oJq3B/lib/python3.10/site-packages/requests/sessions.py", line 637, in post
+    return self.request("POST", url, data=data, json=json, **kwargs)
+  File "/home/hamza/.local/share/virtualenvs/Halal-Lens-in2oJq3B/lib/python3.10/site-packages/requests/sessions.py", line 589, in request
+    resp = self.send(prep, **send_kwargs)
+  File "/home/hamza/.local/share/virtualenvs/Halal-Lens-in2oJq3B/lib/python3.10/site-packages/requests/sessions.py", line 703, in send
+    r = adapter.send(request, **kwargs)
+  File "/home/hamza/.local/share/virtualenvs/Halal-Lens-in2oJq3B/lib/python3.10/site-packages/requests/adapters.py", line 700, in send
+    raise ConnectionError(e, request=request)
+requests.exceptions.ConnectionError: HTTPConnectionPool(host='192.168.1.4', port=11434): Max retries exceeded with url: /v1/chat/completions (Caused by NewConnectionError('<urllib3.connection.HTTPConnection object at 0x715e5214cf10>: Failed to establish a new connection: [Errno 1] Operation not permitted'))
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/hamza/BusinessProjects/Halal-Lens/narrator/explainer.py", line 94, in build
+    return self.llm_engine.build(evaluation)
+  File "/home/hamza/BusinessProjects/Halal-Lens/narrator/llm.py", line 142, in build
+    raw = self.client.complete(
+  File "/home/hamza/BusinessProjects/Halal-Lens/narrator/llm.py", line 73, in complete
+    raise LLMNarrationError(f"LLM request failed: {exc}") from exc
+narrator.llm.LLMNarrationError: LLM request failed: HTTPConnectionPool(host='192.168.1.4', port=11434): Max retries exceeded with url: /v1/chat/completions (Caused by NewConnectionError('<urllib3.connection.HTTPConnection object at 0x715e5214cf10>: Failed to establish a new connection: [Errno 1] Operation not permitted'))
+Wednesday 24-12-2025 04:08:16 PM WARNING [api] LLM narration failed for FALL, falling back to rule-based
+Traceback (most recent call last):
+  File "/home/hamza/BusinessProjects/Halal-Lens/narrator/explainer.py", line 94, in build
+    return self.llm_engine.build(evaluation)
+  File "/home/hamza/BusinessProjects/Halal-Lens/narrator/llm.py", line 142, in build
+    raw = self.client.complete(
+  File "/home/hamza/BusinessProjects/Halal-Lens/tests/test_narrator.py", line 117, in complete
+    raise LLMNarrationError("boom")
+narrator.llm.LLMNarrationError: boom
+Wednesday 24-12-2025 04:09:04 PM INFO [api] Logging to logs_runtime/api/2025/December/api.log
+Wednesday 24-12-2025 04:09:04 PM INFO [api] Database connection pool initialized (2-20 connections)
+Wednesday 24-12-2025 04:09:04 PM INFO [api] Connected to PostgreSQL: PostgreSQL 14.20 (Ubuntu 14.20-0ubuntu0.22.04.1) o...
+Wednesday 24-12-2025 04:09:12 PM WARNING [api] LLM narration failed for FALL, falling back to rule-based
+Traceback (most recent call last):
+  File "/home/hamza/BusinessProjects/Halal-Lens/narrator/explainer.py", line 94, in build
+    return self.llm_engine.build(evaluation)
+  File "/home/hamza/BusinessProjects/Halal-Lens/narrator/llm.py", line 142, in build
+    raw = self.client.complete(
+  File "/home/hamza/BusinessProjects/Halal-Lens/tests/test_narrator.py", line 117, in complete
+    raise LLMNarrationError("boom")
+narrator.llm.LLMNarrationError: boom
+Wednesday 24-12-2025 04:09:56 PM INFO [api] Logging to logs_runtime/api/2025/December/api.log
+Wednesday 24-12-2025 04:09:56 PM ERROR [api] Database connection failed: 
+Wednesday 24-12-2025 04:09:56 PM WARNING [api] Database unavailable; DB-backed endpoints will return 503
+Wednesday 24-12-2025 04:10:12 PM INFO [api] Logging to logs_runtime/api/2025/December/api.log
+Wednesday 24-12-2025 04:10:12 PM ERROR [api] Database connection failed: 
+Wednesday 24-12-2025 04:10:12 PM WARNING [api] Database unavailable; DB-backed endpoints will return 503
+Wednesday 24-12-2025 04:10:12 PM WARNING [api] LLM narration failed for TCS, falling back to rule-based
+Traceback (most recent call last):
+  File "/home/hamza/.local/share/virtualenvs/Halal-Lens-in2oJq3B/lib/python3.10/site-packages/urllib3/connection.py", line 198, in _new_conn
+    sock = connection.create_connection(
+  File "/home/hamza/.local/share/virtualenvs/Halal-Lens-in2oJq3B/lib/python3.10/site-packages/urllib3/util/connection.py", line 85, in create_connection
+    raise err
+  File "/home/hamza/.local/share/virtualenvs/Halal-Lens-in2oJq3B/lib/python3.10/site-packages/urllib3/util/connection.py", line 64, in create_connection
+    sock = socket.socket(af, socktype, proto)
+  File "/usr/lib/python3.10/socket.py", line 232, in __init__
+    _socket.socket.__init__(self, family, type, proto, fileno)
+PermissionError: [Errno 1] Operation not permitted
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/hamza/.local/share/virtualenvs/Halal-Lens-in2oJq3B/lib/python3.10/site-packages/urllib3/connectionpool.py", line 787, in urlopen
+    response = self._make_request(
+  File "/home/hamza/.local/share/virtualenvs/Halal-Lens-in2oJq3B/lib/python3.10/site-packages/urllib3/connectionpool.py", line 493, in _make_request
+    conn.request(
+  File "/home/hamza/.local/share/virtualenvs/Halal-Lens-in2oJq3B/lib/python3.10/site-packages/urllib3/connection.py", line 494, in request
+    self.endheaders()
+  File "/usr/lib/python3.10/http/client.py", line 1278, in endheaders
+    self._send_output(message_body, encode_chunked=encode_chunked)
+  File "/usr/lib/python3.10/http/client.py", line 1038, in _send_output
+    self.send(msg)
+  File "/usr/lib/python3.10/http/client.py", line 976, in send
+    self.connect()
+  File "/home/hamza/.local/share/virtualenvs/Halal-Lens-in2oJq3B/lib/python3.10/site-packages/urllib3/connection.py", line 325, in connect
+    self.sock = self._new_conn()
+  File "/home/hamza/.local/share/virtualenvs/Halal-Lens-in2oJq3B/lib/python3.10/site-packages/urllib3/connection.py", line 213, in _new_conn
+    raise NewConnectionError(
+urllib3.exceptions.NewConnectionError: <urllib3.connection.HTTPConnection object at 0x7a8f7ddbfaf0>: Failed to establish a new connection: [Errno 1] Operation not permitted
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/hamza/.local/share/virtualenvs/Halal-Lens-in2oJq3B/lib/python3.10/site-packages/requests/adapters.py", line 667, in send
+    resp = conn.urlopen(
+  File "/home/hamza/.local/share/virtualenvs/Halal-Lens-in2oJq3B/lib/python3.10/site-packages/urllib3/connectionpool.py", line 841, in urlopen
+    retries = retries.increment(
+  File "/home/hamza/.local/share/virtualenvs/Halal-Lens-in2oJq3B/lib/python3.10/site-packages/urllib3/util/retry.py", line 519, in increment
+    raise MaxRetryError(_pool, url, reason) from reason  # type: ignore[arg-type]
+urllib3.exceptions.MaxRetryError: HTTPConnectionPool(host='192.168.1.4', port=11434): Max retries exceeded with url: /v1/chat/completions (Caused by NewConnectionError('<urllib3.connection.HTTPConnection object at 0x7a8f7ddbfaf0>: Failed to establish a new connection: [Errno 1] Operation not permitted'))
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/hamza/BusinessProjects/Halal-Lens/narrator/llm.py", line 68, in complete
+    response = self.session.post(
+  File "/home/hamza/.local/share/virtualenvs/Halal-Lens-in2oJq3B/lib/python3.10/site-packages/requests/sessions.py", line 637, in post
+    return self.request("POST", url, data=data, json=json, **kwargs)
+  File "/home/hamza/.local/share/virtualenvs/Halal-Lens-in2oJq3B/lib/python3.10/site-packages/requests/sessions.py", line 589, in request
+    resp = self.send(prep, **send_kwargs)
+  File "/home/hamza/.local/share/virtualenvs/Halal-Lens-in2oJq3B/lib/python3.10/site-packages/requests/sessions.py", line 703, in send
+    r = adapter.send(request, **kwargs)
+  File "/home/hamza/.local/share/virtualenvs/Halal-Lens-in2oJq3B/lib/python3.10/site-packages/requests/adapters.py", line 700, in send
+    raise ConnectionError(e, request=request)
+requests.exceptions.ConnectionError: HTTPConnectionPool(host='192.168.1.4', port=11434): Max retries exceeded with url: /v1/chat/completions (Caused by NewConnectionError('<urllib3.connection.HTTPConnection object at 0x7a8f7ddbfaf0>: Failed to establish a new connection: [Errno 1] Operation not permitted'))
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/hamza/BusinessProjects/Halal-Lens/narrator/explainer.py", line 94, in build
+    return self.llm_engine.build(evaluation)
+  File "/home/hamza/BusinessProjects/Halal-Lens/narrator/llm.py", line 142, in build
+    raw = self.client.complete(
+  File "/home/hamza/BusinessProjects/Halal-Lens/narrator/llm.py", line 73, in complete
+    raise LLMNarrationError(f"LLM request failed: {exc}") from exc
+narrator.llm.LLMNarrationError: LLM request failed: HTTPConnectionPool(host='192.168.1.4', port=11434): Max retries exceeded with url: /v1/chat/completions (Caused by NewConnectionError('<urllib3.connection.HTTPConnection object at 0x7a8f7ddbfaf0>: Failed to establish a new connection: [Errno 1] Operation not permitted'))
+Wednesday 24-12-2025 04:10:12 PM WARNING [api] LLM narration failed for FALL, falling back to rule-based
+Traceback (most recent call last):
+  File "/home/hamza/BusinessProjects/Halal-Lens/narrator/explainer.py", line 94, in build
+    return self.llm_engine.build(evaluation)
+  File "/home/hamza/BusinessProjects/Halal-Lens/narrator/llm.py", line 142, in build
+    raw = self.client.complete(
+  File "/home/hamza/BusinessProjects/Halal-Lens/tests/test_narrator.py", line 117, in complete
+    raise LLMNarrationError("boom")
+narrator.llm.LLMNarrationError: boom
+Wednesday 24-12-2025 04:10:40 PM INFO [api] Logging to logs_runtime/api/2025/December/api.log
+Wednesday 24-12-2025 04:10:40 PM INFO [api] Database connection pool initialized (2-20 connections)
+Wednesday 24-12-2025 04:10:40 PM INFO [api] Connected to PostgreSQL: PostgreSQL 14.20 (Ubuntu 14.20-0ubuntu0.22.04.1) o...
+Wednesday 24-12-2025 04:10:49 PM WARNING [api] LLM narration failed for FALL, falling back to rule-based
+Traceback (most recent call last):
+  File "/home/hamza/BusinessProjects/Halal-Lens/narrator/explainer.py", line 94, in build
+    return self.llm_engine.build(evaluation)
+  File "/home/hamza/BusinessProjects/Halal-Lens/narrator/llm.py", line 142, in build
+    raw = self.client.complete(
+  File "/home/hamza/BusinessProjects/Halal-Lens/tests/test_narrator.py", line 117, in complete
+    raise LLMNarrationError("boom")
+narrator.llm.LLMNarrationError: boom
+Wednesday 24-12-2025 04:22:06 PM INFO [api] Logging to logs_runtime/api/2025/December/api.log
+Wednesday 24-12-2025 04:22:06 PM ERROR [api] Database connection failed: 
+Wednesday 24-12-2025 04:22:06 PM WARNING [api] Database unavailable; DB-backed endpoints will return 503
+Wednesday 24-12-2025 04:22:38 PM INFO [api] Logging to logs_runtime/api/2025/December/api.log
+Wednesday 24-12-2025 04:22:38 PM ERROR [api] Database connection failed: 
+Wednesday 24-12-2025 04:22:38 PM WARNING [api] Database unavailable; DB-backed endpoints will return 503
+Wednesday 24-12-2025 04:22:51 PM INFO [api] Logging to logs_runtime/api/2025/December/api.log
+Wednesday 24-12-2025 04:22:51 PM ERROR [api] Database connection failed: 
+Wednesday 24-12-2025 04:22:51 PM WARNING [api] Database unavailable; DB-backed endpoints will return 503
+Wednesday 24-12-2025 04:22:51 PM WARNING [api] LLM narration failed for TCS, falling back to rule-based
+Traceback (most recent call last):
+  File "/home/hamza/.local/share/virtualenvs/Halal-Lens-in2oJq3B/lib/python3.10/site-packages/urllib3/connection.py", line 198, in _new_conn
+    sock = connection.create_connection(
+  File "/home/hamza/.local/share/virtualenvs/Halal-Lens-in2oJq3B/lib/python3.10/site-packages/urllib3/util/connection.py", line 85, in create_connection
+    raise err
+  File "/home/hamza/.local/share/virtualenvs/Halal-Lens-in2oJq3B/lib/python3.10/site-packages/urllib3/util/connection.py", line 64, in create_connection
+    sock = socket.socket(af, socktype, proto)
+  File "/usr/lib/python3.10/socket.py", line 232, in __init__
+    _socket.socket.__init__(self, family, type, proto, fileno)
+PermissionError: [Errno 1] Operation not permitted
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/hamza/.local/share/virtualenvs/Halal-Lens-in2oJq3B/lib/python3.10/site-packages/urllib3/connectionpool.py", line 787, in urlopen
+    response = self._make_request(
+  File "/home/hamza/.local/share/virtualenvs/Halal-Lens-in2oJq3B/lib/python3.10/site-packages/urllib3/connectionpool.py", line 493, in _make_request
+    conn.request(
+  File "/home/hamza/.local/share/virtualenvs/Halal-Lens-in2oJq3B/lib/python3.10/site-packages/urllib3/connection.py", line 494, in request
+    self.endheaders()
+  File "/usr/lib/python3.10/http/client.py", line 1278, in endheaders
+    self._send_output(message_body, encode_chunked=encode_chunked)
+  File "/usr/lib/python3.10/http/client.py", line 1038, in _send_output
+    self.send(msg)
+  File "/usr/lib/python3.10/http/client.py", line 976, in send
+    self.connect()
+  File "/home/hamza/.local/share/virtualenvs/Halal-Lens-in2oJq3B/lib/python3.10/site-packages/urllib3/connection.py", line 325, in connect
+    self.sock = self._new_conn()
+  File "/home/hamza/.local/share/virtualenvs/Halal-Lens-in2oJq3B/lib/python3.10/site-packages/urllib3/connection.py", line 213, in _new_conn
+    raise NewConnectionError(
+urllib3.exceptions.NewConnectionError: <urllib3.connection.HTTPConnection object at 0x710f8eebb7c0>: Failed to establish a new connection: [Errno 1] Operation not permitted
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/hamza/.local/share/virtualenvs/Halal-Lens-in2oJq3B/lib/python3.10/site-packages/requests/adapters.py", line 667, in send
+    resp = conn.urlopen(
+  File "/home/hamza/.local/share/virtualenvs/Halal-Lens-in2oJq3B/lib/python3.10/site-packages/urllib3/connectionpool.py", line 841, in urlopen
+    retries = retries.increment(
+  File "/home/hamza/.local/share/virtualenvs/Halal-Lens-in2oJq3B/lib/python3.10/site-packages/urllib3/util/retry.py", line 519, in increment
+    raise MaxRetryError(_pool, url, reason) from reason  # type: ignore[arg-type]
+urllib3.exceptions.MaxRetryError: HTTPConnectionPool(host='192.168.1.4', port=11434): Max retries exceeded with url: /v1/chat/completions (Caused by NewConnectionError('<urllib3.connection.HTTPConnection object at 0x710f8eebb7c0>: Failed to establish a new connection: [Errno 1] Operation not permitted'))
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/hamza/BusinessProjects/Halal-Lens/narrator/llm.py", line 68, in complete
+    response = self.session.post(
+  File "/home/hamza/.local/share/virtualenvs/Halal-Lens-in2oJq3B/lib/python3.10/site-packages/requests/sessions.py", line 637, in post
+    return self.request("POST", url, data=data, json=json, **kwargs)
+  File "/home/hamza/.local/share/virtualenvs/Halal-Lens-in2oJq3B/lib/python3.10/site-packages/requests/sessions.py", line 589, in request
+    resp = self.send(prep, **send_kwargs)
+  File "/home/hamza/.local/share/virtualenvs/Halal-Lens-in2oJq3B/lib/python3.10/site-packages/requests/sessions.py", line 703, in send
+    r = adapter.send(request, **kwargs)
+  File "/home/hamza/.local/share/virtualenvs/Halal-Lens-in2oJq3B/lib/python3.10/site-packages/requests/adapters.py", line 700, in send
+    raise ConnectionError(e, request=request)
+requests.exceptions.ConnectionError: HTTPConnectionPool(host='192.168.1.4', port=11434): Max retries exceeded with url: /v1/chat/completions (Caused by NewConnectionError('<urllib3.connection.HTTPConnection object at 0x710f8eebb7c0>: Failed to establish a new connection: [Errno 1] Operation not permitted'))
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/hamza/BusinessProjects/Halal-Lens/narrator/explainer.py", line 94, in build
+    return self.llm_engine.build(evaluation)
+  File "/home/hamza/BusinessProjects/Halal-Lens/narrator/llm.py", line 142, in build
+    raw = self.client.complete(
+  File "/home/hamza/BusinessProjects/Halal-Lens/narrator/llm.py", line 73, in complete
+    raise LLMNarrationError(f"LLM request failed: {exc}") from exc
+narrator.llm.LLMNarrationError: LLM request failed: HTTPConnectionPool(host='192.168.1.4', port=11434): Max retries exceeded with url: /v1/chat/completions (Caused by NewConnectionError('<urllib3.connection.HTTPConnection object at 0x710f8eebb7c0>: Failed to establish a new connection: [Errno 1] Operation not permitted'))
+Wednesday 24-12-2025 04:22:51 PM WARNING [api] LLM narration failed for FALL, falling back to rule-based
+Traceback (most recent call last):
+  File "/home/hamza/BusinessProjects/Halal-Lens/narrator/explainer.py", line 94, in build
+    return self.llm_engine.build(evaluation)
+  File "/home/hamza/BusinessProjects/Halal-Lens/narrator/llm.py", line 142, in build
+    raw = self.client.complete(
+  File "/home/hamza/BusinessProjects/Halal-Lens/tests/test_narrator.py", line 117, in complete
+    raise LLMNarrationError("boom")
+narrator.llm.LLMNarrationError: boom
+Wednesday 24-12-2025 04:26:07 PM INFO [api] Logging to logs_runtime/api/2025/December/api.log
+Wednesday 24-12-2025 04:26:07 PM ERROR [api] Database connection failed: 
+Wednesday 24-12-2025 04:26:07 PM WARNING [api] Database unavailable; DB-backed endpoints will return 503
+Wednesday 24-12-2025 04:26:24 PM INFO [api] Logging to logs_runtime/api/2025/December/api.log
+Wednesday 24-12-2025 04:26:24 PM ERROR [api] Database connection failed: 
+Wednesday 24-12-2025 04:26:24 PM WARNING [api] Database unavailable; DB-backed endpoints will return 503
+Wednesday 24-12-2025 04:29:30 PM INFO [api] Logging to logs_runtime/api/2025/December/api.log
+Wednesday 24-12-2025 04:29:30 PM ERROR [api] Database connection failed: 
+Wednesday 24-12-2025 04:29:30 PM WARNING [api] Database unavailable; DB-backed endpoints will return 503
+Wednesday 24-12-2025 04:29:43 PM INFO [api] Logging to logs_runtime/api/2025/December/api.log
+Wednesday 24-12-2025 04:29:43 PM ERROR [api] Database connection failed: 
+Wednesday 24-12-2025 04:29:43 PM WARNING [api] Database unavailable; DB-backed endpoints will return 503
+Wednesday 24-12-2025 04:29:56 PM INFO [api] Logging to logs_runtime/api/2025/December/api.log
+Wednesday 24-12-2025 04:29:56 PM ERROR [api] Database connection failed: 
+Wednesday 24-12-2025 04:29:56 PM WARNING [api] Database unavailable; DB-backed endpoints will return 503
+Wednesday 24-12-2025 04:29:56 PM WARNING [api] LLM narration failed for TCS, falling back to rule-based
+Traceback (most recent call last):
+  File "/home/hamza/.local/share/virtualenvs/Halal-Lens-in2oJq3B/lib/python3.10/site-packages/urllib3/connection.py", line 198, in _new_conn
+    sock = connection.create_connection(
+  File "/home/hamza/.local/share/virtualenvs/Halal-Lens-in2oJq3B/lib/python3.10/site-packages/urllib3/util/connection.py", line 85, in create_connection
+    raise err
+  File "/home/hamza/.local/share/virtualenvs/Halal-Lens-in2oJq3B/lib/python3.10/site-packages/urllib3/util/connection.py", line 64, in create_connection
+    sock = socket.socket(af, socktype, proto)
+  File "/usr/lib/python3.10/socket.py", line 232, in __init__
+    _socket.socket.__init__(self, family, type, proto, fileno)
+PermissionError: [Errno 1] Operation not permitted
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/hamza/.local/share/virtualenvs/Halal-Lens-in2oJq3B/lib/python3.10/site-packages/urllib3/connectionpool.py", line 787, in urlopen
+    response = self._make_request(
+  File "/home/hamza/.local/share/virtualenvs/Halal-Lens-in2oJq3B/lib/python3.10/site-packages/urllib3/connectionpool.py", line 493, in _make_request
+    conn.request(
+  File "/home/hamza/.local/share/virtualenvs/Halal-Lens-in2oJq3B/lib/python3.10/site-packages/urllib3/connection.py", line 494, in request
+    self.endheaders()
+  File "/usr/lib/python3.10/http/client.py", line 1278, in endheaders
+    self._send_output(message_body, encode_chunked=encode_chunked)
+  File "/usr/lib/python3.10/http/client.py", line 1038, in _send_output
+    self.send(msg)
+  File "/usr/lib/python3.10/http/client.py", line 976, in send
+    self.connect()
+  File "/home/hamza/.local/share/virtualenvs/Halal-Lens-in2oJq3B/lib/python3.10/site-packages/urllib3/connection.py", line 325, in connect
+    self.sock = self._new_conn()
+  File "/home/hamza/.local/share/virtualenvs/Halal-Lens-in2oJq3B/lib/python3.10/site-packages/urllib3/connection.py", line 213, in _new_conn
+    raise NewConnectionError(
+urllib3.exceptions.NewConnectionError: <urllib3.connection.HTTPConnection object at 0x7f0b8944cf10>: Failed to establish a new connection: [Errno 1] Operation not permitted
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/hamza/.local/share/virtualenvs/Halal-Lens-in2oJq3B/lib/python3.10/site-packages/requests/adapters.py", line 667, in send
+    resp = conn.urlopen(
+  File "/home/hamza/.local/share/virtualenvs/Halal-Lens-in2oJq3B/lib/python3.10/site-packages/urllib3/connectionpool.py", line 841, in urlopen
+    retries = retries.increment(
+  File "/home/hamza/.local/share/virtualenvs/Halal-Lens-in2oJq3B/lib/python3.10/site-packages/urllib3/util/retry.py", line 519, in increment
+    raise MaxRetryError(_pool, url, reason) from reason  # type: ignore[arg-type]
+urllib3.exceptions.MaxRetryError: HTTPConnectionPool(host='192.168.1.4', port=11434): Max retries exceeded with url: /v1/chat/completions (Caused by NewConnectionError('<urllib3.connection.HTTPConnection object at 0x7f0b8944cf10>: Failed to establish a new connection: [Errno 1] Operation not permitted'))
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/hamza/BusinessProjects/Halal-Lens/narrator/llm.py", line 68, in complete
+    response = self.session.post(
+  File "/home/hamza/.local/share/virtualenvs/Halal-Lens-in2oJq3B/lib/python3.10/site-packages/requests/sessions.py", line 637, in post
+    return self.request("POST", url, data=data, json=json, **kwargs)
+  File "/home/hamza/.local/share/virtualenvs/Halal-Lens-in2oJq3B/lib/python3.10/site-packages/requests/sessions.py", line 589, in request
+    resp = self.send(prep, **send_kwargs)
+  File "/home/hamza/.local/share/virtualenvs/Halal-Lens-in2oJq3B/lib/python3.10/site-packages/requests/sessions.py", line 703, in send
+    r = adapter.send(request, **kwargs)
+  File "/home/hamza/.local/share/virtualenvs/Halal-Lens-in2oJq3B/lib/python3.10/site-packages/requests/adapters.py", line 700, in send
+    raise ConnectionError(e, request=request)
+requests.exceptions.ConnectionError: HTTPConnectionPool(host='192.168.1.4', port=11434): Max retries exceeded with url: /v1/chat/completions (Caused by NewConnectionError('<urllib3.connection.HTTPConnection object at 0x7f0b8944cf10>: Failed to establish a new connection: [Errno 1] Operation not permitted'))
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/hamza/BusinessProjects/Halal-Lens/narrator/explainer.py", line 94, in build
+    return self.llm_engine.build(evaluation)
+  File "/home/hamza/BusinessProjects/Halal-Lens/narrator/llm.py", line 142, in build
+    raw = self.client.complete(
+  File "/home/hamza/BusinessProjects/Halal-Lens/narrator/llm.py", line 73, in complete
+    raise LLMNarrationError(f"LLM request failed: {exc}") from exc
+narrator.llm.LLMNarrationError: LLM request failed: HTTPConnectionPool(host='192.168.1.4', port=11434): Max retries exceeded with url: /v1/chat/completions (Caused by NewConnectionError('<urllib3.connection.HTTPConnection object at 0x7f0b8944cf10>: Failed to establish a new connection: [Errno 1] Operation not permitted'))
+Wednesday 24-12-2025 04:29:56 PM WARNING [api] LLM narration failed for FALL, falling back to rule-based
+Traceback (most recent call last):
+  File "/home/hamza/BusinessProjects/Halal-Lens/narrator/explainer.py", line 94, in build
+    return self.llm_engine.build(evaluation)
+  File "/home/hamza/BusinessProjects/Halal-Lens/narrator/llm.py", line 142, in build
+    raw = self.client.complete(
+  File "/home/hamza/BusinessProjects/Halal-Lens/tests/test_narrator.py", line 117, in complete
+    raise LLMNarrationError("boom")
+narrator.llm.LLMNarrationError: boom
+Wednesday 24-12-2025 04:32:12 PM INFO [api] Logging to logs_runtime/api/2025/December/api.log
+Wednesday 24-12-2025 04:32:12 PM ERROR [api] Database connection failed: 
+Wednesday 24-12-2025 04:32:12 PM WARNING [api] Database unavailable; DB-backed endpoints will return 503

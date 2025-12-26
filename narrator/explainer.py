@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Dict, List, Optional
+from typing import Callable, Dict, List, Optional
 
 from narrator.llm import LLMClient, LLMNarrationEngine, LLMNarrationError
 from narrator.models import NarrationResult, NarratorConfig
@@ -73,10 +73,14 @@ class NarrationEngine:
         self,
         config: Optional[NarratorConfig] = None,
         llm_client: Optional[LLMClient] = None,
+        failure_callback: Optional[
+            Callable[[RatioEvaluation, LLMNarrationError], None]
+        ] = None,
     ):
         self.config = config or NarratorConfig.default()
         self.rule_based = RuleBasedNarrator()
         self.llm_engine: Optional[LLMNarrationEngine] = None
+        self.failure_callback = failure_callback
 
         self.logger = logging.getLogger("narrator")
 
@@ -92,12 +96,17 @@ class NarrationEngine:
         if self.llm_engine:
             try:
                 return self.llm_engine.build(evaluation)
-            except LLMNarrationError:
+            except LLMNarrationError as exc:
                 self.logger.warning(
                     "LLM narration failed for %s, falling back to rule-based",
                     evaluation.symbol,
                     exc_info=True,
                 )
+                if self.failure_callback:
+                    try:
+                        self.failure_callback(evaluation, exc)
+                    except Exception:  # pragma: no cover - diagnostics only
+                        self.logger.exception("LLM failure callback crashed")
         return self.rule_based.build(evaluation)
 
 

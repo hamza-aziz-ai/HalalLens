@@ -16,6 +16,25 @@ This guide captures day‑to‑day operations for running HalalLens in a pilot o
 
 Store secrets in a `.env` file, Docker secrets, or whichever secret manager your platform provides. Rotate them periodically; when rotating DB passwords, restart API + ingestion containers to pick up the new values.
 
+### Deployment quick-start
+
+1. Provision a host with Docker Compose v2. If you plan to run Ollama/vLLM locally, make sure a compatible GPU (CUDA 12+) is available and expose the service on `0.0.0.0`.
+2. Prepare external Postgres + MinIO/S3 endpoints (or reuse existing ones). Populate `.env` from `.env.example` with all `POSTGRES_*`, `MINIO_*`, `INDIAN_API_*`, `OPS_*`, and `LLM_*` values.
+3. Launch the stack:
+
+   ```bash
+   docker compose up --build -d
+   ```
+
+4. Verify:
+
+   ```bash
+   curl http://localhost:8001/health
+   curl http://localhost:8001/ops/metrics
+   ```
+
+5. Start the ingestion scheduler (systemd or `docker compose run --rm ingestion`). Monitor GPU narrator hosts via `curl http://host.docker.internal:11434/health`.
+
 ## 2. Schema migrations
 
 1. Pull latest `main`.
@@ -33,6 +52,7 @@ Never skip migrations; the backend expects the schema to match.
 - Environment variables: `INGESTION_INTERVAL_MINUTES`, `OPS_*` for alerts.
 - Logs: `logs/scheduler/<Year>/<Month>/scheduler.log`.
 - Metrics: `logs/metrics/ingestion_metrics.jsonl`.
+- Recommended cadence: hourly. During volatile earnings seasons drop to 15 minutes temporarily, then revert to hourly once filings clear. Watch `/ops/metrics` for consecutive failures.
 
 ### Manual backfill
 
@@ -50,8 +70,8 @@ pipenv run python -m jobs.backfill_evaluations --from-date 20251009 --to-date 20
 - Files reside under `logs/<component>/<Year>/<MonthName>/component.log`. Rotations include the date suffix.
 - Example: `tail -f logs/api/2025/December/api.log`
 - Ship logs to S3/Vector via your preferred agent; prune older months with `find logs -type f -mtime +90 -delete`.
-- Ops notifications: configure `OPS_SMTP_*`, `OPS_EMAIL_*`, and/or `OPS_SLACK_WEBHOOK`. Failures produce “ERROR” emails/Slack messages with tracebacks; recoveries emit “INFO” alerts.
-- Metrics (JSONL) can be ingested by Promtail/Vector for dashboards (success/failure counts, duration).
+- Ops notifications: configure `OPS_SMTP_*`, `OPS_EMAIL_*`, and/or `OPS_SLACK_WEBHOOK`. Failures produce “ERROR” emails/Slack messages with tracebacks; recoveries emit “INFO” alerts. Set `OPS_EVENT_HISTORY` (default 40) to control how many recent alert records are retained/returned by the API.
+- Metrics (JSONL) can be ingested by Promtail/Vector for dashboards (success/failure counts, duration). The API also aggregates these into `GET /ops/metrics`, which surfaces the most recent ingestion runs, market-data alert history, and LLM narration failures—ideal for Grafana tables/cards without scraping raw files.
   - `monitoring/notifier.py` drives the alerts. To test, run `python -m monitoring.notifier` after exporting the `OPS_*` variables or call `OpsNotifier("api").notify("INFO", "testing")` from a REPL.
   - The ingestion scheduler writes JSON lines to `logs/metrics/ingestion_metrics.jsonl`. Quickly summarize them with:
 
@@ -79,14 +99,32 @@ pipenv run python -m jobs.backfill_evaluations --from-date 20251009 --to-date 20
 - Record manual overrides/notes in `feedback_reports.review_notes` to keep an audit trail.
 - For AAOIFI-specific fixes (receivables/liquid/non-halal income), leverage the “Governance overrides” card in the dashboard or call `/governance/overrides` via API. Overrides live in the `governance_overrides` table and are applied before ratios execute.
 
-## 6. Disaster recovery
+## 6. Realtime symbol lookups (Indian API fallback)
+
+- Populate `INDIAN_API_BASE_URL` and `INDIAN_API_KEY` in `.env`. Without these the API can only rely on cached BSE filings.
+- When a user hits `GET /filings/{symbol}?refresh=true` and no local filing exists, FastAPI will:
+  1. Grab company metadata + financial statements from the Indian Stock Market API.
+  2. Persist the synthetic filing to `announcements`, `financial_snapshots`, `market_data_snapshots`, and `indianapi_snapshots`.
+  3. Immediately compute AAOIFI ratios so subsequent `/filings/{symbol}` calls read from Postgres like any other entry.
+- You can verify the persistence by running:
+
+  ```bash
+  curl "http://localhost:8001/filings/TCS?refresh=true"
+  psql -X -U $POSTGRES_USER -d $POSTGRES_DB -c \
+      "SELECT symbol, filing_date, confidence FROM announcements ORDER BY filing_date DESC LIMIT 3;"
+  ```
+
+- Failures are logged under `logs/api/YYYY/Month/api.log` with the prefix `Indian API snapshot`. Re-run the refresh request once the upstream API recovers or you adjust the API key/rate limits.
+
+## 7. Disaster recovery
 
 - **Postgres**: snapshot nightly (pg_dump or managed backup).  
 - **MinIO PDFs**: replicate the bucket externally (MinIO gateway or rclone).  
 - **Cache/downloads**: not critical—rebuildable by re-running ingestion.  
 - **.env** / secrets: store in a secure vault and version them with change history.
+- **Log retention**: rotate monthly via the existing folder structure. Prune anything >90 days unless compliance demands longer (`find logs -type f -mtime +90 -delete`). Archive `logs/metrics/*.jsonl` after importing into your dashboarding stack.
 
-## 6. Backfills & secret rotation runbook
+## 8. Backfills & secret rotation runbook
 
 ### Running historical backfills
 
@@ -111,7 +149,7 @@ pipenv run python -m jobs.backfill_evaluations --from-date 20251009 --to-date 20
 
 Keep this runbook alongside `README.md`; update both whenever operational requirements change.
 
-## 7. Troubleshooting checklist
+## 9. Troubleshooting checklist
 
 - `GET /health` returns `{"status": "ok"}` – verifies FastAPI + DB connectivity.  
 - Scheduler heartbeat: check `/tmp/ingestion_heartbeat.txt` timestamp (or your custom path).  

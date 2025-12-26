@@ -70,6 +70,7 @@ CREATE TABLE IF NOT EXISTS filing_evaluations (
     narration_source   TEXT,
     market_cap_used    NUMERIC,
     trailing_cap_used  NUMERIC,
+    market_data_provider TEXT,
     evaluated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     PRIMARY KEY (symbol, filing_date),
     FOREIGN KEY (symbol, filing_date)
@@ -106,6 +107,20 @@ CREATE TABLE IF NOT EXISTS feedback_reports (
     reevaluation_notes TEXT,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+CREATE TABLE IF NOT EXISTS feedback_events (
+    id              SERIAL PRIMARY KEY,
+    feedback_id     INTEGER NOT NULL REFERENCES feedback_reports(id) ON DELETE CASCADE,
+    event_type      TEXT NOT NULL,
+    status          TEXT,
+    reviewer        TEXT,
+    details         TEXT,
+    source          TEXT DEFAULT 'api',
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_feedback_events_feedback_id_created_at
+    ON feedback_events(feedback_id, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS governance_overrides (
     symbol              VARCHAR(32) NOT NULL,
@@ -149,6 +164,92 @@ CREATE TABLE IF NOT EXISTS indianapi_snapshots (
 
 CREATE INDEX IF NOT EXISTS idx_indianapi_snapshots_fetched_at
     ON indianapi_snapshots (fetched_at DESC);
+
+CREATE TABLE IF NOT EXISTS users (
+    id SERIAL PRIMARY KEY,
+    email TEXT NOT NULL UNIQUE,
+    password_hash TEXT NOT NULL,
+    provider TEXT NOT NULL DEFAULT 'password',
+    google_sub TEXT UNIQUE,
+    full_name TEXT,
+    avatar_url TEXT,
+    plan TEXT NOT NULL DEFAULT 'free',
+    subscription_status TEXT NOT NULL DEFAULT 'inactive',
+    subscription_renewal DATE,
+    plan_started_at TIMESTAMPTZ,
+    last_login TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS user_sessions (
+    token TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    expires_at TIMESTAMPTZ NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+CREATE INDEX IF NOT EXISTS idx_users_google_sub ON users(google_sub);
+CREATE INDEX IF NOT EXISTS idx_user_sessions_user ON user_sessions(user_id);
+
+CREATE TABLE IF NOT EXISTS subscription_plans (
+    code TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    price_inr INTEGER NOT NULL,
+    interval_days INTEGER NOT NULL DEFAULT 30,
+    features JSONB NOT NULL DEFAULT '{}'::jsonb,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS user_subscriptions (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    plan_code TEXT NOT NULL REFERENCES subscription_plans(code),
+    provider TEXT NOT NULL DEFAULT 'razorpay',
+    status TEXT NOT NULL DEFAULT 'inactive',
+    current_period_start TIMESTAMPTZ,
+    current_period_end TIMESTAMPTZ,
+    cancel_at_period_end BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_subscriptions_user
+    ON user_subscriptions (user_id);
+
+CREATE TABLE IF NOT EXISTS razorpay_orders (
+    order_id TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    amount INTEGER NOT NULL,
+    currency TEXT NOT NULL DEFAULT 'INR',
+    status TEXT NOT NULL DEFAULT 'created',
+    payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS payment_events (
+    id BIGSERIAL PRIMARY KEY,
+    user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    provider TEXT NOT NULL DEFAULT 'razorpay',
+    event_type TEXT NOT NULL,
+    event_id TEXT,
+    payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+INSERT INTO subscription_plans (code, name, price_inr, interval_days, features)
+VALUES (
+    'starter',
+    'Starter',
+    50,
+    30,
+    '["instant_lookup","explain_why","governance_overrides","history","alerts"]'::jsonb
+)
+ON CONFLICT (code) DO NOTHING;
 
 CREATE TABLE IF NOT EXISTS bhavcopy_quotes (
     symbol      VARCHAR(32) NOT NULL,

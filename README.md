@@ -125,6 +125,20 @@ npm run dev          # http://localhost:3000
 
 Set `HALAL_API_BASE_URL` to the FastAPI origin (default `http://localhost:8000`). The UI proxies analysis via `/api/analysis`, fetches recent filings via `/api/filings/recent`, auto-looks up market caps/share prices via `/api/market-data` (now using the BSE `SCRIP_CD` captured in ingestion for better coverage), and surfaces `/watchlist` + `/alerts/check` so you can add symbols and see compliance-flip alerts without leaving the dashboard.
 
+Head to `http://localhost:3000/login` to register/sign in; once authenticated the dashboard lives at `/dashboard` and mirrors the same routing when deployed with Docker (`/login` + `/dashboard` behind port 3001 in the compose stack). When the Google env vars are present you’ll also see a **Continue with Google** button—the FastAPI backend exchanges the OAuth code, issues a HalalLens bearer token, and redirects back to the dashboard with the token stored in `localStorage`.
+
+### Google SSO (optional)
+
+1. Create a Google Cloud project, configure the OAuth consent screen (External), and register a “Web application” OAuth client. Add the dashboard origin(s) as “Authorized JavaScript origins” and `https://api.example.com/auth/google/callback` (plus `http://localhost:8001/auth/google/callback` for local dev) as authorized redirect URIs.
+2. Populate `.env` with:
+   ```env
+   GOOGLE_CLIENT_ID=your-client-id.apps.googleusercontent.com
+   GOOGLE_CLIENT_SECRET=super-secret
+   GOOGLE_REDIRECT_URI=http://localhost:8001/auth/google/callback
+   FRONTEND_BASE_URL=http://localhost:3000
+   ```
+3. Restart the API (or `docker compose up --build`). The `/auth/google/start` endpoint now redirects to Google; after consent the API links/creates a user record (using `google_sub`) and redirects back to `/login#token=...`.
+
 ### Reviewer workflow (feedback triage)
 
 The dashboard now includes a “Feedback queue” card below the reporter form:
@@ -146,8 +160,12 @@ The repository ships Dockerfiles for both the FastAPI backend and the Next.js da
    POSTGRES_DB=halallens
    POSTGRES_USER=halallens
    POSTGRES_PASSWORD=supersecret
-    INDIAN_API_BASE_URL=https://api.indianstocks.local/v1   # provided by your vendor
-    INDIAN_API_KEY=supersecret-api-key
+   INDIAN_API_BASE_URL=https://api.indianstocks.local/v1   # provided by your vendor
+   INDIAN_API_KEY=supersecret-api-key
+   GOOGLE_CLIENT_ID=your-client-id.apps.googleusercontent.com
+   GOOGLE_CLIENT_SECRET=super-secret
+   GOOGLE_REDIRECT_URI=http://api:8001/auth/google/callback
+   FRONTEND_BASE_URL=http://localhost:3000
    NEXT_PUBLIC_HALAL_API_BASE_URL=http://api:8001
    ```
    If you run Docker on native Linux, `host.docker.internal` is provided via the `extra_hosts` entry in `docker-compose.yml`; you can also set `POSTGRES_HOST` to the IP/hostname of your Postgres instance explicitly.

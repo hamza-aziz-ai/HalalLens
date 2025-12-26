@@ -17,6 +17,7 @@ from market_data import (
 )
 from ratio_engine import FinancialSnapshotInput, MarketDataInput, RatioEngine
 from config.logging_config import configure_logging
+from config import INDIAN_API_OVERRIDE_TOLERANCE
 
 logger = logging.getLogger("backfill")
 engine = RatioEngine()
@@ -24,6 +25,20 @@ bhavcopy_resolver = BhavcopyMarketResolver()
 FAILED_MARKET_LOOKUPS: Dict[str, int] = defaultdict(int)
 MARKET_FAILURE_THRESHOLD = 3
 MARKET_CACHE: Dict[str, Tuple[Optional[float], Optional[float], Optional[str]]] = {}
+STRUCTURED_FIELDS = {
+    "accounts_receivable": "accounts_receivable",
+    "liquid_assets": "liquid_assets",
+    "non_permissible_income": "non_halal_income",
+    "non_halal_income": "non_halal_income",
+}
+
+
+def _needs_override(current: Optional[float], candidate: Optional[float]) -> bool:
+    if current is None or candidate is None:
+        return False
+    baseline = max(abs(current), 1.0)
+    delta = abs(candidate - current) / baseline
+    return delta >= INDIAN_API_OVERRIDE_TOLERANCE
 
 
 def _coerce_float(value) -> Optional[float]:
@@ -110,6 +125,7 @@ def _enrich_snapshot_with_indian_api(
         return
 
     metrics = indian_snapshot.metrics
+    overrides: Dict[str, float] = {}
     for field in fields:
         current = getattr(snapshot, field, None)
         if current is not None:
@@ -123,6 +139,46 @@ def _enrich_snapshot_with_indian_api(
             setattr(snapshot, field, value)
             if field == "non_permissible_income":
                 snapshot.non_halal_income = value
+    for field, column in STRUCTURED_FIELDS.items():
+        current = getattr(snapshot, field, None)
+        candidate = metrics.get(column)
+        if field == "non_permissible_income" and candidate is None:
+            candidate = metrics.get("non_halal_income")
+        if not _needs_override(current, candidate):
+            continue
+        setattr(snapshot, field, candidate)
+        if field == "non_permissible_income":
+            snapshot.non_halal_income = candidate
+        overrides[column] = candidate
+
+    if overrides:
+        reason = (
+            "Structured governance metrics from Indian API (>{:.0%} delta)"
+        ).format(INDIAN_API_OVERRIDE_TOLERANCE)
+        try:
+            db.upsert_governance_override(
+                symbol=snapshot.symbol,
+                filing_date=snapshot.filing_date,
+                accounts_receivable=overrides.get("accounts_receivable"),
+                liquid_assets=overrides.get("liquid_assets"),
+                non_halal_income=overrides.get("non_halal_income"),
+                governance_notes="Synchronized with Indian API structured data",
+                reviewer="system",
+                reason=reason,
+                source="indianapi",
+            )
+            db.record_quality_issue(
+                snapshot.symbol,
+                snapshot.filing_date,
+                "governance_override",
+                f"Structured data override applied for {', '.join(overrides.keys())}",
+            )
+        except Exception as exc:  # pragma: no cover - defensive logging
+            logger.debug(
+                "Failed persisting Indian API override for %s: %s",
+                snapshot.symbol,
+                exc,
+            )
 
 
 def _clear_market_failure(symbol: str, filing_date: datetime, db: BSEDatabaseManager) -> None:
@@ -247,7 +303,11 @@ def main(limit: int = 500) -> None:
 
             evaluation = engine.evaluate(
                 snapshot,
-                MarketDataInput(market_cap=market_cap, share_price=share_price),
+                MarketDataInput(
+                    market_cap=market_cap,
+                    share_price=share_price,
+                    provider=provider or "manual",
+                ),
             )
 
             ratios_payload = {

@@ -17,6 +17,7 @@ export type AnalysisPayload = {
     market_cap?: Numeric;
     trailing_market_cap?: Numeric;
     share_price?: Numeric;
+    provider?: string | null;
   };
 };
 
@@ -25,6 +26,7 @@ export type RatioComputation = {
   threshold: number;
   passed: boolean | null;
   note: string;
+  provider?: string | null;
 };
 
 export type HalalScoreResponse = {
@@ -51,7 +53,26 @@ export type NarrationResponse = {
 
 export type AnalysisResponse = {
   score: HalalScoreResponse;
-  narration: NarrationResponse;
+  narration: NarrationResponse | null;
+};
+
+export type BillingPlan = {
+  code: string;
+  name: string;
+  price_inr: number;
+  interval_days: number;
+  features: string[];
+  is_active: boolean;
+};
+
+export type RazorpayOrderResponse = {
+  key_id: string;
+  order_id: string;
+  amount: number;
+  currency: string;
+  plan_code: string;
+  plan_name: string;
+  email: string;
 };
 
 export type Filing = {
@@ -141,6 +162,17 @@ export type FeedbackReport = {
   created_at: string;
 };
 
+export type FeedbackEvent = {
+  id: number;
+  feedback_id: number;
+  event_type: string;
+  status?: string | null;
+  reviewer?: string | null;
+  details?: string | null;
+  source?: string | null;
+  created_at: string;
+};
+
 export type FeedbackSubmissionResponse = {
   status: string;
   ticket_id: number;
@@ -160,6 +192,7 @@ export type FeedbackTrackingStatus = {
   resolved_at?: string | null;
   reevaluated_at?: string | null;
   reevaluation_notes?: string | null;
+  events?: FeedbackEvent[];
 };
 
 export type GovernanceOverride = {
@@ -174,4 +207,44 @@ export type GovernanceOverride = {
   source?: string | null;
   created_at: string;
   updated_at: string;
+};
+
+export type GovernanceMetricSet = {
+  label: string;
+  source: string;
+  metrics: Record<string, number | null | undefined>;
+  applied?: boolean | null;
+  reviewer?: string | null;
+  reason?: string | null;
+  notes?: string | null;
+  updated_at?: string | null;
+  snapshot_date?: string | null;
+  market_cap?: number | null;
+};
+
+export type GovernanceDifferences = Record<
+  string,
+  {
+    override_delta?: number | null;
+    indian_delta?: number | null;
+  }
+>;
+
+export type GovernanceReview = {
+  symbol: string;
+  filing_date: string;
+  ingested: GovernanceMetricSet;
+  override?: GovernanceMetricSet | null;
+  indian_api?: GovernanceMetricSet | null;
+  differences: GovernanceDifferences;
+};
+
+export type UserProfile = {
+  id: number;
+  email: string;
+  plan: string;
+  subscription_status: string;
+  subscription_renewal?: string | null;
+  full_name?: string | null;
+  avatar_url?: string | null;
 };
