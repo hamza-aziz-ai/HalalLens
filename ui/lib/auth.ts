@@ -6,6 +6,7 @@ export type UserProfile = {
   plan: string;
   subscription_status: string;
   subscription_renewal?: string | null;
+  is_admin?: boolean;
 };
 
 export type AuthResponse = {

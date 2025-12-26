@@ -173,6 +173,7 @@ CREATE TABLE IF NOT EXISTS users (
     google_sub TEXT UNIQUE,
     full_name TEXT,
     avatar_url TEXT,
+    is_admin BOOLEAN NOT NULL DEFAULT FALSE,
     plan TEXT NOT NULL DEFAULT 'free',
     subscription_status TEXT NOT NULL DEFAULT 'inactive',
     subscription_renewal DATE,

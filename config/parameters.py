@@ -26,6 +26,12 @@ def _as_int(value: str | None, default: int) -> int:
         return default
 
 
+def _as_list(value: str | None) -> list[str]:
+    if not value:
+        return []
+    return [item.strip().lower() for item in value.split(",") if item.strip()]
+
+
 POSTGRES_HOST = os.getenv("POSTGRES_HOST", "localhost")
 POSTGRES_PORT = _as_int(os.getenv("POSTGRES_PORT"), 5432)
 POSTGRES_DB = os.getenv("POSTGRES_DB", "Halal-Lens")
@@ -54,6 +60,7 @@ GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
 GOOGLE_REDIRECT_URI = os.getenv("GOOGLE_REDIRECT_URI")
 FRONTEND_BASE_URL = os.getenv("FRONTEND_BASE_URL", "http://localhost:3000")
+ADMIN_EMAILS = _as_list(os.getenv("ADMIN_EMAILS"))
 TICKER_MAP_PATH = Path(__file__).resolve().parent / "ticker_map.json"
 TICKER_MAP: Dict[str, str] = {}
 if TICKER_MAP_PATH.exists():

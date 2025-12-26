@@ -49,6 +49,7 @@ from config import (
     GOOGLE_CLIENT_SECRET,
     GOOGLE_REDIRECT_URI,
     FRONTEND_BASE_URL,
+    ADMIN_EMAILS,
     RAZORPAY_KEY_ID,
     RAZORPAY_KEY_SECRET,
     RAZORPAY_WEBHOOK_SECRET,
@@ -148,6 +149,7 @@ class UserProfile(BaseModel):
     subscription_renewal: Optional[date] = None
     full_name: Optional[str] = None
     avatar_url: Optional[str] = None
+    is_admin: bool = False
 
 
 class AuthTokenResponse(BaseModel):
@@ -375,6 +377,25 @@ def _normalize_email(value: str) -> str:
     return (value or "").strip().lower()
 
 
+def _is_admin_email(email: str) -> bool:
+    if not email:
+        return False
+    return _normalize_email(email) in set(ADMIN_EMAILS)
+
+
+def _apply_admin_flag(user_row: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if not user_row:
+        return user_row
+    if not _is_admin_email(user_row.get("email", "")):
+        return user_row
+    if user_row.get("is_admin"):
+        return user_row
+    _get_db().set_user_admin(user_row["id"], True)
+    updated = dict(user_row)
+    updated["is_admin"] = True
+    return updated
+
+
 def _hash_password(password: str) -> str:
     salt = secrets.token_bytes(16)
     derived = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, 100000)
@@ -401,6 +422,9 @@ def _serialize_user_profile(row: Dict[str, Any]) -> UserProfile:
         plan=row.get("plan", "free"),
         subscription_status=row.get("subscription_status", "inactive"),
         subscription_renewal=row.get("subscription_renewal"),
+        full_name=row.get("full_name"),
+        avatar_url=row.get("avatar_url"),
+        is_admin=bool(row.get("is_admin")),
     )
 
 
@@ -458,6 +482,13 @@ def _ensure_razorpay_enabled() -> None:
 
 
 def _subscription_active(session: Dict[str, Any]) -> bool:
+    if session.get("is_admin"):
+        return True
+    if _is_admin_email(session.get("email", "")):
+        user_id = session.get("user_id")
+        if user_id:
+            _get_db().set_user_admin(user_id, True)
+        return True
     plan = (session.get("plan") or "free").lower()
     status = (session.get("subscription_status") or "inactive").lower()
     return plan != "free" and status in {"active", "trialing"}
@@ -1883,6 +1914,7 @@ async def auth_google_callback(code: str, state: str):
         full_name=profile.get("name"),
         avatar_url=profile.get("picture"),
     )
+    user_row = _apply_admin_flag(user_row)
     _get_db().touch_user_login(user_row["id"])
     api_logger.info("Google SSO user upserted id=%s email=%s", user_row["id"], email)
     token, expires_at = _issue_session(user_row["id"])
@@ -1904,7 +1936,11 @@ async def auth_register(payload: RegisterRequest) -> AuthTokenResponse:
         raise HTTPException(status_code=409, detail="Email already registered")
 
     password_hash = _hash_password(payload.password)
-    user_row = _get_db().create_user(email=email, password_hash=password_hash)
+    user_row = _get_db().create_user(
+        email=email,
+        password_hash=password_hash,
+        is_admin=_is_admin_email(email),
+    )
     token, expires_at = _issue_session(user_row["id"])
     profile = _serialize_user_profile(user_row)
     return AuthTokenResponse(token=token, expires_at=expires_at, user=profile)
@@ -1923,6 +1959,7 @@ async def auth_login(payload: LoginRequest) -> AuthTokenResponse:
             status_code=400, detail="Use Google sign-in for this account"
         )
 
+    user_row = _apply_admin_flag(user_row)
     _get_db().touch_user_login(user_row["id"])
     token, expires_at = _issue_session(user_row["id"])
     profile = _serialize_user_profile(user_row)
@@ -1943,7 +1980,8 @@ async def auth_me(authorization: Optional[str] = Header(None)) -> UserProfile:
     """Return the authenticated user's profile."""
 
     _, session = _require_session(authorization)
-    profile_row = {
+    profile_row = _get_db().get_user_by_id(session["user_id"])
+    profile_row = _apply_admin_flag(profile_row) or {
         "id": session["user_id"],
         "email": session["email"],
         "plan": session.get("plan", "free"),
@@ -1951,6 +1989,7 @@ async def auth_me(authorization: Optional[str] = Header(None)) -> UserProfile:
         "subscription_renewal": session.get("subscription_renewal"),
         "full_name": session.get("full_name"),
         "avatar_url": session.get("avatar_url"),
+        "is_admin": session.get("is_admin", False),
     }
     return _serialize_user_profile(profile_row)
 

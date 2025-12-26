@@ -132,6 +132,7 @@ class AuthDBStub:
             "google_sub": kwargs.get("google_sub"),
             "full_name": kwargs.get("full_name"),
             "avatar_url": kwargs.get("avatar_url"),
+            "is_admin": kwargs.get("is_admin", False),
             "plan": kwargs.get("plan", "free"),
             "subscription_status": kwargs.get("subscription_status", "inactive"),
             "subscription_renewal": None,
@@ -196,6 +197,7 @@ class AuthDBStub:
             "subscription_renewal": user.get("subscription_renewal"),
             "full_name": user.get("full_name"),
             "avatar_url": user.get("avatar_url"),
+            "is_admin": user.get("is_admin", False),
         }
 
     def get_session(self, token):
