@@ -1738,6 +1738,7 @@ class BSEDatabaseManager:
         google_sub: Optional[str] = None,
         full_name: Optional[str] = None,
         avatar_url: Optional[str] = None,
+        is_admin: bool = False,
     ) -> Dict:
         with self.get_connection() as conn:
             with conn.cursor() as cursor:
@@ -1750,6 +1751,7 @@ class BSEDatabaseManager:
                         google_sub,
                         full_name,
                         avatar_url,
+                        is_admin,
                         plan,
                         subscription_status,
                         plan_started_at
@@ -1760,6 +1762,7 @@ class BSEDatabaseManager:
                         %(google_sub)s,
                         %(full_name)s,
                         %(avatar_url)s,
+                        %(is_admin)s,
                         %(plan)s,
                         %(subscription_status)s,
                         NOW()
@@ -1767,7 +1770,7 @@ class BSEDatabaseManager:
                     RETURNING id, email, plan, subscription_status,
                               subscription_renewal, plan_started_at,
                               created_at, updated_at, provider, google_sub,
-                              full_name, avatar_url
+                              full_name, avatar_url, is_admin
                     """,
                     {
                         "email": email,
@@ -1776,6 +1779,7 @@ class BSEDatabaseManager:
                         "google_sub": google_sub,
                         "full_name": full_name,
                         "avatar_url": avatar_url,
+                        "is_admin": is_admin,
                         "plan": plan,
                         "subscription_status": subscription_status,
                     },
@@ -1792,7 +1796,8 @@ class BSEDatabaseManager:
                     SELECT id, email, password_hash, plan,
                            subscription_status, subscription_renewal,
                            provider, google_sub, full_name, avatar_url,
-                           plan_started_at, last_login, created_at, updated_at
+                           plan_started_at, last_login, created_at, updated_at,
+                           is_admin
                     FROM users
                     WHERE email = %(email)s
                     """,
@@ -1811,7 +1816,8 @@ class BSEDatabaseManager:
                     SELECT id, email, plan, subscription_status,
                            subscription_renewal, plan_started_at,
                            last_login, created_at, updated_at,
-                           provider, google_sub, full_name, avatar_url
+                           provider, google_sub, full_name, avatar_url,
+                           is_admin
                     FROM users
                     WHERE id = %(user_id)s
                     """,
@@ -1830,7 +1836,8 @@ class BSEDatabaseManager:
                     SELECT id, email, plan, subscription_status,
                            subscription_renewal, plan_started_at,
                            last_login, created_at, updated_at,
-                           provider, google_sub, full_name, avatar_url
+                           provider, google_sub, full_name, avatar_url,
+                           is_admin
                     FROM users
                     WHERE google_sub = %(google_sub)s
                     """,
@@ -1857,7 +1864,8 @@ class BSEDatabaseManager:
                     SELECT id, email, plan, subscription_status,
                            subscription_renewal, plan_started_at,
                            last_login, created_at, updated_at,
-                           provider, google_sub, full_name, avatar_url
+                           provider, google_sub, full_name, avatar_url,
+                           is_admin
                     FROM users
                     WHERE google_sub = %(google_sub)s
                     """,
@@ -1886,7 +1894,8 @@ class BSEDatabaseManager:
                         RETURNING id, email, plan, subscription_status,
                                   subscription_renewal, plan_started_at,
                                   last_login, created_at, updated_at,
-                                  provider, google_sub, full_name, avatar_url
+                                  provider, google_sub, full_name, avatar_url,
+                                  is_admin
                         """,
                         {
                             "google_sub": google_sub,
@@ -1925,7 +1934,8 @@ class BSEDatabaseManager:
                     RETURNING id, email, plan, subscription_status,
                               subscription_renewal, plan_started_at,
                               last_login, created_at, updated_at,
-                              provider, google_sub, full_name, avatar_url
+                              provider, google_sub, full_name, avatar_url,
+                              is_admin
                     """,
                     {
                         "email": email,
@@ -1986,7 +1996,8 @@ class BSEDatabaseManager:
                         u.subscription_status,
                         u.subscription_renewal,
                         u.full_name,
-                        u.avatar_url
+                        u.avatar_url,
+                        u.is_admin
                     FROM user_sessions s
                     JOIN users u ON u.id = s.user_id
                     WHERE s.token = %(token)s
@@ -1997,6 +2008,19 @@ class BSEDatabaseManager:
                 if not row:
                     return None
                 return dict(row)
+
+    def set_user_admin(self, user_id: int, is_admin: bool = True) -> None:
+        with self.get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    UPDATE users
+                    SET is_admin = %(is_admin)s, updated_at = NOW()
+                    WHERE id = %(user_id)s
+                    """,
+                    {"user_id": user_id, "is_admin": is_admin},
+                )
+                conn.commit()
 
     def delete_session(self, token: str) -> None:
         with self.get_connection() as conn:

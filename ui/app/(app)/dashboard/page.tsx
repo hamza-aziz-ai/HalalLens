@@ -202,10 +202,12 @@ export default function HomePage() {
   const [upgradeMessage, setUpgradeMessage] = useState<string | null>(null);
   const { user: currentUser, loading: authLoading, setUser, refresh } = useAuth();
   const router = useRouter();
+  const isAdmin = Boolean(currentUser?.is_admin);
   const hasPaidAccess = Boolean(
     currentUser &&
-      currentUser.plan !== "free" &&
-      ["active", "trialing"].includes(currentUser.subscription_status),
+      (isAdmin ||
+        (currentUser.plan !== "free" &&
+          ["active", "trialing"].includes(currentUser.subscription_status))),
   );
 
   useEffect(() => {
@@ -959,10 +961,12 @@ export default function HomePage() {
                       {currentUser.email}
                     </span>
                     . Plan:{" "}
-                    <span className="font-semibold capitalize">{currentUser.plan}</span>{" "}
-                    ({currentUser.subscription_status})
+                    <span className="font-semibold capitalize">
+                      {isAdmin ? "admin" : currentUser.plan}
+                    </span>{" "}
+                    ({isAdmin ? "full access" : currentUser.subscription_status})
                   </p>
-                  {currentUser.subscription_renewal && (
+                  {currentUser.subscription_renewal && !isAdmin && (
                     <p className={clsx("text-xs", mutedTextClass)}>
                       Renewal on{" "}
                       {new Date(currentUser.subscription_renewal).toLocaleDateString()}
@@ -975,8 +979,9 @@ export default function HomePage() {
                 </p>
               )}
               <p className={clsx("text-xs", mutedTextClass)}>
-                Starter ₹50/month plan unlocks unlimited lookups, Explain-Why, governance
-                overrides, and premium alerts.
+                {isAdmin
+                  ? "Admin access is active for this account."
+                  : "Starter ₹50/month plan unlocks unlimited lookups, Explain-Why, governance overrides, and premium alerts."}
               </p>
               {billingError && (
                 <p className={clsx("text-xs", errorTextClass)}>{billingError}</p>
