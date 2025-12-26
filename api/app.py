@@ -7,14 +7,21 @@ from dataclasses import asdict
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Literal
+from typing import Any, Dict, List, Optional, Tuple, Literal, Deque
+from collections import deque
 
+import base64
+import hashlib
+import hmac
 import logging
 import os
 import secrets
 import time
-from fastapi import FastAPI, HTTPException
+import requests
+from urllib.parse import urlencode
+from fastapi import FastAPI, HTTPException, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from alerts import AlertEngine, AlertEvent, WatchEntry, WatchlistStorage, EmailNotifier
@@ -36,6 +43,18 @@ from config import (
     ALLOWED_ORIGINS,
     ALLOWED_ORIGIN_REGEX,
     DEFAULT_ALLOWED_ORIGINS,
+    INDIAN_API_OVERRIDE_TOLERANCE,
+    AUTH_TOKEN_TTL_HOURS,
+    GOOGLE_CLIENT_ID,
+    GOOGLE_CLIENT_SECRET,
+    GOOGLE_REDIRECT_URI,
+    FRONTEND_BASE_URL,
+    RAZORPAY_KEY_ID,
+    RAZORPAY_KEY_SECRET,
+    RAZORPAY_WEBHOOK_SECRET,
+    SUBSCRIPTION_PLAN_CODE,
+    SUBSCRIPTION_PRICE_INR,
+    SUBSCRIPTION_INTERVAL_DAYS,
 )
 from config.logging_config import configure_logging
 from narrator import NarrationEngine, NarratorConfig
@@ -47,12 +66,15 @@ from ratio_engine import (
 from database import BSEDatabaseManager
 from market_data import (
     fetch_indian_financial_snapshot,
+    fetch_indian_financial_history,
     BhavcopyMarketResolver,
-    indian_api_enabled,
+    snapshot_from_indian_payload,
+    indian_api_enabled, IndianAPISnapshot,
 )
 from crawler import BSEAnnouncementsFetcher
 from etl import FinancialDataProcessor
 from monitoring.notifier import OpsNotifier
+from monitoring.metrics import summarize_ingestion_metrics
 
 
 class FinancialSnapshotPayload(BaseModel):
@@ -81,6 +103,7 @@ class MarketDataPayload(BaseModel):
     market_cap: Optional[float] = None
     trailing_market_cap: Optional[float] = None
     share_price: Optional[float] = None
+    provider: Optional[str] = None
 
 
 class HalalScoreRequest(BaseModel):
@@ -99,6 +122,7 @@ class RatioComputationPayload(BaseModel):
     threshold: float
     passed: Optional[bool]
     note: str
+    provider: Optional[str] = None
 
 
 class HalalScoreResponse(BaseModel):
@@ -112,6 +136,121 @@ class HalalScoreResponse(BaseModel):
     market_cap_used: Optional[float] = None
     trailing_cap_used: Optional[float] = None
     market_data_provider: Optional[str] = None
+
+
+class UserProfile(BaseModel):
+    """Public information about an authenticated user."""
+
+    id: int
+    email: str
+    plan: str
+    subscription_status: str
+    subscription_renewal: Optional[date] = None
+    full_name: Optional[str] = None
+    avatar_url: Optional[str] = None
+
+
+class AuthTokenResponse(BaseModel):
+    """Returned after registration or login."""
+
+    token: str
+    expires_at: datetime
+    user: UserProfile
+
+
+class RegisterRequest(BaseModel):
+    """Payload for user registration."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    email: str
+    password: str
+
+
+class LoginRequest(BaseModel):
+    """Payload for user login."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    email: str
+    password: str
+
+
+class BillingPlan(BaseModel):
+    code: str
+    name: str
+    price_inr: int
+    interval_days: int
+    features: List[str]
+    is_active: bool
+
+
+class RazorpayOrderRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    plan_code: Optional[str] = None
+
+
+class RazorpayOrderResponse(BaseModel):
+    key_id: str
+    order_id: str
+    amount: int
+    currency: str
+    plan_code: str
+    plan_name: str
+    email: str
+
+
+class RazorpayVerifyRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    order_id: str
+    payment_id: str
+    signature: str
+
+
+class SubscriptionStatusResponse(BaseModel):
+    plan: str
+    subscription_status: str
+    subscription_renewal: Optional[datetime] = None
+
+
+GOVERNANCE_METRICS = [
+    "total_debt",
+    "cash_equiv",
+    "revenue",
+    "interest_income",
+    "dividend_income",
+    "accounts_receivable",
+    "liquid_assets",
+    "non_halal_income",
+]
+
+
+class GovernanceMetricSet(BaseModel):
+    """Metrics captured from ingestion, overrides, or structured sources."""
+
+    label: str
+    source: str
+    metrics: Dict[str, Optional[float]]
+    applied: Optional[bool] = None
+    reviewer: Optional[str] = None
+    reason: Optional[str] = None
+    notes: Optional[str] = None
+    updated_at: Optional[datetime] = None
+    snapshot_date: Optional[date] = None
+    market_cap: Optional[float] = None
+
+
+class GovernanceReviewResponse(BaseModel):
+    """Comparison of governance metrics across sources."""
+
+    symbol: str
+    filing_date: datetime
+    ingested: GovernanceMetricSet
+    override: Optional[GovernanceMetricSet] = None
+    indian_api: Optional[GovernanceMetricSet] = None
+    differences: Dict[str, Dict[str, Optional[float]]] = Field(default_factory=dict)
 
 
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
@@ -143,7 +282,6 @@ narrator_config = NarratorConfig(
     max_tokens=LLM_MAX_TOKENS,
     timeout=LLM_TIMEOUT,
 )
-narrator = NarrationEngine(config=narrator_config)
 watch_storage = WatchlistStorage(Path("cache/watchlists.json"))
 alert_engine = AlertEngine(watch_storage)
 try:
@@ -177,9 +315,307 @@ FEEDBACK_STATUSES = {"open", "in_review", "resolved"}
 TRACKING_TOKEN_LENGTH = 18
 market_notifier = OpsNotifier(component="market_data")
 MARKET_FAILURES: Dict[str, int] = {}
+PROVIDER_FAILURES: Dict[str, int] = {}
 MARKET_FAILURE_ALERT_THRESHOLD = int(
     os.getenv("MARKET_FAILURE_ALERT_THRESHOLD", "3")
 )
+OPS_EVENT_HISTORY = int(os.getenv("OPS_EVENT_HISTORY", "40"))
+INGESTION_METRICS_PATH = Path(
+    os.getenv("INGESTION_METRICS_PATH", "logs/metrics/ingestion_metrics.jsonl")
+)
+narration_notifier = OpsNotifier(component="narrator")
+MARKET_ALERT_EVENTS: Deque[Dict[str, Any]] = deque(maxlen=OPS_EVENT_HISTORY)
+LLM_FAILURE_EVENTS: Deque[Dict[str, Any]] = deque(maxlen=OPS_EVENT_HISTORY)
+
+
+def _now_iso() -> str:
+    return datetime.utcnow().replace(tzinfo=timezone.utc).isoformat()
+
+
+def _record_market_event(event_type: str, **payload: Any) -> None:
+    entry = {"timestamp": _now_iso(), "event": event_type}
+    entry.update(payload)
+    MARKET_ALERT_EVENTS.append(entry)
+
+
+def _record_llm_failure(symbol: str, message: str) -> None:
+    LLM_FAILURE_EVENTS.append(
+        {
+            "timestamp": _now_iso(),
+            "symbol": symbol,
+            "message": message,
+        }
+    )
+
+
+def _handle_llm_failure(evaluation, exc: Exception) -> None:
+    message = str(exc)
+    _record_llm_failure(evaluation.symbol, message)
+    narration_notifier.notify(
+        "ERROR",
+        f"LLM narration failed for {evaluation.symbol}",
+        details=message,
+    )
+
+
+narrator = NarrationEngine(
+    config=narrator_config,
+    failure_callback=_handle_llm_failure,
+)
+
+GOOGLE_AUTH_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth"
+GOOGLE_TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token"
+GOOGLE_USERINFO_ENDPOINT = "https://openidconnect.googleapis.com/v1/userinfo"
+GOOGLE_STATE_TTL = timedelta(minutes=10)
+GOOGLE_STATE_CACHE: Dict[str, datetime] = {}
+RAZORPAY_API_BASE = "https://api.razorpay.com/v1"
+
+
+def _normalize_email(value: str) -> str:
+    return (value or "").strip().lower()
+
+
+def _hash_password(password: str) -> str:
+    salt = secrets.token_bytes(16)
+    derived = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, 100000)
+    return base64.b64encode(salt + derived).decode("ascii")
+
+
+def _verify_password(password: str, stored_hash: str) -> bool:
+    try:
+        data = base64.b64decode(stored_hash.encode("ascii"))
+    except Exception:
+        return False
+    if len(data) < 32:
+        return False
+    salt = data[:16]
+    saved = data[16:]
+    derived = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, 100000)
+    return hmac.compare_digest(saved, derived)
+
+
+def _serialize_user_profile(row: Dict[str, Any]) -> UserProfile:
+    return UserProfile(
+        id=row["id"],
+        email=row["email"],
+        plan=row.get("plan", "free"),
+        subscription_status=row.get("subscription_status", "inactive"),
+        subscription_renewal=row.get("subscription_renewal"),
+    )
+
+
+def _issue_session(user_id: int) -> Tuple[str, datetime]:
+    expires_at = datetime.now(timezone.utc) + timedelta(hours=AUTH_TOKEN_TTL_HOURS)
+    token = secrets.token_urlsafe(32)
+    _get_db().create_user_session(token, user_id, expires_at)
+    return token, expires_at
+
+
+def _extract_token(authorization: Optional[str]) -> Optional[str]:
+    if not authorization:
+        return None
+    parts = authorization.strip().split(" ", 1)
+    if len(parts) != 2:
+        return None
+    scheme, token = parts
+    if scheme.lower() != "bearer":
+        return None
+    return token.strip() or None
+
+
+def _redact_token(token: Optional[str]) -> str:
+    if not token:
+        return "<none>"
+    if len(token) <= 8:
+        return token
+    return f"{token[:6]}...{token[-4:]}"
+
+
+def _require_session(authorization: Optional[str]) -> Tuple[str, Dict[str, Any]]:
+    token = _extract_token(authorization)
+    if not token:
+        raise HTTPException(status_code=401, detail="Authorization token required")
+    session = _get_db().get_session(token)
+    if not session:
+        raise HTTPException(status_code=401, detail="Invalid session")
+    expires_at = session.get("expires_at")
+    if isinstance(expires_at, datetime):
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        if expires_at < datetime.now(timezone.utc):
+            _get_db().delete_session(token)
+            raise HTTPException(status_code=401, detail="Session expired")
+    return token, session
+
+
+def _razorpay_enabled() -> bool:
+    return bool(RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET)
+
+
+def _ensure_razorpay_enabled() -> None:
+    if not _razorpay_enabled():
+        raise HTTPException(status_code=503, detail="Billing not configured")
+
+
+def _subscription_active(session: Dict[str, Any]) -> bool:
+    plan = (session.get("plan") or "free").lower()
+    status = (session.get("subscription_status") or "inactive").lower()
+    return plan != "free" and status in {"active", "trialing"}
+
+
+def _require_paid_feature(
+    authorization: Optional[str], feature: str
+) -> Dict[str, Any]:
+    _, session = _require_session(authorization)
+    if not _subscription_active(session):
+        raise HTTPException(
+            status_code=402,
+            detail=f"{feature} requires an active subscription",
+        )
+    return session
+
+
+def _google_oauth_enabled() -> bool:
+    return bool(GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET and GOOGLE_REDIRECT_URI)
+
+
+def _ensure_google_oauth_enabled() -> None:
+    if not _google_oauth_enabled():
+        raise HTTPException(status_code=503, detail="Google SSO not configured")
+
+
+def _store_google_state(state: str) -> None:
+    now = datetime.now(timezone.utc)
+    GOOGLE_STATE_CACHE[state] = now
+    for key, created in list(GOOGLE_STATE_CACHE.items()):
+        if now - created > GOOGLE_STATE_TTL:
+            GOOGLE_STATE_CACHE.pop(key, None)
+
+
+def _consume_google_state(state: str) -> None:
+    created = GOOGLE_STATE_CACHE.pop(state, None)
+    if not created:
+        raise HTTPException(status_code=400, detail="Invalid OAuth state")
+    if datetime.now(timezone.utc) - created > GOOGLE_STATE_TTL:
+        raise HTTPException(status_code=400, detail="Expired OAuth state")
+
+
+def _build_google_authorization_url(state: str) -> str:
+    params = {
+        "client_id": GOOGLE_CLIENT_ID,
+        "redirect_uri": GOOGLE_REDIRECT_URI,
+        "response_type": "code",
+        "scope": "openid email profile",
+        "access_type": "offline",
+        "prompt": "consent",
+        "state": state,
+    }
+    return f"{GOOGLE_AUTH_ENDPOINT}?{urlencode(params)}"
+
+
+def _exchange_google_code(code: str) -> Dict[str, Any]:
+    data = {
+        "code": code,
+        "client_id": GOOGLE_CLIENT_ID,
+        "client_secret": GOOGLE_CLIENT_SECRET,
+        "redirect_uri": GOOGLE_REDIRECT_URI,
+        "grant_type": "authorization_code",
+    }
+    try:
+        resp = requests.post(GOOGLE_TOKEN_ENDPOINT, data=data, timeout=10)
+        resp.raise_for_status()
+    except requests.RequestException as exc:  # pragma: no cover - network error
+        api_logger.error("Google token exchange failed: %s", exc)
+        raise HTTPException(status_code=502, detail="Google token exchange failed")
+    payload = resp.json()
+    if "access_token" not in payload:
+        raise HTTPException(status_code=400, detail="Google response missing access token")
+    return payload
+
+
+def _fetch_google_profile(access_token: str) -> Dict[str, Any]:
+    headers = {"Authorization": f"Bearer {access_token}"}
+    try:
+        resp = requests.get(GOOGLE_USERINFO_ENDPOINT, headers=headers, timeout=10)
+        resp.raise_for_status()
+    except requests.RequestException as exc:  # pragma: no cover - network error
+        api_logger.error("Google profile fetch failed: %s", exc)
+        raise HTTPException(status_code=502, detail="Google profile fetch failed")
+    return resp.json()
+
+
+def _verify_razorpay_signature(message: str, signature: str) -> bool:
+    if not RAZORPAY_KEY_SECRET:
+        return False
+    digest = hmac.new(
+        RAZORPAY_KEY_SECRET.encode("utf-8"),
+        message.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    return hmac.compare_digest(digest, signature)
+
+
+def _verify_razorpay_webhook(body: bytes, signature: str) -> bool:
+    if not RAZORPAY_WEBHOOK_SECRET:
+        return False
+    digest = hmac.new(
+        RAZORPAY_WEBHOOK_SECRET.encode("utf-8"),
+        body,
+        hashlib.sha256,
+    ).hexdigest()
+    return hmac.compare_digest(digest, signature)
+
+
+def _create_razorpay_order(
+    *,
+    user_id: int,
+    email: str,
+    plan: Dict[str, Any],
+) -> Dict[str, Any]:
+    _ensure_razorpay_enabled()
+    amount_paise = int(plan["price_inr"]) * 100
+    receipt = f"user_{user_id}_{int(time.time())}"
+    payload = {
+        "amount": amount_paise,
+        "currency": "INR",
+        "receipt": receipt,
+        "notes": {
+            "user_id": str(user_id),
+            "plan_code": plan["code"],
+            "email": email,
+        },
+    }
+    try:
+        resp = requests.post(
+            f"{RAZORPAY_API_BASE}/orders",
+            json=payload,
+            auth=(RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET),
+            timeout=15,
+        )
+        resp.raise_for_status()
+    except requests.RequestException as exc:
+        api_logger.error("Razorpay order creation failed: %s", exc)
+        raise HTTPException(status_code=502, detail="Failed to create order")
+    order = resp.json()
+    _get_db().create_razorpay_order(
+        user_id=user_id,
+        order_id=order["id"],
+        amount=order["amount"],
+        currency=order.get("currency", "INR"),
+        status=order.get("status", "created"),
+        payload=order,
+    )
+    return order
+
+
+def _build_google_redirect(token: str, expires_at: datetime) -> str:
+    params = urlencode({"token": token, "expires": expires_at.isoformat()})
+    base = (FRONTEND_BASE_URL or "http://localhost:3001").rstrip("/")
+    return f"{base}/login?{params}#{params}"
+
+
+def _placeholder_password_hash() -> str:
+    return _hash_password(secrets.token_urlsafe(32))
 
 
 def _get_db() -> BSEDatabaseManager:
@@ -213,9 +649,7 @@ def _persist_bhavcopy_quote(
             provider=provider,
         )
     except Exception:  # pragma: no cover - defensive
-        api_logger.debug(
-            "Failed to persist Bhavcopy quote for %s@%s", symbol, trade_date
-        )
+        return
 
 
 def _record_market_issue(
@@ -254,7 +688,10 @@ def _maybe_enrich_record_with_indian_api(record: Dict[str, Any]) -> None:
     ]
     missing_fields = [field for field in fields if record.get(field) is None]
     needs_market_cap = record.get("market_cap_used") is None
-    if not missing_fields and not needs_market_cap:
+    has_structured_values = any(
+        record.get(field) is not None for field in STRUCTURED_FIELDS
+    )
+    if not missing_fields and not needs_market_cap and not has_structured_values:
         return
 
     snapshot = None
@@ -266,10 +703,16 @@ def _maybe_enrich_record_with_indian_api(record: Dict[str, Any]) -> None:
         return
 
     notes = []
+    overrides: Dict[str, float] = {}
+    override_labels: List[str] = []
     for field in missing_fields:
-        value = snapshot.metrics.get(field)
+        value = snapshot.metrics.get(
+            "non_halal_income" if field == "non_permissible_income" else field
+        )
         if value is not None:
             record[field] = value
+            if field == "non_permissible_income":
+                record["non_halal_income"] = value
             notes.append(field.replace("_", " "))
     if notes:
         message = f"Enriched via Indian API for {', '.join(notes)}."
@@ -282,9 +725,41 @@ def _maybe_enrich_record_with_indian_api(record: Dict[str, Any]) -> None:
         record["market_cap_used"] = snapshot.market_cap
         record["market_data_provider"] = "indianapi"
 
+    for field, column in STRUCTURED_FIELDS.items():
+        if field in missing_fields:
+            continue
+        current = record.get(field)
+        candidate = snapshot.metrics.get(column)
+        if field == "non_permissible_income" and candidate is None:
+            candidate = snapshot.metrics.get("non_halal_income")
+        if not _needs_structured_override(current, candidate):
+            continue
+        record[field] = candidate
+        if field == "non_permissible_income":
+            record["non_halal_income"] = candidate
+        overrides[column] = candidate
+        override_labels.append(field.replace("_", " "))
+
+    if overrides and symbol and filing_date:
+        message = (
+            "Structured metrics synchronized from Indian API (>{:.0%} delta) for {}."
+        ).format(INDIAN_API_OVERRIDE_TOLERANCE, ", ".join(override_labels))
+        existing = record.get("governance_notes")
+        record["governance_notes"] = (
+            f"{existing} {message}".strip() if existing else message
+        )
+        issues = record.get("quality_issues") or []
+        issues.append(message)
+        record["quality_issues"] = issues
+        _persist_structured_override(symbol, filing_date, overrides, message)
+
 
 def _reset_market_failure(symbol: str) -> None:
     MARKET_FAILURES.pop(symbol, None)
+
+
+def _reset_provider_failure(provider: str, symbol: str) -> None:
+    PROVIDER_FAILURES.pop(f"{provider}:{symbol}", None)
 
 
 def _handle_market_failure(symbol: str, details: str) -> None:
@@ -299,8 +774,36 @@ def _handle_market_failure(symbol: str, details: str) -> None:
             details=details,
         )
         MARKET_FAILURES[symbol] = 0
+        _record_market_event(
+            "market_lookup_failure",
+            symbol=symbol,
+            details=details,
+        )
     else:
         MARKET_FAILURES[symbol] = count
+
+
+def _record_provider_failure(provider: str, symbol: str, details: str) -> None:
+    threshold = MARKET_FAILURE_ALERT_THRESHOLD
+    if threshold <= 0:
+        return
+    key = f"{provider}:{symbol}"
+    count = PROVIDER_FAILURES.get(key, 0) + 1
+    if count >= threshold:
+        market_notifier.notify(
+            "WARNING",
+            f"{provider.upper()} quotes repeatedly failing for {symbol}",
+            details=details,
+        )
+        PROVIDER_FAILURES[key] = 0
+        _record_market_event(
+            "provider_failure",
+            provider=provider,
+            symbol=symbol,
+            details=details,
+        )
+    else:
+        PROVIDER_FAILURES[key] = count
 
 
 bhavcopy_resolver = BhavcopyMarketResolver(
@@ -324,6 +827,130 @@ def _get_realtime_processor() -> FinancialDataProcessor:
             db_manager=_get_db(),
         )
     return _realtime_processor
+
+
+def _build_indian_snapshot_record(
+    normalized: str, candidate: str, snapshot
+) -> Tuple[Dict[str, Any], str, str, datetime]:
+    """Return a filing-style record constructed from an Indian API snapshot."""
+
+    filing_date = snapshot.end_date or datetime.utcnow().date()
+    filing_dt = datetime(
+        filing_date.year, filing_date.month, filing_date.day, tzinfo=timezone.utc
+    )
+    symbol_code = (snapshot.bse_code or candidate or normalized or "").strip().upper()
+    alias = (snapshot.nse_code or candidate or normalized or "").strip().upper()
+    if not symbol_code:
+        symbol_code = alias or normalized
+    if not alias:
+        alias = normalized
+
+    notes = "Derived from Indian API snapshot"
+    record: Dict[str, Any] = {
+        "symbol": symbol_code,
+        "symbol_alias": alias,
+        "company_name": snapshot.company_name or normalized,
+        "filing_date": filing_dt,
+        "category": "Realtime Snapshot",
+        "headline": "Metrics sourced from Indian market API",
+        "confidence": "LOW",
+        "audit_status": "indianapi",
+        "governance_notes": notes,
+        "quality_issues": [],
+        "market_cap_used": snapshot.market_cap,
+        "market_data_provider": "indianapi" if snapshot.market_cap else None,
+        "trailing_cap_used": None,
+    }
+
+    metric_fields = [
+        "total_debt",
+        "cash_equiv",
+        "revenue",
+        "interest_income",
+        "dividend_income",
+        "non_halal_income",
+        "accounts_receivable",
+        "liquid_assets",
+    ]
+    for field in metric_fields:
+        value = snapshot.metrics.get(field)
+        if value is not None:
+            record[field] = value
+
+    return record, symbol_code, alias, filing_dt
+
+
+def _persist_indian_api_filing(
+    normalized: str,
+    candidate: str,
+    record: Dict[str, Any],
+    snapshot,
+    filing_dt: datetime,
+) -> Optional[Dict[str, Any]]:
+    """Store an Indian API-derived record so future lookups hit the database."""
+
+    db = _get_db()
+    symbol_code = record["symbol"]
+    alias = record.get("symbol_alias") or candidate or normalized
+
+    announcement = {
+        "symbol": symbol_code,
+        "symbol_alias": alias,
+        "company_name": record.get("company_name"),
+        "filing_date": filing_dt,
+        "category": record.get("category"),
+        "headline": record.get("headline"),
+        "confidence": record.get("confidence"),
+        "raw_json": {"source": "indianapi", "payload": snapshot.raw},
+        "minio_path": None,
+        "pdf_stored": False,
+    }
+    db.insert_announcements([announcement])
+
+    extracted = {
+        "audit_status": record.get("audit_status", "indianapi"),
+        "total_debt": record.get("total_debt"),
+        "cash_equiv": record.get("cash_equiv"),
+        "revenue": record.get("revenue"),
+        "interest_income": record.get("interest_income"),
+        "dividend_income": record.get("dividend_income"),
+        "non_halal_income": record.get("non_halal_income"),
+        "accounts_receivable": record.get("accounts_receivable"),
+        "liquid_assets": record.get("liquid_assets"),
+        "governance_notes": record.get("governance_notes"),
+    }
+    db.insert_financial_snapshots(
+        [
+            {
+                "symbol": symbol_code,
+                "filing_date": filing_dt,
+                "extracted_data": extracted,
+            }
+        ]
+    )
+
+    db.insert_indianapi_snapshot(
+        symbol=symbol_code,
+        symbol_alias=alias,
+        company_name=record.get("company_name"),
+        snapshot_date=filing_dt.date(),
+        payload=snapshot.raw,
+    )
+
+    if record.get("market_cap_used") is not None or snapshot.share_price is not None:
+        db.insert_market_snapshot(
+            symbol_code,
+            record.get("market_cap_used"),
+            snapshot.share_price,
+            provider="indianapi",
+        )
+
+    for identifier in {normalized, candidate, alias, symbol_code}:
+        if identifier:
+            _prime_symbol_metadata(identifier, symbol_code, alias)
+
+    persisted = db.get_latest_filing(symbol_code) or db.get_latest_filing(alias)
+    return persisted
 
 
 def _fetch_latest_filing_from_bse(symbol: str) -> Optional[Dict[str, Any]]:
@@ -406,53 +1033,22 @@ def _build_record_from_indian_api(symbol: str) -> Optional[Dict[str, Any]]:
         if not snapshot:
             continue
 
-        filing_date = snapshot.end_date or datetime.utcnow().date()
-        filing_dt = datetime(
-            filing_date.year,
-            filing_date.month,
-            filing_date.day,
-            tzinfo=timezone.utc,
+        record, _, _, filing_dt = _build_indian_snapshot_record(
+            normalized, candidate, snapshot
         )
 
-        if snapshot.bse_code:
-            _prime_symbol_metadata(
-                normalized,
-                snapshot.bse_code,
-                snapshot.nse_code or candidate,
+        try:
+            persisted = _persist_indian_api_filing(
+                normalized, candidate, record, snapshot, filing_dt
+            )
+            if persisted:
+                return persisted
+        except Exception as exc:  # pragma: no cover - defensive persistence path
+            api_logger.warning(
+                "Failed to persist Indian API snapshot for %s: %s", normalized, exc
             )
 
-        record: Dict[str, Any] = {
-            "symbol": normalized,
-            "symbol_alias": snapshot.nse_code or candidate,
-            "company_name": snapshot.company_name or normalized,
-            "filing_date": filing_dt,
-            "category": "Realtime Snapshot",
-            "headline": "Metrics sourced from Indian market API",
-            "confidence": "LOW",
-            "governance_notes": "Derived from Indian API snapshot",
-            "quality_issues": [],
-            "_transient": True,
-        }
-
-        metric_fields = [
-            "total_debt",
-            "cash_equiv",
-            "revenue",
-            "interest_income",
-            "dividend_income",
-            "non_halal_income",
-            "accounts_receivable",
-            "liquid_assets",
-        ]
-        for field in metric_fields:
-            value = snapshot.metrics.get(field)
-            if value is not None:
-                record[field] = value
-
-        if snapshot.market_cap is not None:
-            record["market_cap_used"] = snapshot.market_cap
-            record["market_data_provider"] = "indianapi"
-
+        record["_transient"] = True
         return record
 
     return None
@@ -475,6 +1071,136 @@ def _load_quality_issues(symbol: str, filing_date: datetime) -> List[str]:
         return _get_db().get_quality_issues(symbol, filing_date)
     except Exception:
         return []
+
+
+def _supplement_history_from_indian_api(
+    symbol: str, limit: int, existing_count: int
+) -> bool:
+    if existing_count >= limit or not indian_api_enabled():
+        return False
+
+    snapshots = fetch_indian_financial_history(symbol, limit=limit * 2)
+    if not snapshots:
+        return False
+
+    needed = limit - existing_count
+    inserted = False
+    for snapshot in snapshots:
+        if needed <= 0:
+            break
+        if _persist_indian_history_entry(snapshot):
+            inserted = True
+            needed -= 1
+    return inserted
+
+
+def _persist_indian_history_entry(snapshot: IndianAPISnapshot) -> bool:
+    if not snapshot.end_date:
+        return False
+
+    filing_dt = datetime.combine(snapshot.end_date, datetime.min.time()).replace(
+        tzinfo=timezone.utc
+    )
+    db = _get_db()
+    existing = db.get_filing(snapshot.symbol, filing_dt)
+    if existing:
+        return False
+
+    announcement_payload = {
+        "symbol": snapshot.symbol,
+        "symbol_alias": snapshot.bse_code or snapshot.symbol,
+        "company_name": snapshot.company_name or snapshot.symbol,
+        "filing_date": filing_dt.isoformat(),
+        "category": "Result",
+        "headline": f"Financials for period ending {snapshot.end_date.isoformat()} (Indian API)",
+        "confidence": "MEDIUM",
+        "raw_json": snapshot.raw or {},
+        "minio_path": None,
+        "pdf_stored": False,
+    }
+    db.insert_announcements([announcement_payload])
+
+    metrics = snapshot.metrics or {}
+    extracted_data = {
+        "period": snapshot.end_date.strftime("%d.%m.%Y"),
+        "quarter": _quarter_label(snapshot.end_date),
+        "audit_status": "indianapi",
+        "total_debt": metrics.get("total_debt"),
+        "cash_equiv": metrics.get("cash_equiv"),
+        "revenue": metrics.get("revenue"),
+        "interest_income": metrics.get("interest_income"),
+        "dividend_income": metrics.get("dividend_income"),
+        "accounts_receivable": metrics.get("accounts_receivable"),
+        "liquid_assets": metrics.get("liquid_assets"),
+        "non_halal_income": metrics.get("non_halal_income"),
+        "governance_notes": "Auto-ingested from Indian Stock Market API",
+    }
+    db.insert_financial_snapshots(
+        [
+            {
+                "symbol": snapshot.symbol,
+                "filing_date": filing_dt.isoformat(),
+                "extracted_data": extracted_data,
+            }
+        ]
+    )
+
+    provider = "indianapi" if snapshot.market_cap else "manual"
+    if snapshot.market_cap or snapshot.share_price:
+        db.insert_market_snapshot(
+            symbol=snapshot.symbol,
+            market_cap=snapshot.market_cap,
+            share_price=snapshot.share_price,
+            provider=provider,
+        )
+
+    evaluation = engine.evaluate(
+        FinancialSnapshotInput(
+            symbol=snapshot.symbol,
+            filing_date=filing_dt,
+            total_debt=metrics.get("total_debt"),
+            cash_equiv=metrics.get("cash_equiv"),
+            revenue=metrics.get("revenue"),
+            interest_income=metrics.get("interest_income"),
+            dividend_income=metrics.get("dividend_income"),
+            non_permissible_income=metrics.get("non_halal_income"),
+            accounts_receivable=metrics.get("accounts_receivable"),
+            liquid_assets=metrics.get("liquid_assets"),
+            non_halal_income=metrics.get("non_halal_income"),
+        ),
+        MarketDataInput(
+            market_cap=snapshot.market_cap,
+            share_price=snapshot.share_price,
+            provider=provider,
+        ),
+    )
+
+    ratios_payload = {name: asdict(comp) for name, comp in evaluation.ratios.items()}
+    verdict = _derive_verdict(evaluation)
+    summary = _build_summary(evaluation)
+
+    db.upsert_filing_evaluation(
+        symbol=snapshot.symbol,
+        filing_date=filing_dt,
+        is_compliant=evaluation.is_compliant
+        if verdict != "insufficient-data"
+        else None,
+        ratios=ratios_payload,
+        summary=summary,
+        verdict=verdict,
+        narration_source="indianapi",
+        market_cap_used=snapshot.market_cap,
+        trailing_cap_used=None,
+        market_data_provider=provider,
+    )
+    return True
+
+
+def _quarter_label(period_end: Optional[date]) -> Optional[str]:
+    if not period_end:
+        return None
+    quarter = ((period_end.month - 1) // 3) + 1
+    return f"Q{quarter} FY{period_end.year % 100:02d}"
 
 
 def _normalize_candidate(value: Optional[str]) -> Optional[str]:
@@ -636,6 +1362,17 @@ class FeedbackReportResponse(BaseModel):
     created_at: datetime
 
 
+class FeedbackEventResponse(BaseModel):
+    id: int
+    feedback_id: int
+    event_type: str
+    status: Optional[str] = None
+    reviewer: Optional[str] = None
+    details: Optional[str] = None
+    source: Optional[str] = None
+    created_at: datetime
+
+
 class FeedbackSubmissionResponse(BaseModel):
     status: str
     ticket_id: int
@@ -655,6 +1392,7 @@ class FeedbackPublicStatusResponse(BaseModel):
     resolved_at: Optional[datetime] = None
     reevaluated_at: Optional[datetime] = None
     reevaluation_notes: Optional[str] = None
+    events: List[FeedbackEventResponse] = Field(default_factory=list)
 
 
 class GovernanceOverridePayload(BaseModel):
@@ -672,6 +1410,11 @@ class GovernanceOverridePayload(BaseModel):
 class GovernanceOverrideResponse(GovernanceOverridePayload):
     created_at: datetime
     updated_at: datetime
+
+
+class FilingHistoryResponse(BaseModel):
+    entries: List[FilingResponse]
+    next_cursor: Optional[datetime] = None
 
 
 def _coerce_float(value: Any) -> Optional[float]:
@@ -752,6 +1495,7 @@ def _fetch_and_cache_market_data(
                 (indian_snapshot.market_cap, indian_snapshot.share_price, "indianapi"),
             )
             primary_failed = False
+            _reset_provider_failure("indianapi", key)
             _reset_market_failure(key)
             return (
                 indian_snapshot.market_cap,
@@ -760,6 +1504,9 @@ def _fetch_and_cache_market_data(
             )
         attempt_details.append(
             "Indian API lookup unavailable or returned no data for configured candidates."
+        )
+        _record_provider_failure(
+            "indianapi", key, attempt_details[-1]
         )
     else:
         attempt_details.append("Indian API integration disabled; skipping live quote.")
@@ -797,6 +1544,7 @@ def _fetch_and_cache_market_data(
                 "market_data_fetch_failed",
                 "Used Bhavcopy fallback due to upstream failure.",
             )
+        _reset_provider_failure("bhavcopy", key)
         _reset_market_failure(key)
         return fallback_cap, fallback_price, "bhavcopy"
 
@@ -812,8 +1560,12 @@ def _fetch_and_cache_market_data(
                 "market_cap_missing",
                 "Bhavcopy share price found but market cap unavailable",
             )
+        _record_provider_failure(
+            "bhavcopy", key, "Bhavcopy returned share price but no market cap."
+        )
     else:
         attempt_details.append("Bhavcopy returned no quote.")
+        _record_provider_failure("bhavcopy", key, attempt_details[-1])
 
     if as_of:
         _record_market_issue(
@@ -846,6 +1598,12 @@ FRIENDLY_LABELS = {
     "receivables_to_market_cap": "Receivables to market cap",
     "liquid_assets_to_market_cap": "Liquid assets to market cap",
 }
+STRUCTURED_FIELDS = {
+    "accounts_receivable": "accounts_receivable",
+    "liquid_assets": "liquid_assets",
+    "non_permissible_income": "non_halal_income",
+    "non_halal_income": "non_halal_income",
+}
 
 
 def _build_summary(evaluation):
@@ -871,9 +1629,171 @@ def _derive_verdict(evaluation):
     return "compliant" if evaluation.is_compliant else "non-compliant"
 
 
-def _evaluate_request(payload: HalalScoreRequest):
+def _needs_structured_override(current: Optional[float], candidate: Optional[float]) -> bool:
+    if current is None or candidate is None:
+        return False
+    try:
+        cur_val = float(current)
+        cand_val = float(candidate)
+    except (TypeError, ValueError):
+        return False
+    baseline = max(abs(cur_val), 1.0)
+    return abs(cand_val - cur_val) / baseline >= INDIAN_API_OVERRIDE_TOLERANCE
+
+
+def _persist_structured_override(
+    symbol: str,
+    filing_date: datetime,
+    overrides: Dict[str, float],
+    note: str,
+) -> None:
+    db = _get_db()
+    try:
+        db.upsert_governance_override(
+            symbol=symbol,
+            filing_date=filing_date,
+            accounts_receivable=overrides.get("accounts_receivable"),
+            liquid_assets=overrides.get("liquid_assets"),
+            non_halal_income=overrides.get("non_halal_income"),
+            governance_notes=note,
+            reviewer="system",
+            reason="Structured metrics from Indian API",
+            source="indianapi",
+        )
+        db.record_quality_issue(
+            symbol,
+            filing_date,
+            "governance_override",
+            f"Structured override applied for {', '.join(overrides.keys())}",
+        )
+    except Exception:  # pragma: no cover - defensive
+        pass
+
+
+def _coerce_metric_value(value: Optional[Any]) -> Optional[float]:
+    if value is None:
+        return None
+    if isinstance(value, Decimal):
+        return float(value)
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _build_governance_metric_set(
+    source_data: Optional[Dict[str, Any]],
+    *,
+    label: str,
+    source: str,
+    applied: Optional[bool] = None,
+    reviewer: Optional[str] = None,
+    reason: Optional[str] = None,
+    notes: Optional[str] = None,
+    updated_at: Optional[datetime] = None,
+    snapshot_date: Optional[date] = None,
+    market_cap: Optional[float] = None,
+) -> Optional[GovernanceMetricSet]:
+    if source_data is None:
+        return None
+    metrics: Dict[str, Optional[float]] = {}
+    for field in GOVERNANCE_METRICS:
+        value = source_data.get(field)
+        if value is None and field == "non_halal_income":
+            value = source_data.get("non_permissible_income")
+        metrics[field] = _coerce_metric_value(value)
+
+    return GovernanceMetricSet(
+        label=label,
+        source=source,
+        metrics=metrics,
+        applied=applied,
+        reviewer=reviewer,
+        reason=reason,
+        notes=notes,
+        updated_at=updated_at,
+        snapshot_date=snapshot_date,
+        market_cap=_coerce_metric_value(market_cap),
+    )
+
+
+def _relative_delta(base: Optional[float], other: Optional[float]) -> Optional[float]:
+    if base is None or other is None:
+        return None
+    baseline = abs(base) or abs(other)
+    if not baseline:
+        return None
+    return (other - base) / baseline
+
+
+def _compute_metric_differences(
+    ingested: Dict[str, Optional[float]],
+    override: Optional[Dict[str, Optional[float]]],
+    indian: Optional[Dict[str, Optional[float]]],
+) -> Dict[str, Dict[str, Optional[float]]]:
+    differences: Dict[str, Dict[str, Optional[float]]] = {}
+    for field in GOVERNANCE_METRICS:
+        entry: Dict[str, Optional[float]] = {}
+        if override:
+            entry["override_delta"] = _relative_delta(
+                ingested.get(field), override.get(field)
+            )
+        if indian:
+            entry["indian_delta"] = _relative_delta(
+                ingested.get(field), indian.get(field)
+            )
+        if entry:
+            differences[field] = entry
+    return differences
+
+
+def _load_indian_snapshot_for_filing(
+    symbol: str, filing_date: datetime
+) -> Optional[IndianAPISnapshot]:
+    normalized = (symbol or "").strip().upper()
+    if not normalized:
+        return None
+    db = _get_db()
+    snapshot: Optional[IndianAPISnapshot] = None
+    target_date = filing_date.date()
+    for candidate in _indian_api_candidates(normalized):
+        cached = db.get_indianapi_snapshot(candidate, target_date)
+        payload = (cached or {}).get("payload") if cached else None
+        if payload:
+            snapshot = snapshot_from_indian_payload(
+                payload, symbol=candidate, target_date=filing_date
+            )
+            if snapshot:
+                break
+        if not indian_api_enabled():
+            continue
+        live_snapshot = fetch_indian_financial_snapshot(
+            candidate, target_date=filing_date
+        )
+        if live_snapshot:
+            snapshot = live_snapshot
+            try:
+                db.insert_indianapi_snapshot(
+                    symbol=live_snapshot.symbol,
+                    symbol_alias=live_snapshot.nse_code or candidate,
+                    company_name=live_snapshot.company_name,
+                    snapshot_date=live_snapshot.end_date or target_date,
+                    payload=live_snapshot.raw,
+                )
+            except Exception:
+                pass
+            break
+    return snapshot
+
+
+def _evaluate_request(payload: HalalScoreRequest, provider: Optional[str] = None):
     snapshot_input = FinancialSnapshotInput(**payload.snapshot.model_dump())
-    market_input = MarketDataInput(**payload.market_data.model_dump())
+    market_kwargs = payload.market_data.model_dump()
+    if provider:
+        market_kwargs["provider"] = provider
+    elif market_kwargs.get("provider"):
+        provider = market_kwargs["provider"]
+    market_input = MarketDataInput(**market_kwargs)
 
     if not (market_input.market_cap or market_input.trailing_market_cap):
         raise HTTPException(
@@ -887,7 +1807,7 @@ def _evaluate_request(payload: HalalScoreRequest):
 async def halal_score(payload: HalalScoreRequest) -> HalalScoreResponse:
     """Compute the halal verdict for provided financial metrics."""
 
-    evaluation = _evaluate_request(payload)
+    evaluation = _evaluate_request(payload, provider=payload.market_data.provider or "manual")
 
     ratios: Dict[str, RatioComputationPayload] = {}
     for name, computation in evaluation.ratios.items():
@@ -906,10 +1826,13 @@ async def halal_score(payload: HalalScoreRequest) -> HalalScoreResponse:
 
 
 @app.post("/narrate", response_model=NarrationResponse)
-async def narrate(payload: HalalScoreRequest) -> NarrationResponse:
+async def narrate(
+    payload: HalalScoreRequest, authorization: Optional[str] = Header(None)
+) -> NarrationResponse:
     """Generate a plain-English explanation alongside the halal verdict."""
 
-    evaluation = _evaluate_request(payload)
+    _require_paid_feature(authorization, "Explain-Why narratives")
+    evaluation = _evaluate_request(payload, provider=payload.market_data.provider or "manual")
     narration = narrator.build(evaluation)
 
     return NarrationResponse(
@@ -924,10 +1847,247 @@ async def narrate(payload: HalalScoreRequest) -> NarrationResponse:
     )
 
 
+@app.get("/auth/google/start")
+async def auth_google_start():
+    """Initiate Google OAuth login."""
+
+    _ensure_google_oauth_enabled()
+    state = secrets.token_urlsafe(32)
+    _store_google_state(state)
+    return RedirectResponse(_build_google_authorization_url(state), status_code=307)
+
+
+@app.get("/auth/google/callback")
+async def auth_google_callback(code: str, state: str):
+    """Handle Google's OAuth redirect, issue HalalLens session, and forward to the dashboard."""
+
+    _ensure_google_oauth_enabled()
+    _consume_google_state(state)
+    token_data = _exchange_google_code(code)
+    access_token = token_data.get("access_token")
+    if not access_token:
+        raise HTTPException(status_code=400, detail="Missing Google access token")
+    profile = _fetch_google_profile(access_token)
+    email = _normalize_email(profile.get("email", ""))
+    sub = profile.get("sub")
+    if not email or not sub:
+        raise HTTPException(status_code=400, detail="Google profile missing identifiers")
+    if profile.get("email_verified") is False:
+        raise HTTPException(status_code=403, detail="Google email not verified")
+
+    placeholder_hash = _placeholder_password_hash()
+    user_row = _get_db().upsert_google_user(
+        email=email,
+        google_sub=sub,
+        password_hash=placeholder_hash,
+        full_name=profile.get("name"),
+        avatar_url=profile.get("picture"),
+    )
+    _get_db().touch_user_login(user_row["id"])
+    api_logger.info("Google SSO user upserted id=%s email=%s", user_row["id"], email)
+    token, expires_at = _issue_session(user_row["id"])
+    return RedirectResponse(_build_google_redirect(token, expires_at), status_code=302)
+
+
+@app.post("/auth/register", response_model=AuthTokenResponse)
+async def auth_register(payload: RegisterRequest) -> AuthTokenResponse:
+    """Register a new user and issue a session token."""
+
+    email = _normalize_email(payload.email)
+    if not email or "@" not in email:
+        raise HTTPException(status_code=400, detail="Valid email required")
+    if len(payload.password or "") < 8:
+        raise HTTPException(
+            status_code=400, detail="Password must be at least 8 characters"
+        )
+    if _get_db().get_user_by_email(email):
+        raise HTTPException(status_code=409, detail="Email already registered")
+
+    password_hash = _hash_password(payload.password)
+    user_row = _get_db().create_user(email=email, password_hash=password_hash)
+    token, expires_at = _issue_session(user_row["id"])
+    profile = _serialize_user_profile(user_row)
+    return AuthTokenResponse(token=token, expires_at=expires_at, user=profile)
+
+
+@app.post("/auth/login", response_model=AuthTokenResponse)
+async def auth_login(payload: LoginRequest) -> AuthTokenResponse:
+    """Authenticate an existing user."""
+
+    email = _normalize_email(payload.email)
+    user_row = _get_db().get_user_by_email(email)
+    if not user_row or not _verify_password(payload.password, user_row["password_hash"]):
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+    if user_row.get("provider") == "google":
+        raise HTTPException(
+            status_code=400, detail="Use Google sign-in for this account"
+        )
+
+    _get_db().touch_user_login(user_row["id"])
+    token, expires_at = _issue_session(user_row["id"])
+    profile = _serialize_user_profile(user_row)
+    return AuthTokenResponse(token=token, expires_at=expires_at, user=profile)
+
+
+@app.post("/auth/logout")
+async def auth_logout(authorization: Optional[str] = Header(None)) -> Dict[str, str]:
+    """Revoke the active session token."""
+
+    token, _ = _require_session(authorization)
+    _get_db().delete_session(token)
+    return {"status": "logged_out"}
+
+
+@app.get("/auth/me", response_model=UserProfile)
+async def auth_me(authorization: Optional[str] = Header(None)) -> UserProfile:
+    """Return the authenticated user's profile."""
+
+    _, session = _require_session(authorization)
+    profile_row = {
+        "id": session["user_id"],
+        "email": session["email"],
+        "plan": session.get("plan", "free"),
+        "subscription_status": session.get("subscription_status", "inactive"),
+        "subscription_renewal": session.get("subscription_renewal"),
+        "full_name": session.get("full_name"),
+        "avatar_url": session.get("avatar_url"),
+    }
+    return _serialize_user_profile(profile_row)
+
+
+@app.get("/billing/plans", response_model=List[BillingPlan])
+async def list_billing_plans() -> List[BillingPlan]:
+    plans = _get_db().list_subscription_plans(active_only=True)
+    return [
+        BillingPlan(
+            code=plan["code"],
+            name=plan["name"],
+            price_inr=int(plan["price_inr"]),
+            interval_days=int(plan["interval_days"]),
+            features=list(plan.get("features") or []),
+            is_active=bool(plan["is_active"]),
+        )
+        for plan in plans
+    ]
+
+
+@app.post("/billing/razorpay/order", response_model=RazorpayOrderResponse)
+async def create_razorpay_order(
+    payload: RazorpayOrderRequest, authorization: Optional[str] = Header(None)
+) -> RazorpayOrderResponse:
+    _ensure_razorpay_enabled()
+    _, session = _require_session(authorization)
+    plan_code = payload.plan_code or SUBSCRIPTION_PLAN_CODE
+    plan = _get_db().get_subscription_plan(plan_code)
+    if not plan or not plan.get("is_active"):
+        raise HTTPException(status_code=404, detail="Plan not available")
+    order = _create_razorpay_order(
+        user_id=session["user_id"],
+        email=session["email"],
+        plan=plan,
+    )
+    return RazorpayOrderResponse(
+        key_id=RAZORPAY_KEY_ID,
+        order_id=order["id"],
+        amount=int(order["amount"]),
+        currency=order.get("currency", "INR"),
+        plan_code=plan_code,
+        plan_name=plan["name"],
+        email=session["email"],
+    )
+
+
+@app.post("/billing/razorpay/verify", response_model=SubscriptionStatusResponse)
+async def verify_razorpay_payment(
+    payload: RazorpayVerifyRequest, authorization: Optional[str] = Header(None)
+) -> SubscriptionStatusResponse:
+    _ensure_razorpay_enabled()
+    _, session = _require_session(authorization)
+    order = _get_db().get_razorpay_order(payload.order_id)
+    if not order or order.get("user_id") != session.get("user_id"):
+        raise HTTPException(status_code=404, detail="Order not found")
+    message = f"{payload.order_id}|{payload.payment_id}"
+    if not _verify_razorpay_signature(message, payload.signature):
+        raise HTTPException(status_code=400, detail="Invalid payment signature")
+
+    plan_code = order.get("payload", {}).get("notes", {}).get("plan_code") or SUBSCRIPTION_PLAN_CODE
+    plan = _get_db().get_subscription_plan(plan_code)
+    if not plan:
+        raise HTTPException(status_code=404, detail="Plan not found")
+
+    now = datetime.now(timezone.utc)
+    renewal = now + timedelta(days=int(plan["interval_days"]))
+    _get_db().upsert_user_subscription(
+        user_id=session["user_id"],
+        plan_code=plan_code,
+        provider="razorpay",
+        status="active",
+        current_period_start=now,
+        current_period_end=renewal,
+        cancel_at_period_end=False,
+    )
+    _get_db().update_user_plan(
+        user_id=session["user_id"],
+        plan=plan_code,
+        subscription_status="active",
+        subscription_renewal=renewal,
+        plan_started_at=now,
+    )
+    _get_db().record_payment_event(
+        user_id=session["user_id"],
+        provider="razorpay",
+        event_type="payment.verified",
+        event_id=payload.payment_id,
+        payload={
+            "order_id": payload.order_id,
+            "payment_id": payload.payment_id,
+        },
+    )
+    return SubscriptionStatusResponse(
+        plan=plan_code,
+        subscription_status="active",
+        subscription_renewal=renewal,
+    )
+
+
+@app.post("/webhooks/razorpay")
+async def razorpay_webhook(request: Request) -> Dict[str, str]:
+    signature = request.headers.get("X-Razorpay-Signature")
+    if not signature:
+        raise HTTPException(status_code=400, detail="Missing signature")
+    body = await request.body()
+    if not _verify_razorpay_webhook(body, signature):
+        raise HTTPException(status_code=400, detail="Invalid signature")
+
+    event = await request.json()
+    event_type = event.get("event", "unknown")
+    payment_entity = (
+        event.get("payload", {})
+        .get("payment", {})
+        .get("entity", {})
+    )
+    order_id = payment_entity.get("order_id")
+    payment_id = payment_entity.get("id")
+    order = _get_db().get_razorpay_order(order_id) if order_id else None
+    user_id = order.get("user_id") if order else None
+    _get_db().record_payment_event(
+        user_id=user_id,
+        provider="razorpay",
+        event_type=event_type,
+        event_id=payment_id,
+        payload=event,
+    )
+    return {"status": "ok"}
+
+
 @app.post("/watchlist", response_model=WatchlistEntryPayload)
-async def add_watchlist(entry: WatchlistEntryPayload) -> WatchlistEntryPayload:
+async def add_watchlist(
+    entry: WatchlistEntryPayload,
+    authorization: Optional[str] = Header(None),
+) -> WatchlistEntryPayload:
     """Register or update a watchlist entry."""
 
+    _require_paid_feature(authorization, "Watchlist alerts")
     watch_storage.upsert(
         WatchEntry(
             user_id=entry.user_id,
@@ -939,9 +2099,13 @@ async def add_watchlist(entry: WatchlistEntryPayload) -> WatchlistEntryPayload:
 
 
 @app.get("/watchlist/{user_id}", response_model=List[WatchlistEntryPayload])
-async def list_watchlist(user_id: str) -> List[WatchlistEntryPayload]:
+async def list_watchlist(
+    user_id: str,
+    authorization: Optional[str] = Header(None),
+) -> List[WatchlistEntryPayload]:
     """List watchlist entries for a user."""
 
+    _require_paid_feature(authorization, "Watchlist alerts")
     entries = watch_storage.list(user_id=user_id)
     sanitized = []
     for entry in entries:
@@ -1065,6 +2229,7 @@ def _ensure_filing_evaluation(record: Dict[str, Any]) -> Optional[Dict[str, Rati
             market_cap=market_cap,
             trailing_market_cap=trailing,
             share_price=share_price,
+            provider=provider or "manual",
         ),
     )
 
@@ -1146,6 +2311,36 @@ def _trigger_feedback_reevaluation(symbol: str, filing_date: datetime) -> str:
     return f"Verdict {verdict}: {summary}"
 
 
+def _auto_reevaluate_feedback_reports(
+    symbol: str,
+    filing_date: datetime,
+    reviewer: Optional[str],
+    base_note: str,
+) -> None:
+    """Update open feedback tickets when overrides trigger re-evaluations."""
+
+    if not base_note:
+        return
+    try:
+        db = _get_db()
+        reports = db.list_feedback_for_filing(
+            symbol, filing_date, statuses=["open", "in_review"]
+        )
+    except Exception:
+        return
+    if not reports:
+        return
+    message_prefix = (
+        f"Auto re-evaluation via governance override ({reviewer or 'override'}). "
+    )
+    note = f"{message_prefix}{base_note}"
+    for report in reports:
+        try:
+            db.record_feedback_reevaluation(report["id"], note)
+        except Exception:
+            continue
+
+
 @app.get("/filings/recent", response_model=List[FilingResponse])
 async def recent_filings(limit: int = 20) -> List[FilingResponse]:
     """Return recent filings from announcements."""
@@ -1175,7 +2370,11 @@ def _needs_financial_refresh(record: Dict[str, Any]) -> bool:
 
 
 @app.get("/filings/{symbol}", response_model=FilingResponse)
-async def filing_detail(symbol: str, refresh: bool = False) -> FilingResponse:
+async def filing_detail(
+    symbol: str,
+    refresh: bool = False,
+    authorization: Optional[str] = Header(None),
+) -> FilingResponse:
     """Return the latest filing and computed ratios for a symbol."""
 
     normalized = symbol.strip().upper()
@@ -1185,6 +2384,7 @@ async def filing_detail(symbol: str, refresh: bool = False) -> FilingResponse:
         record = _get_db().get_latest_filing(normalized)
 
     if refresh or not record or _needs_financial_refresh(record):
+        _require_paid_feature(authorization, "Instant lookup")
         latest = _fetch_latest_filing_from_bse(normalized)
         if latest:
             record = latest
@@ -1209,20 +2409,44 @@ async def filing_detail(symbol: str, refresh: bool = False) -> FilingResponse:
     return FilingResponse(**record)
 
 
-@app.get("/filings/{symbol}/history", response_model=List[FilingResponse])
-async def filing_history(symbol: str, limit: int = 10) -> List[FilingResponse]:
+@app.get("/filings/{symbol}/history", response_model=FilingHistoryResponse)
+async def filing_history(
+    symbol: str,
+    limit: int = 10,
+    cursor: Optional[str] = None,
+    authorization: Optional[str] = Header(None),
+) -> FilingHistoryResponse:
     """Return a symbol's recent filings for context/timeline views."""
 
+    _require_paid_feature(authorization, "History view")
     normalized = symbol.strip().upper()
-    rows = _get_db().get_filing_history(normalized, limit=limit)
-    if not rows:
+    db = _get_db()
+    parsed_cursor = _parse_path_datetime(cursor) if cursor else None
+    effective_limit = max(1, min(limit, 40))
+    rows = db.get_filing_history(
+        normalized, limit=effective_limit + 1, cursor_ts=parsed_cursor
+    )
+
+    if len(rows) <= effective_limit and parsed_cursor is None:
+        supplemented = _supplement_history_from_indian_api(
+            normalized, effective_limit, len(rows)
+        )
+        if supplemented:
+            rows = db.get_filing_history(
+                normalized, limit=effective_limit + 1, cursor_ts=parsed_cursor
+            )
+
+    if not rows and parsed_cursor is None:
         record = _fetch_latest_filing_from_bse(normalized)
         if not record:
             raise HTTPException(status_code=404, detail="No filings found for symbol")
         rows = [record]
 
+    has_more = len(rows) > effective_limit
+    entries = rows[:effective_limit]
+
     responses: List[FilingResponse] = []
-    for row in rows:
+    for row in entries:
         if not row.get("ratios"):
             try:
                 ratio_payload = _ensure_filing_evaluation(row)
@@ -1236,7 +2460,12 @@ async def filing_history(symbol: str, limit: int = 10) -> List[FilingResponse]:
         if symbol_value and filing_date:
             row["quality_issues"] = _load_quality_issues(symbol_value, filing_date)
         responses.append(FilingResponse(**row))
-    return responses
+
+    next_cursor = None
+    if has_more and responses:
+        next_cursor = responses[-1].filing_date
+
+    return FilingHistoryResponse(entries=responses, next_cursor=next_cursor)
 
 
 @app.get("/market-data/{symbol}", response_model=MarketQuoteResponse)
@@ -1270,6 +2499,25 @@ async def ingestion_stats() -> Dict[str, Any]:
 
     stats = _get_db().get_database_stats()
     return stats
+
+
+@app.get("/ops/metrics")
+async def ops_metrics() -> Dict[str, Any]:
+    """Expose summarized ingestion + reliability metrics for dashboards."""
+
+    ingestion_summary = summarize_ingestion_metrics(INGESTION_METRICS_PATH)
+    return {
+        "ingestion": ingestion_summary,
+        "market_data": {
+            "recent_alerts": list(MARKET_ALERT_EVENTS),
+            "active_failures": dict(MARKET_FAILURES),
+            "active_provider_failures": dict(PROVIDER_FAILURES),
+        },
+        "llm": {
+            "recent_failures": list(LLM_FAILURE_EVENTS),
+            "failure_count": len(LLM_FAILURE_EVENTS),
+        },
+    }
 
 
 @app.post("/feedback", response_model=FeedbackSubmissionResponse, status_code=201)
@@ -1368,13 +2616,24 @@ async def update_feedback(
     return _serialize_feedback(row)
 
 
+@app.get("/feedback/{feedback_id}/events", response_model=List[FeedbackEventResponse])
+async def feedback_events(feedback_id: int) -> List[FeedbackEventResponse]:
+    """Return audit history for reviewers."""
+
+    rows = _get_db().get_feedback_events(feedback_id)
+    return [FeedbackEventResponse(**row) for row in rows]
+
+
 @app.get("/feedback/status/{tracking_token}", response_model=FeedbackPublicStatusResponse)
 async def feedback_status(tracking_token: str) -> FeedbackPublicStatusResponse:
     """Return sanitized status for a feedback ticket."""
 
-    row = _get_db().get_feedback_by_token(tracking_token.strip())
+    token = tracking_token.strip()
+    row = _get_db().get_feedback_by_token(token)
     if not row:
         raise HTTPException(status_code=404, detail="Feedback ticket not found")
+
+    events = _get_db().get_feedback_events_by_token(token)
 
     return FeedbackPublicStatusResponse(
         ticket_id=row["id"],
@@ -1389,15 +2648,95 @@ async def feedback_status(tracking_token: str) -> FeedbackPublicStatusResponse:
         resolved_at=row.get("resolved_at"),
         reevaluated_at=row.get("reevaluated_at"),
         reevaluation_notes=row.get("reevaluation_notes"),
+        events=[FeedbackEventResponse(**event) for event in events],
+    )
+
+
+@app.get(
+    "/governance/review/{symbol}/{filing_date}",
+    response_model=GovernanceReviewResponse,
+)
+async def governance_review(
+    symbol: str,
+    filing_date: str,
+    authorization: Optional[str] = Header(None),
+) -> GovernanceReviewResponse:
+    """Provide a reviewer-friendly comparison of governance metrics."""
+
+    _require_paid_feature(authorization, "Governance overrides")
+    parsed_date = _parse_path_datetime(filing_date)
+    db = _get_db()
+    record = db.get_filing(symbol.strip().upper(), parsed_date)
+    if not record:
+        raise HTTPException(status_code=404, detail="Filing not found")
+
+    ingested_set = _build_governance_metric_set(
+        record,
+        label="Ingested metrics",
+        source="ingestion",
+        applied=bool(record.get("governance_override_applied")),
+        reviewer=record.get("governance_override_reviewer"),
+        reason=record.get("governance_override_reason"),
+        notes=record.get("governance_notes"),
+        updated_at=record.get("governance_override_updated_at"),
+        market_cap=record.get("market_cap_used"),
+    )
+
+    override_row = db.get_governance_override(symbol.strip().upper(), parsed_date)
+    override_set = (
+        _build_governance_metric_set(
+            override_row,
+            label="Override metrics",
+            source=(override_row.get("source") or "override") if override_row else "override",
+            applied=True,
+            reviewer=override_row.get("reviewer") if override_row else None,
+            reason=override_row.get("reason") if override_row else None,
+            notes=override_row.get("governance_notes") if override_row else None,
+            updated_at=override_row.get("updated_at") if override_row else None,
+        )
+        if override_row
+        else None
+    )
+
+    indian_snapshot = _load_indian_snapshot_for_filing(symbol, parsed_date)
+    indian_set = (
+        _build_governance_metric_set(
+            indian_snapshot.metrics,
+            label="Indian API snapshot",
+            source="indianapi",
+            applied=False,
+            snapshot_date=indian_snapshot.end_date,
+            market_cap=indian_snapshot.market_cap,
+        )
+        if indian_snapshot
+        else None
+    )
+
+    differences = _compute_metric_differences(
+        ingested_set.metrics,
+        override_set.metrics if override_set else None,
+        indian_set.metrics if indian_set else None,
+    )
+
+    return GovernanceReviewResponse(
+        symbol=record.get("symbol") or symbol.strip().upper(),
+        filing_date=parsed_date,
+        ingested=ingested_set,
+        override=override_set,
+        indian_api=indian_set,
+        differences=differences,
     )
 
 
 @app.get("/governance/overrides", response_model=List[GovernanceOverrideResponse])
 async def list_governance_overrides(
-    symbol: Optional[str] = None, limit: int = 50
+    symbol: Optional[str] = None,
+    limit: int = 50,
+    authorization: Optional[str] = Header(None),
 ) -> List[GovernanceOverrideResponse]:
     """List governance overrides applied to filings."""
 
+    _require_paid_feature(authorization, "Governance overrides")
     rows = _get_db().list_governance_overrides(symbol=symbol, limit=max(1, min(limit, 200)))
     return [GovernanceOverrideResponse(**row) for row in rows]
 
@@ -1405,9 +2744,11 @@ async def list_governance_overrides(
 @app.put("/governance/overrides", response_model=GovernanceOverrideResponse)
 async def upsert_governance_override(
     payload: GovernanceOverridePayload,
+    authorization: Optional[str] = Header(None),
 ) -> GovernanceOverrideResponse:
     """Create or update a governance override entry."""
 
+    _require_paid_feature(authorization, "Governance overrides")
     if not any(
         [
             payload.accounts_receivable is not None,
@@ -1432,13 +2773,25 @@ async def upsert_governance_override(
         reason=payload.reason,
         source=payload.source or "manual",
     )
+    reeval_note = _trigger_feedback_reevaluation(payload.symbol, payload.filing_date)
+    _auto_reevaluate_feedback_reports(
+        payload.symbol,
+        payload.filing_date,
+        payload.reviewer,
+        reeval_note,
+    )
     return GovernanceOverrideResponse(**row)
 
 
 @app.delete("/governance/overrides/{symbol}/{filing_date}", status_code=204)
-async def delete_governance_override(symbol: str, filing_date: str) -> None:
+async def delete_governance_override(
+    symbol: str,
+    filing_date: str,
+    authorization: Optional[str] = Header(None),
+) -> None:
     """Remove an override (switch back to raw extracted metrics)."""
 
+    _require_paid_feature(authorization, "Governance overrides")
     parsed_date = _parse_path_datetime(filing_date)
     deleted = _get_db().delete_governance_override(symbol, parsed_date)
     if not deleted:

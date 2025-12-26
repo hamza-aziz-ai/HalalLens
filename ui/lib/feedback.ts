@@ -4,6 +4,7 @@ import type {
   FeedbackPayload,
   FeedbackSubmissionResponse,
   FeedbackTrackingStatus,
+  FeedbackEvent,
 } from "./types";
 
 export async function fetchFeedbackReports(
@@ -39,4 +40,8 @@ export async function fetchFeedbackStatus(
   token: string,
 ): Promise<FeedbackTrackingStatus> {
   return request<FeedbackTrackingStatus>(`/feedback/status/${token}`);
+}
+
+export async function fetchFeedbackEvents(feedbackId: number): Promise<FeedbackEvent[]> {
+  return request<FeedbackEvent[]>(`/feedback/${feedbackId}/events`);
 }

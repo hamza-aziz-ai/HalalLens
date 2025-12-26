@@ -1,5 +1,5 @@
 import { request } from "./api";
-import type { GovernanceOverride } from "./types";
+import type { GovernanceOverride, GovernanceReview } from "./types";
 
 export async function fetchGovernanceOverrides(
   symbol?: string,
@@ -25,4 +25,12 @@ export async function deleteGovernanceOverride(symbol: string, filingDate: strin
   await request(`/governance/overrides/${symbol}/${encodedDate}`, {
     method: "DELETE",
   });
+}
+
+export async function fetchGovernanceReview(
+  symbol: string,
+  filingDate: string,
+): Promise<GovernanceReview> {
+  const encodedDate = encodeURIComponent(filingDate);
+  return request<GovernanceReview>(`/governance/review/${symbol}/${encodedDate}`);
 }

@@ -1,5 +1,6 @@
 import "./globals.css";
 import { ReactNode } from "react";
+import { AuthProvider } from "@/providers/AuthProvider";
 
 export const metadata = {
   title: "HalalLens",
@@ -13,8 +14,8 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <body className="min-h-screen bg-slate-950 text-slate-100">
-        <div className="mx-auto max-w-6xl px-4 py-10">{children}</div>
+      <body className="bg-slate-950 text-slate-100">
+        <AuthProvider>{children}</AuthProvider>
       </body>
     </html>
   );

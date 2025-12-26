@@ -1,0 +1,15 @@
+Tuesday 23-12-2025 09:46:40 AM INFO [api] Logging to logs_runtime/api/2025/December/api.log
+Tuesday 23-12-2025 09:46:40 AM INFO [api] Database connection pool initialized (2-20 connections)
+Tuesday 23-12-2025 09:46:40 AM INFO [api] Connected to PostgreSQL: PostgreSQL 14.20 (Ubuntu 14.20-0ubuntu0.22.04.1) o...
+Tuesday 23-12-2025 09:46:58 AM INFO [api] Logging to logs_runtime/api/2025/December/api.log
+Tuesday 23-12-2025 09:46:58 AM INFO [api] Database connection pool initialized (2-20 connections)
+Tuesday 23-12-2025 09:46:58 AM INFO [api] Connected to PostgreSQL: PostgreSQL 14.20 (Ubuntu 14.20-0ubuntu0.22.04.1) o...
+Tuesday 23-12-2025 09:47:08 AM WARNING [api] LLM narration failed for FALL, falling back to rule-based
+Traceback (most recent call last):
+  File "/home/hamza/BusinessProjects/Halal-Lens/narrator/explainer.py", line 94, in build
+    return self.llm_engine.build(evaluation)
+  File "/home/hamza/BusinessProjects/Halal-Lens/narrator/llm.py", line 142, in build
+    raw = self.client.complete(
+  File "/home/hamza/BusinessProjects/Halal-Lens/tests/test_narrator.py", line 117, in complete
+    raise LLMNarrationError("boom")
+narrator.llm.LLMNarrationError: boom

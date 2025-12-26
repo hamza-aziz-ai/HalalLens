@@ -267,7 +267,12 @@ def _evaluate_snapshot(db: BSEDatabaseManager, symbol: str, filing_dt: datetime)
     market_cap = float(market_cap)
     share_price = float(share_price) if share_price is not None else None
     evaluation = ratio_engine.evaluate(
-        snapshot, MarketDataInput(market_cap=market_cap, share_price=share_price)
+        snapshot,
+        MarketDataInput(
+            market_cap=market_cap,
+            share_price=share_price,
+            provider=provider or "manual",
+        ),
     )
     verdict = _derive_verdict(evaluation)
     summary = _build_summary(evaluation)

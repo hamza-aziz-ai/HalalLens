@@ -2,31 +2,8 @@
 
 import clsx from "clsx";
 
-import {
-  getProviderLabel,
-  providerVariant,
-  type ProviderVariant,
-} from "@/lib/providers";
+import { ProviderBadge } from "@/components/provider-badge";
 import type { HalalScoreResponse } from "@/lib/types";
-
-const PROVIDER_BADGES: Record<ProviderVariant, { dark: string; light: string }> = {
-  auto: {
-    dark: "border-cyan-400/40 bg-cyan-500/10 text-cyan-100",
-    light: "border-cyan-200 bg-cyan-50 text-cyan-700",
-  },
-  fallback: {
-    dark: "border-indigo-400/40 bg-indigo-500/15 text-indigo-100",
-    light: "border-indigo-200 bg-indigo-50 text-indigo-700",
-  },
-  cache: {
-    dark: "border-slate-500/40 bg-slate-700/40 text-slate-200",
-    light: "border-slate-300 bg-slate-100 text-slate-700",
-  },
-  manual: {
-    dark: "border-amber-400/40 bg-amber-500/15 text-amber-100",
-    light: "border-amber-200 bg-amber-50 text-amber-700",
-  },
-};
 
 export function RatioTable({
   evaluation,
@@ -36,9 +13,6 @@ export function RatioTable({
   theme?: "dark" | "light";
 }) {
   const rows = Object.entries(evaluation.ratios);
-  const providerLabel = getProviderLabel(evaluation.market_data_provider);
-  const providerTone = providerVariant(evaluation.market_data_provider);
-  const providerClass = providerBadgeClass(theme, providerTone);
   const baseCard =
     theme === "dark"
       ? "rounded-3xl border border-white/10 bg-gradient-to-br from-slate-900/80 via-slate-900/60 to-slate-950/80 shadow-2xl shadow-black/40"
@@ -78,8 +52,11 @@ export function RatioTable({
             </tr>
           </thead>
           <tbody className="divide-y divide-white/10 text-slate-100">
-            {rows.map(([key, computation]) => (
-              <tr key={key}>
+            {rows.map(([key, computation]) => {
+              const rowProvider =
+                computation.provider ?? evaluation.market_data_provider;
+              return (
+                <tr key={key}>
                 <td className="py-2">{humanize(key)}</td>
                 <td className="py-2">
                   {typeof computation.value === "number"
@@ -105,18 +82,12 @@ export function RatioTable({
                         {computation.passed ? "PASS" : "FAIL"}
                       </span>
                     )}
-                    <span
-                      className={clsx(
-                        "inline-flex w-fit items-center rounded-md border px-2 py-0.5 text-[11px] font-medium",
-                        providerClass,
-                      )}
-                    >
-                      {providerLabel}
-                    </span>
+                    <ProviderBadge provider={rowProvider} theme={theme} />
                   </div>
                 </td>
-              </tr>
-            ))}
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>
@@ -128,8 +99,4 @@ function humanize(key: string) {
   return key
     .replace(/_/g, " ")
     .replace(/\b\w/g, (char) => char.toUpperCase());
-}
-
-function providerBadgeClass(theme: "dark" | "light", tone: ProviderVariant) {
-  return PROVIDER_BADGES[tone][theme];
 }

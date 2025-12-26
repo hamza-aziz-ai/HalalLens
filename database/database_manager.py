@@ -11,7 +11,7 @@ import logging
 import json
 from contextlib import contextmanager
 from datetime import datetime, date, timezone
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Any
 
 import pandas as pd
 import psycopg2
@@ -79,6 +79,33 @@ class BSEDatabaseManager:
             'errors': 0
         }
 
+        self._ensure_auth_infrastructure()
+
+    def _ensure_auth_infrastructure(self) -> None:
+        """
+        Make sure auth-related columns exist (especially for Google SSO).
+
+        Some environments skip manual migrations, so we defensively add the
+        new metadata columns here to avoid runtime failures when OAuth is used.
+        """
+        ddl = """
+        ALTER TABLE IF EXISTS users
+            ADD COLUMN IF NOT EXISTS provider TEXT NOT NULL DEFAULT 'password',
+            ADD COLUMN IF NOT EXISTS google_sub TEXT UNIQUE,
+            ADD COLUMN IF NOT EXISTS full_name TEXT,
+            ADD COLUMN IF NOT EXISTS avatar_url TEXT;
+        CREATE INDEX IF NOT EXISTS idx_users_google_sub ON users(google_sub);
+        """
+
+        with self.get_connection() as conn:
+            with conn.cursor() as cursor:
+                try:
+                    cursor.execute(ddl)
+                    conn.commit()
+                except Exception as exc:
+                    conn.rollback()
+                    logger.warning("Unable to ensure auth columns (continuing): %s", exc)
+
     @contextmanager
     def get_connection(self):
         """Get database connection from pool with automatic cleanup"""
@@ -112,7 +139,7 @@ class BSEDatabaseManager:
         processed_count = 0
 
         with self.get_connection() as conn:
-            with conn.cursor() as cursor:
+            with conn.cursor(cursor_factory=RealDictCursor) as cursor:
                 try:
                     insert_query = """
                     INSERT INTO announcements (
@@ -324,13 +351,50 @@ class BSEDatabaseManager:
                         "Failed to insert Indian API snapshot for %s: %s", symbol, exc
                     )
 
+    def get_indianapi_snapshot(
+        self, symbol: str, target_date: Optional[date] = None
+    ) -> Optional[Dict]:
+        """Return the cached Indian API payload closest to the target date."""
+
+        normalized = (symbol or "").strip().upper()
+        if not normalized:
+            return None
+
+        with self.get_connection() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+                if target_date:
+                    cursor.execute(
+                        """
+                        SELECT payload
+                        FROM indianapi_snapshots
+                        WHERE symbol = %(symbol)s
+                          AND snapshot_date IS NOT NULL
+                        ORDER BY ABS(snapshot_date - %(target)s)
+                        LIMIT 1
+                        """,
+                        {"symbol": normalized, "target": target_date},
+                    )
+                else:
+                    cursor.execute(
+                        """
+                        SELECT payload
+                          FROM indianapi_snapshots
+                         WHERE symbol = %(symbol)s
+                         ORDER BY fetched_at DESC
+                         LIMIT 1
+                        """,
+                        {"symbol": normalized},
+                    )
+                row = cursor.fetchone()
+                return dict(row) if row else None
+
     def get_cached_market_data(
         self, symbol: str, as_of: Optional[datetime] = None
-    ) -> Optional[Tuple[Optional[float], Optional[float]]]:
+    ) -> Optional[Tuple[Optional[float], Optional[float], Optional[str]]]:
         """Return the most recent market snapshot for a symbol."""
 
         with self.get_connection() as conn:
-            with conn.cursor() as cursor:
+            with conn.cursor(cursor_factory=RealDictCursor) as cursor:
                 cursor.execute(
                     """
                     SELECT market_cap, share_price, provider
@@ -362,7 +426,7 @@ class BSEDatabaseManager:
             return
 
         with self.get_connection() as conn:
-            with conn.cursor() as cursor:
+            with conn.cursor(cursor_factory=RealDictCursor) as cursor:
                 cursor.execute(
                     """
                     INSERT INTO bhavcopy_quotes (
@@ -392,7 +456,7 @@ class BSEDatabaseManager:
         """Return a cached Bhavcopy quote for a specific trade date."""
 
         with self.get_connection() as conn:
-            with conn.cursor() as cursor:
+            with conn.cursor(cursor_factory=RealDictCursor) as cursor:
                 cursor.execute(
                     """
                     SELECT share_price, market_cap, provider
@@ -494,7 +558,7 @@ class BSEDatabaseManager:
         """Persist or update a data-quality issue for a filing."""
 
         with self.get_connection() as conn:
-            with conn.cursor() as cursor:
+            with conn.cursor(cursor_factory=RealDictCursor) as cursor:
                 cursor.execute(
                     """
                     INSERT INTO data_quality_issues (
@@ -556,7 +620,7 @@ class BSEDatabaseManager:
         """Return unresolved quality issues for a filing."""
 
         with self.get_connection() as conn:
-            with conn.cursor() as cursor:
+            with conn.cursor(cursor_factory=RealDictCursor) as cursor:
                 cursor.execute(
                     """
                     SELECT issue_type, details
@@ -644,6 +708,16 @@ class BSEDatabaseManager:
                     )
                     row = cursor.fetchone()
                     conn.commit()
+                    try:
+                        self.log_feedback_event(
+                            row["id"],
+                            "submitted",
+                            status=row.get("status"),
+                            details="Feedback submitted via {}".format(source or "ui"),
+                            source=source or "ui",
+                        )
+                    except Exception:
+                        pass
                     return dict(row)
                 except Exception as exc:
                     conn.rollback()
@@ -747,6 +821,16 @@ class BSEDatabaseManager:
                     conn.rollback()
                     return None
                 conn.commit()
+                try:
+                    self.log_feedback_event(
+                        feedback_id,
+                        "status_change",
+                        status=status,
+                        reviewer=reviewer,
+                        details=review_notes,
+                    )
+                except Exception:
+                    pass
                 return dict(row)
 
     def record_feedback_reevaluation(
@@ -787,6 +871,16 @@ class BSEDatabaseManager:
                     conn.rollback()
                     return None
                 conn.commit()
+                try:
+                    self.log_feedback_event(
+                        feedback_id,
+                        "reevaluated",
+                        status=row.get("status"),
+                        reviewer=row.get("resolved_by"),
+                        details=notes,
+                    )
+                except Exception:
+                    pass
                 return dict(row)
 
     def get_feedback_report(self, feedback_id: int) -> Optional[Dict]:
@@ -820,6 +914,140 @@ class BSEDatabaseManager:
                 )
                 row = cursor.fetchone()
                 return dict(row) if row else None
+
+    def log_feedback_event(
+        self,
+        feedback_id: int,
+        event_type: str,
+        *,
+        status: Optional[str] = None,
+        reviewer: Optional[str] = None,
+        details: Optional[str] = None,
+        source: str = "api",
+    ) -> None:
+        if not feedback_id:
+            return
+        with self.get_connection() as conn:
+            with conn.cursor() as cursor:
+                try:
+                    cursor.execute(
+                        """
+                        INSERT INTO feedback_events (
+                            feedback_id,
+                            event_type,
+                            status,
+                            reviewer,
+                            details,
+                            source
+                        ) VALUES (
+                            %(feedback_id)s,
+                            %(event_type)s,
+                            %(status)s,
+                            %(reviewer)s,
+                            %(details)s,
+                            %(source)s
+                        )
+                        """,
+                        {
+                            "feedback_id": feedback_id,
+                            "event_type": event_type,
+                            "status": status,
+                            "reviewer": reviewer,
+                            "details": details,
+                            "source": source,
+                        },
+                    )
+                    conn.commit()
+                except Exception as exc:
+                    conn.rollback()
+                    logger.debug(
+                        "Failed to log feedback event %s (%s): %s",
+                        feedback_id,
+                        event_type,
+                        exc,
+                    )
+
+    def get_feedback_events(self, feedback_id: int) -> List[Dict]:
+        if not feedback_id:
+            return []
+        with self.get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT id,
+                           feedback_id,
+                           event_type,
+                           status,
+                           reviewer,
+                           details,
+                           source,
+                           created_at
+                    FROM feedback_events
+                    WHERE feedback_id = %(feedback_id)s
+                    ORDER BY created_at
+                    """,
+                    {"feedback_id": feedback_id},
+                )
+                rows = cursor.fetchall()
+                return [dict(row) for row in rows]
+
+    def get_feedback_events_by_token(self, token: str) -> List[Dict]:
+        if not token:
+            return []
+        with self.get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT fe.id,
+                           fe.feedback_id,
+                           fe.event_type,
+                           fe.status,
+                           fe.reviewer,
+                           fe.details,
+                           fe.source,
+                           fe.created_at
+                    FROM feedback_events fe
+                             JOIN feedback_reports fr
+                                  ON fr.id = fe.feedback_id
+                    WHERE fr.public_token = %(token)s
+                    ORDER BY fe.created_at
+                    """,
+                    {"token": token},
+                )
+                rows = cursor.fetchall()
+                return [dict(row) for row in rows]
+
+    def list_feedback_for_filing(
+        self,
+        symbol: str,
+        filing_date: datetime,
+        statuses: Optional[List[str]] = None,
+    ) -> List[Dict]:
+        """Return feedback reports matching a specific filing."""
+
+        normalized = (symbol or "").strip().upper()
+        if not normalized or not filing_date:
+            return []
+
+        query = """
+            SELECT id, status
+              FROM feedback_reports
+             WHERE symbol = %(symbol)s
+               AND filing_date = %(filing_date)s
+        """
+        params: Dict[str, Any] = {
+            "symbol": normalized,
+            "filing_date": filing_date,
+        }
+        if statuses:
+            query += " AND status = ANY(%(statuses)s)"
+            params["statuses"] = statuses
+
+        with self.get_connection() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+                cursor.execute(query, params)
+                rows = cursor.fetchall()
+                return [dict(row) for row in rows]
 
     def get_feedback_by_token(self, token: str) -> Optional[Dict]:
         """Return a feedback report via public token."""
@@ -934,6 +1162,25 @@ class BSEDatabaseManager:
                 deleted = cursor.rowcount > 0
                 conn.commit()
                 return deleted
+
+    def get_governance_override(
+        self, symbol: str, filing_date: datetime
+    ) -> Optional[Dict]:
+        """Return governance override for a specific filing."""
+
+        with self.get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT *
+                      FROM governance_overrides
+                     WHERE symbol = %(symbol)s
+                       AND filing_date = %(filing_date)s
+                    """,
+                    {"symbol": symbol.strip().upper(), "filing_date": filing_date},
+                )
+                row = cursor.fetchone()
+                return dict(row) if row else None
 
     def list_governance_overrides(
         self, symbol: Optional[str] = None, limit: int = 50
@@ -1372,7 +1619,9 @@ class BSEDatabaseManager:
                 row = cursor.fetchone()
                 return dict(row) if row else None
 
-    def get_filing_history(self, symbol: str, limit: int = 10) -> List[Dict]:
+    def get_filing_history(
+        self, symbol: str, limit: int = 10, cursor_ts: Optional[datetime] = None
+    ) -> List[Dict]:
         """Return recent filings for a single symbol ordered by filing date."""
 
         if not symbol:
@@ -1422,12 +1671,16 @@ class BSEDatabaseManager:
                 LEFT JOIN governance_overrides go
                   ON a.symbol = go.symbol
                  AND a.filing_date = go.filing_date
-                WHERE a.symbol = %(symbol)s
-                   OR a.symbol_alias = %(symbol)s
+                WHERE (a.symbol = %(symbol)s OR a.symbol_alias = %(symbol)s)
+                  AND (%(cursor_ts)s IS NULL OR a.filing_date < %(cursor_ts)s)
                 ORDER BY a.filing_date DESC
                 LIMIT %(limit)s
                     """,
-                    {"symbol": symbol.strip().upper(), "limit": limit},
+                    {
+                        "symbol": symbol.strip().upper(),
+                        "limit": limit,
+                        "cursor_ts": cursor_ts,
+                    },
                 )
                 rows = cursor.fetchall()
                 return [dict(row) for row in rows]
@@ -1469,6 +1722,527 @@ class BSEDatabaseManager:
         if not metadata:
             return None
         return metadata.get("symbol")
+
+    # ----------------------------
+    # User & session management
+    # ----------------------------
+
+    def create_user(
+        self,
+        *,
+        email: str,
+        password_hash: str,
+        plan: str = "free",
+        subscription_status: str = "inactive",
+        provider: str = "password",
+        google_sub: Optional[str] = None,
+        full_name: Optional[str] = None,
+        avatar_url: Optional[str] = None,
+    ) -> Dict:
+        with self.get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    INSERT INTO users (
+                        email,
+                        password_hash,
+                        provider,
+                        google_sub,
+                        full_name,
+                        avatar_url,
+                        plan,
+                        subscription_status,
+                        plan_started_at
+                    ) VALUES (
+                        %(email)s,
+                        %(password_hash)s,
+                        %(provider)s,
+                        %(google_sub)s,
+                        %(full_name)s,
+                        %(avatar_url)s,
+                        %(plan)s,
+                        %(subscription_status)s,
+                        NOW()
+                    )
+                    RETURNING id, email, plan, subscription_status,
+                              subscription_renewal, plan_started_at,
+                              created_at, updated_at, provider, google_sub,
+                              full_name, avatar_url
+                    """,
+                    {
+                        "email": email,
+                        "password_hash": password_hash,
+                        "provider": provider,
+                        "google_sub": google_sub,
+                        "full_name": full_name,
+                        "avatar_url": avatar_url,
+                        "plan": plan,
+                        "subscription_status": subscription_status,
+                    },
+                )
+                row = cursor.fetchone()
+                conn.commit()
+                return dict(row)
+
+    def get_user_by_email(self, email: str) -> Optional[Dict]:
+        with self.get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT id, email, password_hash, plan,
+                           subscription_status, subscription_renewal,
+                           provider, google_sub, full_name, avatar_url,
+                           plan_started_at, last_login, created_at, updated_at
+                    FROM users
+                    WHERE email = %(email)s
+                    """,
+                    {"email": email},
+                )
+                row = cursor.fetchone()
+                if not row:
+                    return None
+                return dict(row)
+
+    def get_user_by_id(self, user_id: int) -> Optional[Dict]:
+        with self.get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT id, email, plan, subscription_status,
+                           subscription_renewal, plan_started_at,
+                           last_login, created_at, updated_at,
+                           provider, google_sub, full_name, avatar_url
+                    FROM users
+                    WHERE id = %(user_id)s
+                    """,
+                    {"user_id": user_id},
+                )
+                row = cursor.fetchone()
+                if not row:
+                    return None
+                return dict(row)
+
+    def get_user_by_google_sub(self, google_sub: str) -> Optional[Dict]:
+        with self.get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT id, email, plan, subscription_status,
+                           subscription_renewal, plan_started_at,
+                           last_login, created_at, updated_at,
+                           provider, google_sub, full_name, avatar_url
+                    FROM users
+                    WHERE google_sub = %(google_sub)s
+                    """,
+                    {"google_sub": google_sub},
+                )
+                row = cursor.fetchone()
+                if not row:
+                    return None
+                return dict(row)
+
+    def upsert_google_user(
+        self,
+        *,
+        email: str,
+        google_sub: str,
+        password_hash: str,
+        full_name: Optional[str] = None,
+        avatar_url: Optional[str] = None,
+    ) -> Dict:
+        with self.get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT id, email, plan, subscription_status,
+                           subscription_renewal, plan_started_at,
+                           last_login, created_at, updated_at,
+                           provider, google_sub, full_name, avatar_url
+                    FROM users
+                    WHERE google_sub = %(google_sub)s
+                    """,
+                    {"google_sub": google_sub},
+                )
+                existing = cursor.fetchone()
+                if existing:
+                    return dict(existing)
+
+                cursor.execute(
+                    """
+                    SELECT id FROM users WHERE email = %(email)s
+                    """,
+                    {"email": email},
+                )
+                row = cursor.fetchone()
+                if row:
+                    cursor.execute(
+                        """
+                        UPDATE users
+                        SET google_sub = %(google_sub)s,
+                            full_name = COALESCE(%(full_name)s, full_name),
+                            avatar_url = COALESCE(%(avatar_url)s, avatar_url),
+                            updated_at = NOW()
+                        WHERE id = %(user_id)s
+                        RETURNING id, email, plan, subscription_status,
+                                  subscription_renewal, plan_started_at,
+                                  last_login, created_at, updated_at,
+                                  provider, google_sub, full_name, avatar_url
+                        """,
+                        {
+                            "google_sub": google_sub,
+                            "full_name": full_name,
+                            "avatar_url": avatar_url,
+                            "user_id": row["id"],
+                        },
+                    )
+                    updated = cursor.fetchone()
+                    conn.commit()
+                    return dict(updated)
+
+                cursor.execute(
+                    """
+                    INSERT INTO users (
+                        email,
+                        password_hash,
+                        provider,
+                        google_sub,
+                        full_name,
+                        avatar_url,
+                        plan,
+                        subscription_status,
+                        plan_started_at
+                    ) VALUES (
+                        %(email)s,
+                        %(password_hash)s,
+                        'google',
+                        %(google_sub)s,
+                        %(full_name)s,
+                        %(avatar_url)s,
+                        'free',
+                        'active',
+                        NOW()
+                    )
+                    RETURNING id, email, plan, subscription_status,
+                              subscription_renewal, plan_started_at,
+                              last_login, created_at, updated_at,
+                              provider, google_sub, full_name, avatar_url
+                    """,
+                    {
+                        "email": email,
+                        "password_hash": password_hash,
+                        "google_sub": google_sub,
+                        "full_name": full_name,
+                        "avatar_url": avatar_url,
+                    },
+                )
+                created = cursor.fetchone()
+                conn.commit()
+                return dict(created)
+
+    def touch_user_login(self, user_id: int) -> None:
+        with self.get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    UPDATE users
+                    SET last_login = NOW(), updated_at = NOW()
+                    WHERE id = %(user_id)s
+                    """,
+                    {"user_id": user_id},
+                )
+                conn.commit()
+
+    def create_user_session(self, token: str, user_id: int, expires_at: datetime) -> None:
+        with self.get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    INSERT INTO user_sessions (token, user_id, expires_at)
+                    VALUES (%(token)s, %(user_id)s, %(expires_at)s)
+                    ON CONFLICT (token) DO UPDATE
+                    SET user_id = EXCLUDED.user_id,
+                        expires_at = EXCLUDED.expires_at,
+                        created_at = NOW()
+                    """,
+                    {
+                        "token": token,
+                        "user_id": user_id,
+                        "expires_at": expires_at,
+                    },
+                )
+                conn.commit()
+
+    def get_session(self, token: str) -> Optional[Dict]:
+        with self.get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT 
+                        s.token,
+                        s.user_id,
+                        s.expires_at,
+                        u.email,
+                        u.plan,
+                        u.subscription_status,
+                        u.subscription_renewal,
+                        u.full_name,
+                        u.avatar_url
+                    FROM user_sessions s
+                    JOIN users u ON u.id = s.user_id
+                    WHERE s.token = %(token)s
+                    """,
+                    {"token": token},
+                )
+                row = cursor.fetchone()
+                if not row:
+                    return None
+                return dict(row)
+
+    def delete_session(self, token: str) -> None:
+        with self.get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "DELETE FROM user_sessions WHERE token = %(token)s",
+                    {"token": token},
+                )
+                conn.commit()
+
+    def purge_expired_sessions(self) -> None:
+        with self.get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "DELETE FROM user_sessions WHERE expires_at < NOW()"
+                )
+                conn.commit()
+
+    # ----------------------------
+    # Billing & subscriptions
+    # ----------------------------
+
+    def list_subscription_plans(self, active_only: bool = True) -> list[Dict]:
+        with self.get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT code, name, price_inr, interval_days, features, is_active
+                    FROM subscription_plans
+                    WHERE (%(active_only)s = false OR is_active = true)
+                    ORDER BY price_inr ASC
+                    """,
+                    {"active_only": active_only},
+                )
+                return [dict(row) for row in cursor.fetchall()]
+
+    def get_subscription_plan(self, code: str) -> Optional[Dict]:
+        with self.get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT code, name, price_inr, interval_days, features, is_active
+                    FROM subscription_plans
+                    WHERE code = %(code)s
+                    """,
+                    {"code": code},
+                )
+                row = cursor.fetchone()
+                return dict(row) if row else None
+
+    def upsert_user_subscription(
+        self,
+        *,
+        user_id: int,
+        plan_code: str,
+        provider: str,
+        status: str,
+        current_period_start: Optional[datetime],
+        current_period_end: Optional[datetime],
+        cancel_at_period_end: bool = False,
+    ) -> Dict:
+        with self.get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT id
+                    FROM user_subscriptions
+                    WHERE user_id = %(user_id)s AND provider = %(provider)s
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                    """,
+                    {"user_id": user_id, "provider": provider},
+                )
+                existing = cursor.fetchone()
+                if existing:
+                    cursor.execute(
+                        """
+                        UPDATE user_subscriptions
+                        SET plan_code = %(plan_code)s,
+                            status = %(status)s,
+                            current_period_start = %(current_period_start)s,
+                            current_period_end = %(current_period_end)s,
+                            cancel_at_period_end = %(cancel_at_period_end)s,
+                            updated_at = NOW()
+                        WHERE id = %(id)s
+                        RETURNING *
+                        """,
+                        {
+                            "id": existing["id"],
+                            "plan_code": plan_code,
+                            "status": status,
+                            "current_period_start": current_period_start,
+                            "current_period_end": current_period_end,
+                            "cancel_at_period_end": cancel_at_period_end,
+                        },
+                    )
+                    row = cursor.fetchone()
+                else:
+                    cursor.execute(
+                        """
+                        INSERT INTO user_subscriptions (
+                            user_id,
+                            plan_code,
+                            provider,
+                            status,
+                            current_period_start,
+                            current_period_end,
+                            cancel_at_period_end
+                        ) VALUES (
+                            %(user_id)s,
+                            %(plan_code)s,
+                            %(provider)s,
+                            %(status)s,
+                            %(current_period_start)s,
+                            %(current_period_end)s,
+                            %(cancel_at_period_end)s
+                        )
+                        RETURNING *
+                        """,
+                        {
+                            "user_id": user_id,
+                            "plan_code": plan_code,
+                            "provider": provider,
+                            "status": status,
+                            "current_period_start": current_period_start,
+                            "current_period_end": current_period_end,
+                            "cancel_at_period_end": cancel_at_period_end,
+                        },
+                    )
+                    row = cursor.fetchone()
+                conn.commit()
+                return dict(row)
+
+    def update_user_plan(
+        self,
+        *,
+        user_id: int,
+        plan: str,
+        subscription_status: str,
+        subscription_renewal: Optional[datetime],
+        plan_started_at: Optional[datetime],
+    ) -> Dict:
+        with self.get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    UPDATE users
+                    SET plan = %(plan)s,
+                        subscription_status = %(subscription_status)s,
+                        subscription_renewal = %(subscription_renewal)s,
+                        plan_started_at = COALESCE(%(plan_started_at)s, plan_started_at),
+                        updated_at = NOW()
+                    WHERE id = %(user_id)s
+                    RETURNING id, email, plan, subscription_status,
+                              subscription_renewal, plan_started_at,
+                              provider, google_sub, full_name, avatar_url
+                    """,
+                    {
+                        "user_id": user_id,
+                        "plan": plan,
+                        "subscription_status": subscription_status,
+                        "subscription_renewal": subscription_renewal,
+                        "plan_started_at": plan_started_at,
+                    },
+                )
+                row = cursor.fetchone()
+                conn.commit()
+                return dict(row)
+
+    def create_razorpay_order(
+        self,
+        *,
+        user_id: int,
+        order_id: str,
+        amount: int,
+        currency: str,
+        status: str,
+        payload: Dict[str, Any],
+    ) -> None:
+        with self.get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    INSERT INTO razorpay_orders (
+                        order_id, user_id, amount, currency, status, payload
+                    ) VALUES (
+                        %(order_id)s, %(user_id)s, %(amount)s, %(currency)s, %(status)s, %(payload)s
+                    )
+                    ON CONFLICT (order_id) DO UPDATE
+                    SET status = EXCLUDED.status,
+                        payload = EXCLUDED.payload,
+                        updated_at = NOW()
+                    """,
+                    {
+                        "order_id": order_id,
+                        "user_id": user_id,
+                        "amount": amount,
+                        "currency": currency,
+                        "status": status,
+                        "payload": payload,
+                    },
+                )
+                conn.commit()
+
+    def get_razorpay_order(self, order_id: str) -> Optional[Dict]:
+        with self.get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT order_id, user_id, amount, currency, status, payload
+                    FROM razorpay_orders
+                    WHERE order_id = %(order_id)s
+                    """,
+                    {"order_id": order_id},
+                )
+                row = cursor.fetchone()
+                return dict(row) if row else None
+
+    def record_payment_event(
+        self,
+        *,
+        user_id: Optional[int],
+        provider: str,
+        event_type: str,
+        event_id: Optional[str],
+        payload: Dict[str, Any],
+    ) -> None:
+        with self.get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    INSERT INTO payment_events (
+                        user_id, provider, event_type, event_id, payload
+                    ) VALUES (
+                        %(user_id)s, %(provider)s, %(event_type)s, %(event_id)s, %(payload)s
+                    )
+                    """,
+                    {
+                        "user_id": user_id,
+                        "provider": provider,
+                        "event_type": event_type,
+                        "event_id": event_id,
+                        "payload": payload,
+                    },
+                )
+                conn.commit()
 
     def get_database_stats(self) -> Dict:
         """Get comprehensive database statistics"""

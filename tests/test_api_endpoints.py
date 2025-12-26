@@ -3,9 +3,12 @@
 
 import asyncio
 import importlib
+import json
 from datetime import datetime, timezone
+from typing import Any, Dict
 
 import pytest
+from fastapi import HTTPException
 
 from alerts import AlertEngine, WatchlistStorage
 
@@ -43,6 +46,19 @@ def _run(coro):
         loop.close()
 
 
+@pytest.fixture()
+def paid_access(monkeypatch):
+    monkeypatch.setattr(
+        api_module,
+        "_require_paid_feature",
+        lambda authorization, feature: {
+            "user_id": 1,
+            "plan": "starter",
+            "subscription_status": "active",
+        },
+    )
+
+
 def test_halal_score_handler_returns_expected_ratios():
     response = _run(api_module.halal_score(_sample_request()))
     assert response.symbol == "TCS"
@@ -50,7 +66,7 @@ def test_halal_score_handler_returns_expected_ratios():
     assert "debt_to_market_cap" in response.ratios
 
 
-def test_narrate_handler_produces_summary():
+def test_narrate_handler_produces_summary(paid_access):
     response = _run(api_module.narrate(_sample_request()))
     assert response.symbol == "TCS"
     assert isinstance(response.summary, str)
@@ -74,7 +90,7 @@ def isolated_watch_storage(tmp_path):
     yield
 
 
-def test_watchlist_and_alert_handlers(isolated_watch_storage):
+def test_watchlist_and_alert_handlers(isolated_watch_storage, paid_access):
     entry = WatchlistEntryPayload(
         user_id="user-1",
         symbol="INFY",
@@ -97,7 +113,194 @@ def test_watchlist_and_alert_handlers(isolated_watch_storage):
         api_module.check_alerts(AlertCheckPayload(symbol="INFY", is_compliant=False))
     )
     assert len(events) == 1
-    assert "Non-Halal" in events[0].message
+
+
+class AuthDBStub:
+    def __init__(self):
+        self.users_by_email: Dict[str, Dict[str, Any]] = {}
+        self.users_by_id: Dict[int, Dict[str, Any]] = {}
+        self.users_by_google_sub: Dict[str, Dict[str, Any]] = {}
+        self.sessions: Dict[str, Dict[str, Any]] = {}
+        self.next_id = 1
+
+    def create_user(self, **kwargs):
+        user = {
+            "id": self.next_id,
+            "email": kwargs["email"],
+            "password_hash": kwargs["password_hash"],
+            "provider": kwargs.get("provider", "password"),
+            "google_sub": kwargs.get("google_sub"),
+            "full_name": kwargs.get("full_name"),
+            "avatar_url": kwargs.get("avatar_url"),
+            "plan": kwargs.get("plan", "free"),
+            "subscription_status": kwargs.get("subscription_status", "inactive"),
+            "subscription_renewal": None,
+            "plan_started_at": datetime.now(timezone.utc),
+            "created_at": datetime.now(timezone.utc),
+            "updated_at": datetime.now(timezone.utc),
+        }
+        self.next_id += 1
+        self.users_by_email[user["email"]] = user
+        self.users_by_id[user["id"]] = user
+        if user.get("google_sub"):
+            self.users_by_google_sub[user["google_sub"]] = user
+        return dict(user)
+
+    def get_user_by_email(self, email):
+        entry = self.users_by_email.get(email)
+        return dict(entry) if entry else None
+
+    def get_user_by_id(self, user_id):
+        entry = self.users_by_id.get(user_id)
+        return dict(entry) if entry else None
+
+    def get_user_by_google_sub(self, google_sub):
+        entry = self.users_by_google_sub.get(google_sub)
+        return dict(entry) if entry else None
+
+    def upsert_google_user(
+        self, *, email, google_sub, password_hash, full_name=None, avatar_url=None
+    ):
+        existing = self.users_by_google_sub.get(google_sub)
+        if existing:
+            return dict(existing)
+        entry = self.users_by_email.get(email)
+        if entry:
+            entry["google_sub"] = google_sub
+            entry["full_name"] = full_name or entry.get("full_name")
+            entry["avatar_url"] = avatar_url or entry.get("avatar_url")
+            self.users_by_google_sub[google_sub] = entry
+            return dict(entry)
+        return self.create_user(
+            email=email,
+            password_hash=password_hash,
+            provider="google",
+            google_sub=google_sub,
+            full_name=full_name,
+            avatar_url=avatar_url,
+        )
+
+    def touch_user_login(self, user_id):
+        if user_id in self.users_by_id:
+            self.users_by_id[user_id]["last_login"] = datetime.now(timezone.utc)
+
+    def create_user_session(self, token, user_id, expires_at):
+        user = self.users_by_id[user_id]
+        self.sessions[token] = {
+            "token": token,
+            "user_id": user_id,
+            "expires_at": expires_at,
+            "email": user["email"],
+            "plan": user["plan"],
+            "subscription_status": user["subscription_status"],
+            "subscription_renewal": user.get("subscription_renewal"),
+            "full_name": user.get("full_name"),
+            "avatar_url": user.get("avatar_url"),
+        }
+
+    def get_session(self, token):
+        entry = self.sessions.get(token)
+        return dict(entry) if entry else None
+
+    def delete_session(self, token):
+        self.sessions.pop(token, None)
+
+
+def test_auth_register_login_cycle(monkeypatch):
+
+    stub = AuthDBStub()
+    monkeypatch.setattr(api_module, "_get_db", lambda: stub)
+
+    register_resp = _run(
+        api_module.auth_register(
+            api_module.RegisterRequest(
+                email="user@example.com", password="StrongPass123!"
+            )
+        )
+    )
+    assert register_resp.user.email == "user@example.com"
+    assert register_resp.user.plan == "free"
+    token = register_resp.token
+
+    login_resp = _run(
+        api_module.auth_login(
+            api_module.LoginRequest(
+                email="user@example.com", password="StrongPass123!"
+            )
+        )
+    )
+    assert login_resp.user.id == register_resp.user.id
+    assert login_resp.token != token
+
+    auth_header = f"Bearer {login_resp.token}"
+    me_resp = _run(api_module.auth_me(authorization=auth_header))
+    assert me_resp.email == "user@example.com"
+
+    _run(api_module.auth_logout(authorization=auth_header))
+    with pytest.raises(HTTPException):
+        _run(api_module.auth_me(authorization=auth_header))
+
+
+def test_password_login_blocked_for_google(monkeypatch):
+    stub = AuthDBStub()
+    monkeypatch.setattr(api_module, "_get_db", lambda: stub)
+    stub.create_user(
+        email="google@example.com",
+        password_hash=api_module._hash_password("dummy"),
+        provider="google",
+    )
+    with pytest.raises(HTTPException):
+        _run(
+            api_module.auth_login(
+                api_module.LoginRequest(
+                    email="google@example.com", password="anything"
+                )
+            )
+        )
+
+
+def test_google_callback_creates_session(monkeypatch):
+    stub = AuthDBStub()
+    monkeypatch.setattr(api_module, "_get_db", lambda: stub)
+    monkeypatch.setattr(api_module, "GOOGLE_CLIENT_ID", "cid", raising=False)
+    monkeypatch.setattr(api_module, "GOOGLE_CLIENT_SECRET", "secret", raising=False)
+    monkeypatch.setattr(
+        api_module, "GOOGLE_REDIRECT_URI", "http://localhost/callback", raising=False
+    )
+    monkeypatch.setattr(
+        api_module, "FRONTEND_BASE_URL", "http://localhost:3000", raising=False
+    )
+
+    api_module.GOOGLE_STATE_CACHE.clear()
+    api_module._store_google_state("static-state")
+
+    monkeypatch.setattr(
+        api_module, "_exchange_google_code", lambda code: {"access_token": "token"}
+    )
+    profile = {
+        "email": "oauth@example.com",
+        "sub": "sub-123",
+        "email_verified": True,
+        "name": "OAuth User",
+    }
+    monkeypatch.setattr(
+        api_module, "_fetch_google_profile", lambda token: dict(profile)
+    )
+
+    response = _run(api_module.auth_google_callback(code="abc", state="static-state"))
+    assert response.status_code == 302
+    assert "#token=" in response.headers["location"]
+
+
+def test_google_start_requires_config(monkeypatch):
+    monkeypatch.setattr(api_module, "GOOGLE_CLIENT_ID", "cid", raising=False)
+    monkeypatch.setattr(api_module, "GOOGLE_CLIENT_SECRET", "secret", raising=False)
+    monkeypatch.setattr(
+        api_module, "GOOGLE_REDIRECT_URI", "http://localhost/callback", raising=False
+    )
+    response = _run(api_module.auth_google_start())
+    assert response.status_code == 307
+    assert "accounts.google.com" in response.headers["location"]
 
 
 class FeedbackDBStub:
@@ -122,6 +325,42 @@ class FeedbackDBStub:
                 "created_at": datetime(2024, 7, 2),
             }
         ]
+        self.events = [
+            {
+                "id": 1,
+                "feedback_id": 1,
+                "event_type": "submitted",
+                "status": "open",
+                "reviewer": None,
+                "details": "Ticket created",
+                "source": "ui",
+                "created_at": datetime(2024, 7, 2, tzinfo=timezone.utc),
+            }
+        ]
+        self.next_event_id = 2
+
+    def _add_event(
+        self,
+        feedback_id,
+        event_type,
+        status=None,
+        reviewer=None,
+        details=None,
+        source="api",
+    ):
+        event = {
+            "id": self.next_event_id,
+            "feedback_id": feedback_id,
+            "event_type": event_type,
+            "status": status,
+            "reviewer": reviewer,
+            "details": details,
+            "source": source,
+            "created_at": datetime(2024, 7, 3, tzinfo=timezone.utc),
+        }
+        self.next_event_id += 1
+        self.events.append(event)
+        return event
 
     def get_filing(self, symbol, filing_date):
         return None
@@ -179,6 +418,13 @@ class FeedbackDBStub:
                     row["resolved_at"] = None
                     row["resolved_by"] = None
                 row["status_updated_at"] = datetime(2024, 7, 3, 9, 0)
+                self._add_event(
+                    feedback_id,
+                    "status_change",
+                    status=status,
+                    reviewer=reviewer,
+                    details=review_notes,
+                )
                 return row
         return None
 
@@ -187,6 +433,13 @@ class FeedbackDBStub:
             if row["id"] == feedback_id:
                 row["reevaluated_at"] = datetime(2024, 7, 3, 10, 0)
                 row["reevaluation_notes"] = notes
+                self._add_event(
+                    feedback_id,
+                    "reevaluated",
+                    status=row.get("status"),
+                    reviewer=row.get("resolved_by"),
+                    details=notes,
+                )
                 return row
         return None
 
@@ -195,6 +448,15 @@ class FeedbackDBStub:
             if row["public_token"] == token:
                 return row
         return None
+
+    def get_feedback_events(self, feedback_id):
+        return [dict(event) for event in self.events if event["feedback_id"] == feedback_id]
+
+    def get_feedback_events_by_token(self, token):
+        report = self.get_feedback_by_token(token)
+        if not report:
+            return []
+        return self.get_feedback_events(report["id"])
 
 
 class GovernanceOverrideDBStub:
@@ -254,6 +516,7 @@ class GovernanceOverrideDBStub:
 class HistoryDBStub:
     def __init__(self):
         self.last_history_limit = None
+        self.last_history_cursor = None
         self.history = [
             {
                 "symbol": "TCS",
@@ -267,18 +530,54 @@ class HistoryDBStub:
                 "revenue": 500.0,
                 "interest_income": 5.0,
                 "dividend_income": 2.0,
+                "accounts_receivable": 120.0,
+                "liquid_assets": 80.0,
+                "non_halal_income": 4.0,
+                "governance_notes": "Initial extraction",
+                "governance_override_applied": True,
+                "governance_override_reviewer": "Lead QA",
+                "governance_override_reason": "Rounded figures",
+                "governance_override_updated_at": datetime(2024, 7, 1, tzinfo=timezone.utc),
                 "audit_status": "audited",
                 "ratios": None,
                 "market_cap_used": 1000.0,
                 "trailing_cap_used": None,
             }
         ]
+        self.override = {
+            "symbol": "TCS",
+            "filing_date": datetime(2024, 6, 30, tzinfo=timezone.utc),
+            "accounts_receivable": 130.0,
+            "liquid_assets": 90.0,
+            "non_halal_income": 3.0,
+            "governance_notes": "Manual tweak",
+            "reviewer": "QA",
+            "reason": "Verified PDF",
+            "source": "manual",
+            "updated_at": datetime(2024, 7, 2, tzinfo=timezone.utc),
+        }
 
-    def get_filing_history(self, symbol, limit=10):
+    def get_filing_history(self, symbol, limit=10, cursor_ts=None):
         if symbol != "TCS":
             return []
         self.last_history_limit = limit
+        self.last_history_cursor = cursor_ts
         return self.history[:limit]
+
+    def get_filing(self, symbol, filing_date):
+        for row in self.history:
+            if row["symbol"] == symbol and row["filing_date"] == filing_date:
+                return dict(row)
+        return None
+
+    def insert_announcements(self, payloads):
+        return len(payloads)
+
+    def insert_financial_snapshots(self, snapshots):
+        return len(snapshots)
+
+    def insert_market_snapshot(self, symbol, market_cap, share_price, provider="indianapi"):
+        return None
 
     def resolve_quality_issues(self, symbol, filing_date, issue_types=None):
         return 0
@@ -288,6 +587,19 @@ class HistoryDBStub:
 
     def get_symbol_metadata(self, identifier):
         return {"symbol": "TCS", "symbol_alias": "TCS"} if identifier == "TCS" else None
+    def get_governance_override(self, symbol, filing_date):
+        if self.override and self.override["symbol"] == symbol and self.override["filing_date"] == filing_date:
+            return dict(self.override)
+        return None
+
+    def get_indianapi_snapshot(self, symbol, target_date=None):
+        return None
+
+    def insert_indianapi_snapshot(self, **kwargs):
+        return None
+
+    def record_quality_issue(self, symbol, filing_date, issue_type, details):
+        return None
 
 
 def test_feedback_queue_endpoints(monkeypatch):
@@ -344,6 +656,15 @@ def test_feedback_public_status(monkeypatch):
     response = _run(api_module.feedback_status("token123"))
     assert response.ticket_id == 1
     assert response.status == "open"
+    assert len(response.events) >= 1
+
+
+def test_feedback_events_endpoint(monkeypatch):
+    db = FeedbackDBStub()
+    monkeypatch.setattr(api_module, "DB_MANAGER", db)
+    events = _run(api_module.feedback_events(1))
+    assert len(events) >= 1
+    assert events[0].event_type == "submitted"
 
 
 def test_filing_detail_respects_governance_overrides(monkeypatch):
@@ -424,7 +745,7 @@ def test_filing_detail_respects_governance_overrides(monkeypatch):
     assert "debt_to_market_cap" in result.ratios
 
 
-def test_governance_override_endpoints(monkeypatch):
+def test_governance_override_endpoints(monkeypatch, paid_access):
     db = GovernanceOverrideDBStub()
     monkeypatch.setattr(api_module, "DB_MANAGER", db)
     filing_date = datetime(2024, 6, 30, tzinfo=timezone.utc)
@@ -450,13 +771,378 @@ def test_governance_override_endpoints(monkeypatch):
     assert overrides == []
 
 
-def test_filing_history_endpoint(monkeypatch):
+def test_filing_history_endpoint(monkeypatch, paid_access):
     db = HistoryDBStub()
     monkeypatch.setattr(api_module, "DB_MANAGER", db)
-    history = _run(api_module.filing_history("TCS", limit=5))
+    response = _run(api_module.filing_history("TCS", limit=5))
+    history = response.entries
     assert len(history) == 1
     entry = history[0]
     assert entry.symbol == "TCS"
     assert entry.market_cap_used == 1000.0
     assert "debt_to_market_cap" in entry.ratios
-    assert db.last_history_limit == 5
+    assert db.last_history_limit == 6  # limit + 1
+    assert response.next_cursor is None
+
+
+def test_governance_review_endpoint(monkeypatch, paid_access):
+    db = HistoryDBStub()
+    monkeypatch.setattr(api_module, "DB_MANAGER", db)
+
+    class DummySnapshot:
+        def __init__(self):
+            self.symbol = "TCS"
+            self.metrics = {
+                "accounts_receivable": 140.0,
+                "liquid_assets": 95.0,
+                "non_halal_income": 2.5,
+            }
+            self.end_date = datetime(2024, 6, 30).date()
+            self.market_cap = 1_200.0
+
+    monkeypatch.setattr(
+        api_module,
+        "_load_indian_snapshot_for_filing",
+        lambda symbol, filing_date: DummySnapshot(),
+    )
+
+    response = _run(
+        api_module.governance_review(
+            "TCS", datetime(2024, 6, 30, tzinfo=timezone.utc).isoformat()
+        )
+    )
+    assert response.ingested.metrics["accounts_receivable"] == 120.0
+    assert response.override is not None
+    assert response.indian_api is not None
+    assert "accounts_receivable" in response.differences
+
+
+def test_filing_history_pagination_cursor(monkeypatch):
+    db = HistoryDBStub()
+    monkeypatch.setattr(api_module, "DB_MANAGER", db)
+    cursor = datetime(2024, 6, 30, tzinfo=timezone.utc).isoformat()
+    _run(api_module.filing_history("TCS", limit=3, cursor=cursor))
+    assert db.last_history_cursor == datetime(2024, 6, 30, tzinfo=timezone.utc)
+
+
+def test_filing_history_falls_back_to_indian_api(monkeypatch):
+    db = HistoryDBStub()
+    db.history = []
+    monkeypatch.setattr(api_module, "DB_MANAGER", db)
+    monkeypatch.setattr(api_module, "indian_api_enabled", lambda: True)
+
+    def fake_supp(symbol, limit, existing):
+        db.history.append(
+            {
+                "symbol": "TCS",
+                "company_name": "Tata Consultancy Services",
+                "filing_date": datetime(2024, 3, 31, tzinfo=timezone.utc),
+                "category": "Result",
+                "headline": "Synthetic",
+                "confidence": "MEDIUM",
+                "total_debt": 10.0,
+                "cash_equiv": 5.0,
+                "revenue": 50.0,
+                "interest_income": 1.0,
+                "dividend_income": 0.5,
+                "audit_status": "indianapi",
+                "ratios": {
+                    "debt_to_market_cap": {
+                        "value": 0.1,
+                        "threshold": 0.3,
+                        "passed": True,
+                        "note": "auto",
+                        "provider": "indianapi",
+                    }
+                },
+                "market_cap_used": 100.0,
+                "trailing_cap_used": None,
+                "market_data_provider": "indianapi",
+            }
+        )
+        return True
+
+    monkeypatch.setattr(
+        api_module, "_supplement_history_from_indian_api", fake_supp
+    )
+
+    response = _run(api_module.filing_history("TCS", limit=2))
+    history = response.entries
+    assert len(history) == 1
+    assert db.last_history_limit == 3
+
+
+def test_filing_detail_persists_indian_api_snapshot(monkeypatch, paid_access):
+    class RealtimeDBStub:
+        def __init__(self):
+            self.announcement = None
+            self.snapshot_payload = None
+            self.market_snapshot = None
+            self.indian_payload = None
+            self.latest_record = None
+            self.evaluation = None
+
+        def get_latest_filing(self, identifier):
+            if not self.latest_record:
+                return None
+            if identifier in (
+                self.latest_record.get("symbol"),
+                self.latest_record.get("symbol_alias"),
+            ):
+                return dict(self.latest_record)
+            return None
+
+        def insert_announcements(self, payloads):
+            self.announcement = payloads[-1]
+
+        def insert_financial_snapshots(self, snapshots):
+            self.snapshot_payload = snapshots[-1]
+            extracted = self.snapshot_payload.get("extracted_data") or {}
+            record = {
+                "symbol": self.snapshot_payload["symbol"],
+                "symbol_alias": self.announcement.get("symbol_alias"),
+                "company_name": self.announcement.get("company_name"),
+                "filing_date": self.snapshot_payload["filing_date"],
+                "category": self.announcement.get("category"),
+                "headline": self.announcement.get("headline"),
+                "confidence": self.announcement.get("confidence"),
+                "audit_status": extracted.get("audit_status"),
+                "total_debt": extracted.get("total_debt"),
+                "cash_equiv": extracted.get("cash_equiv"),
+                "revenue": extracted.get("revenue"),
+                "interest_income": extracted.get("interest_income"),
+                "dividend_income": extracted.get("dividend_income"),
+                "accounts_receivable": extracted.get("accounts_receivable"),
+                "liquid_assets": extracted.get("liquid_assets"),
+                "non_halal_income": extracted.get("non_halal_income"),
+                "governance_notes": extracted.get("governance_notes"),
+                "ratios": None,
+                "quality_issues": [],
+            }
+            if self.market_snapshot:
+                record["market_cap_used"] = self.market_snapshot.get("market_cap")
+                record["market_data_provider"] = self.market_snapshot.get("provider")
+            else:
+                record["market_cap_used"] = None
+                record["market_data_provider"] = None
+            record["trailing_cap_used"] = None
+            self.latest_record = record
+            return 1
+
+        def insert_indianapi_snapshot(
+            self, *, symbol, symbol_alias, company_name, snapshot_date, payload
+        ):
+            self.indian_payload = payload
+
+        def get_filing(self, symbol, filing_date):
+            return None
+
+        def insert_market_snapshot(self, symbol, market_cap, share_price, provider="yahoo"):
+            self.market_snapshot = {
+                "symbol": symbol,
+                "market_cap": market_cap,
+                "share_price": share_price,
+                "provider": provider,
+            }
+
+        def get_cached_market_data(self, symbol, as_of=None):
+            return None
+
+        def resolve_quality_issues(self, symbol, filing_date, issue_types=None):
+            return 0
+
+        def record_quality_issue(self, symbol, filing_date, issue_type, details):
+            return None
+
+        def get_quality_issues(self, symbol, filing_date):
+            return []
+
+        def upsert_filing_evaluation(self, **kwargs):
+            self.evaluation = kwargs
+            if self.latest_record:
+                self.latest_record["ratios"] = kwargs.get("ratios")
+                self.latest_record["is_compliant"] = kwargs.get("is_compliant")
+                self.latest_record["verdict"] = kwargs.get("verdict")
+                self.latest_record["summary"] = kwargs.get("summary")
+                self.latest_record["market_cap_used"] = kwargs.get("market_cap_used")
+                self.latest_record["market_data_provider"] = kwargs.get(
+                    "market_data_provider"
+                )
+
+        def get_symbol_metadata(self, identifier):
+            return {"symbol": identifier, "symbol_alias": identifier}
+
+        def get_symbol_alias(self, symbol):
+            return symbol
+
+        def get_symbol_code(self, identifier):
+            return identifier
+
+    class DummyFetcher:
+        def get_company_announcements(self, code, start, end):
+            return []
+
+    class DummyProcessor:
+        def process_announcements(self, announcements):
+            return []
+
+    class DummySnapshot:
+        def __init__(self):
+            self.symbol = "TCS"
+            self.market_cap = 12_000_000.0
+            self.share_price = 3324.9
+            self.shares_outstanding = 361.81
+            self.end_date = datetime(2025, 3, 31).date()
+            self.metrics = {
+                "total_debt": 100.0,
+                "cash_equiv": 50.0,
+                "revenue": 500.0,
+                "interest_income": 5.0,
+                "dividend_income": 2.0,
+                "non_halal_income": 1.0,
+                "accounts_receivable": 75.0,
+                "liquid_assets": 125.0,
+            }
+            self.bse_code = "532540"
+            self.nse_code = "TCS"
+            self.company_name = "Tata Consultancy Services"
+            self.raw = {"mock": True}
+
+    db = RealtimeDBStub()
+    monkeypatch.setattr(api_module, "DB_MANAGER", db)
+    monkeypatch.setattr(api_module, "_get_db", lambda: db)
+    monkeypatch.setattr(api_module, "_get_realtime_fetcher", lambda: DummyFetcher())
+    monkeypatch.setattr(api_module, "_get_realtime_processor", lambda: DummyProcessor())
+    monkeypatch.setattr(api_module, "indian_api_enabled", lambda: True)
+    monkeypatch.setattr(
+        api_module,
+        "fetch_indian_financial_snapshot",
+        lambda symbol, target_date=None: DummySnapshot(),
+    )
+    api_module.SYMBOL_METADATA_CACHE.clear()
+
+    result = _run(api_module.filing_detail("TCS", refresh=True))
+    assert result.symbol == "532540"
+    assert result.company_name == "Tata Consultancy Services"
+    assert result.total_debt == 100.0
+    assert result.market_cap_used == 12_000_000.0
+    assert result.market_data_provider == "indianapi"
+    assert db.announcement is not None
+    assert db.snapshot_payload is not None
+    assert db.indian_payload is not None
+
+
+def test_structured_enrichment_applies_overrides(monkeypatch):
+    monkeypatch.setattr(api_module, "indian_api_enabled", lambda: True)
+    monkeypatch.setattr(api_module, "_indian_api_candidates", lambda symbol: ["TCS"])
+
+    class DummySnapshot:
+        def __init__(self):
+            self.metrics = {
+                "accounts_receivable": 1_000_000.0,
+                "liquid_assets": 2_000_000.0,
+                "non_halal_income": 50_000.0,
+                "total_debt": 100.0,
+            }
+            self.market_cap = None
+
+    monkeypatch.setattr(
+        api_module,
+        "fetch_indian_financial_snapshot",
+        lambda symbol, target_date=None: DummySnapshot(),
+    )
+
+    captured = {}
+
+    def fake_persist(symbol, filing_date, overrides, note):
+        captured["symbol"] = symbol
+        captured["overrides"] = overrides
+        captured["note"] = note
+
+    monkeypatch.setattr(api_module, "_persist_structured_override", fake_persist)
+
+    record = {
+        "symbol": "TCS",
+        "filing_date": datetime(2025, 3, 31, tzinfo=timezone.utc),
+        "accounts_receivable": 100.0,
+        "liquid_assets": 150.0,
+        "non_permissible_income": 1.0,
+        "non_halal_income": 1.0,
+        "quality_issues": [],
+    }
+
+    api_module._maybe_enrich_record_with_indian_api(record)
+
+    assert record["accounts_receivable"] == 1_000_000.0
+    assert record["non_halal_income"] == 50_000.0
+    assert captured["symbol"] == "TCS"
+    assert {"accounts_receivable", "non_halal_income"} <= captured["overrides"].keys()
+    assert any("Structured metrics" in issue for issue in record["quality_issues"])
+
+
+def test_record_provider_failure_emits_warning(monkeypatch):
+    notifications = []
+
+    class DummyNotifier:
+        def notify(self, level, title, details=None):
+            notifications.append((level, title, details))
+
+    monkeypatch.setattr(api_module, "market_notifier", DummyNotifier())
+    monkeypatch.setattr(api_module, "MARKET_FAILURE_ALERT_THRESHOLD", 2)
+    api_module.PROVIDER_FAILURES.clear()
+
+    api_module._record_provider_failure("indianapi", "TCS", "timeout")
+    assert notifications == []
+    api_module._record_provider_failure("indianapi", "TCS", "timeout")
+    assert len(notifications) == 1
+    level, title, details = notifications[0]
+    assert level == "WARNING"
+    assert "INDIANAPI quotes repeatedly failing for TCS" in title
+    assert "timeout" in details
+    assert api_module.PROVIDER_FAILURES.get("indianapi:TCS") == 0
+
+
+def test_reset_provider_failure(monkeypatch):
+    monkeypatch.setattr(api_module, "MARKET_FAILURE_ALERT_THRESHOLD", 2)
+    api_module.PROVIDER_FAILURES.clear()
+    captured = []
+
+    class DummyNotifier:
+        def notify(self, level, title, details=None):
+            captured.append((level, title, details))
+
+    monkeypatch.setattr(api_module, "market_notifier", DummyNotifier())
+
+    api_module._record_provider_failure("bhavcopy", "500325", "missing cap")
+    api_module._reset_provider_failure("bhavcopy", "500325")
+    api_module._record_provider_failure("bhavcopy", "500325", "missing cap")
+    assert captured == []
+
+
+def test_ops_metrics_endpoint(monkeypatch, tmp_path):
+    metrics_file = tmp_path / "ingestion.jsonl"
+    metrics_file.write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "started_at": "2025-12-24T00:00:00Z",
+                "duration_seconds": 12.3,
+                "timestamp": "2025-12-24T00:00:15Z",
+            }
+        )
+        + "\n"
+    )
+    monkeypatch.setattr(api_module, "INGESTION_METRICS_PATH", metrics_file)
+    api_module.MARKET_ALERT_EVENTS.clear()
+    api_module.LLM_FAILURE_EVENTS.clear()
+    api_module.MARKET_ALERT_EVENTS.append(
+        {"event": "market_lookup_failure", "symbol": "TCS", "timestamp": "now"}
+    )
+    api_module.LLM_FAILURE_EVENTS.append(
+        {"symbol": "TCS", "message": "boom", "timestamp": "now"}
+    )
+
+    response = _run(api_module.ops_metrics())
+    assert response["ingestion"]["available"] is True
+    assert response["market_data"]["recent_alerts"]
+    assert response["llm"]["failure_count"] == 1

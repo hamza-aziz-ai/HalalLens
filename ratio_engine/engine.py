@@ -29,6 +29,7 @@ class RatioEngine:
     ) -> RatioEvaluation:
         ratios: Dict[str, RatioComputation] = {}
         missing: Dict[str, str] = {}
+        provider = market_data.provider or "manual"
 
         debt_ratio = self._safe_ratio(
             snapshot.total_debt,
@@ -41,6 +42,7 @@ class RatioEngine:
             debt_ratio,
             self.thresholds.max_debt_to_market_cap,
             "Total debt / market cap",
+            provider=provider,
         )
 
         cash_ratio = self._safe_ratio(
@@ -54,12 +56,19 @@ class RatioEngine:
             cash_ratio,
             self.thresholds.max_cash_to_market_cap,
             "Cash & equivalents / market cap",
+            provider=provider,
         )
 
+        interest_component = (
+            snapshot.interest_income if snapshot.interest_income and snapshot.interest_income > 0 else 0.0
+        )
+        dividend_component = (
+            snapshot.dividend_income if snapshot.dividend_income and snapshot.dividend_income > 0 else 0.0
+        )
         non_perm_income = (
             (snapshot.non_permissible_income or snapshot.non_halal_income or 0.0)
-            + (snapshot.interest_income or 0.0)
-            + (snapshot.dividend_income or 0.0)
+            + interest_component
+            + dividend_component
         )
         np_ratio = self._safe_ratio(
             non_perm_income,
@@ -72,6 +81,7 @@ class RatioEngine:
             np_ratio,
             self.thresholds.max_non_permissible_income,
             "Non-permissible income / revenue",
+            provider="manual",
         )
 
         receivable_ratio = self._safe_ratio(
@@ -85,6 +95,7 @@ class RatioEngine:
             receivable_ratio,
             self.thresholds.max_receivables_to_market_cap,
             "Accounts receivable / market cap",
+            provider=provider,
         )
 
         liquid_ratio = self._safe_ratio(
@@ -98,6 +109,7 @@ class RatioEngine:
             liquid_ratio,
             self.thresholds.max_liquid_assets_to_market_cap,
             "Liquid assets / market cap",
+            provider=provider,
         )
 
         is_compliant = self._aggregate_verdict(ratios)
@@ -124,13 +136,23 @@ class RatioEngine:
         if denominator in (None, 0):
             missing[denominator_label] = "missing_or_zero"
             return None
-        return numerator / denominator
+        try:
+            num = float(numerator)
+            den = float(denominator)
+        except (TypeError, ValueError):
+            missing[denominator_label] = "invalid"
+            return None
+        if den == 0:
+            missing[denominator_label] = "missing_or_zero"
+            return None
+        return num / den
 
     def _build_computation(
         self,
         ratio_value: Optional[float],
         threshold: float,
         note: str,
+        provider: Optional[str] = None,
     ) -> RatioComputation:
         if ratio_value is None:
             return RatioComputation(
@@ -138,6 +160,7 @@ class RatioEngine:
                 threshold=threshold,
                 passed=None,
                 note=f"{note} unavailable",
+                provider=provider,
             )
         passed = ratio_value <= threshold
         return RatioComputation(
@@ -145,6 +168,7 @@ class RatioEngine:
             threshold=threshold,
             passed=passed,
             note=note,
+            provider=provider,
         )
 
     def _aggregate_verdict(self, ratios: Dict[str, RatioComputation]) -> bool:

@@ -7,8 +7,8 @@ import functools
 import logging
 import math
 from dataclasses import dataclass, field
-from datetime import date, datetime
-from typing import Any, Dict, Iterable, Optional, Tuple
+from datetime import date, datetime, timedelta
+from typing import Any, Dict, Iterable, Optional, Tuple, List
 
 import requests
 
@@ -16,12 +16,11 @@ from config import INDIAN_API_BASE_URL, INDIAN_API_KEY
 
 LOGGER = logging.getLogger("market_data")
 SESSION = requests.Session()
-# Ignore host machine proxy settings so the hosted API can be reached directly.
-# Without this, requests may attempt to tunnel through a non-existent proxy and fail.
 SESSION.trust_env = False
 
 BASE_URL = INDIAN_API_BASE_URL.rstrip("/") if INDIAN_API_BASE_URL else None
 API_KEY = INDIAN_API_KEY
+INR_CRORE = 10_000_000.0  # 1 crore = 10^7 rupees
 
 
 def is_enabled() -> bool:
@@ -64,12 +63,36 @@ def fetch_financial_snapshot(
     if not payload:
         return None
 
+    return snapshot_from_payload(payload, symbol=normalized, target_date=target_date)
+
+
+def snapshot_from_payload(
+    payload: Dict,
+    *,
+    symbol: Optional[str],
+    target_date: Optional[datetime | date] = None,
+) -> Optional[IndianAPISnapshot]:
+    """Build an IndianAPISnapshot from a cached payload."""
+
+    if not payload:
+        return None
+    normalized = (symbol or "").strip().upper()
+    if not normalized:
+        normalized = _normalize_symbol(payload.get("symbol")) or ""
+    if not normalized:
+        return None
+
+    profile = payload.get("companyProfile") or {}
     share_price = _preferred_price(payload)
     shares_outstanding = _extract_shares_outstanding(payload)
     market_cap = _extract_market_cap(payload, share_price, shares_outstanding)
-    bse_code = _normalize_bse_code(payload.get("exchangeCodeBse"))
-    nse_code = _normalize_symbol(payload.get("exchangeCodeNse"))
-    company_name = payload.get("companyName")
+    bse_code = _normalize_bse_code(
+        payload.get("exchangeCodeBse") or profile.get("exchangeCodeBse")
+    )
+    nse_code = _normalize_symbol(
+        payload.get("exchangeCodeNse") or profile.get("exchangeCodeNse")
+    )
+    company_name = payload.get("companyName") or profile.get("companyName")
 
     entry = _select_financial_entry(payload.get("financials") or [], target_date)
     entry_date = _parse_date(entry.get("EndDate")) if entry else None
@@ -105,19 +128,28 @@ def fetch_market_quote(
 
 @functools.lru_cache(maxsize=256)
 def _get_stock_payload(symbol: str, *, timeout: float) -> Optional[Dict]:
-    params = {"name": symbol}
-    headers = {}
-    if API_KEY:
-        headers["Authorization"] = f"Bearer {API_KEY}"
-        params["api_key"] = API_KEY
-        headers["X-API-Key"] = API_KEY
+    return _request_json(
+        "/stock",
+        {"name": symbol},
+        timeout=timeout,
+    )
 
-    url = f"{BASE_URL}/stock"
+
+def _request_json(path: str, params: Dict[str, Any], *, timeout: float) -> Optional[Dict]:
+    if not BASE_URL:
+        return None
+    merged = dict(params)
+    headers: Dict[str, str] = {}
+    if API_KEY:
+        merged["api_key"] = API_KEY
+        headers["Authorization"] = f"Bearer {API_KEY}"
+        headers["X-API-Key"] = API_KEY
+    url = f"{BASE_URL}{path}"
     try:
-        response = SESSION.get(url, params=params, headers=headers, timeout=timeout)
+        response = SESSION.get(url, params=merged, headers=headers, timeout=timeout)
         response.raise_for_status()
     except requests.RequestException as exc:  # pragma: no cover - network guarded
-        LOGGER.debug("Indian API stock lookup failed for %s: %s", symbol, exc)
+        LOGGER.debug("Indian API request to %s failed: %s", path, exc)
         return None
     try:
         payload = response.json()
@@ -143,7 +175,10 @@ def _extract_shares_outstanding(payload: Dict[str, any]) -> Optional[float]:
         flat = _flatten_entry(entry)
         value = flat.get("totalcommonsharesoutstanding")
         if value is not None:
-            return value
+            return value * INR_CRORE
+    direct = _to_float(payload.get("totalSharesOutstanding"))
+    if direct is not None:
+        return direct * INR_CRORE
     return None
 
 
@@ -154,7 +189,7 @@ def _extract_market_cap(
 ) -> Optional[float]:
     direct = _to_float(payload.get("marketCap"))
     if direct is not None:
-        return direct
+        return direct * INR_CRORE
     if share_price is None or shares_outstanding is None:
         return None
     return share_price * shares_outstanding
@@ -210,21 +245,35 @@ def _build_metrics(flat: Dict[str, float]) -> Dict[str, float]:
                 return flat[cand]
         return None
 
-    metrics["total_debt"] = pick("totaldebt")
-    metrics["cash_equiv"] = pick("cashequivalents", "cash", "cashandbankbalances")
-    metrics["accounts_receivable"] = pick("totalreceivablesnet", "accountsreceivabletradenet", "tradereceivables")
-    metrics["revenue"] = pick("totalrevenue", "revenue")
-    metrics["interest_income"] = pick("interestincexpnetnonoptotal", "interestincome")
-    metrics["dividend_income"] = pick("totalcashdividendspaid", "dpscommonstockprimaryissue")
-    metrics["non_halal_income"] = pick("othernet", "nonpermissibleincome")
+    currency_fields = {
+        "total_debt": ["totaldebt"],
+        "cash_equiv": ["cashequivalents", "cash", "cashandbankbalances"],
+        "accounts_receivable": [
+            "totalreceivablesnet",
+            "accountsreceivabletradenet",
+            "tradereceivables",
+        ],
+        "revenue": ["totalrevenue", "revenue"],
+        "interest_income": ["interestincexpnetnonoptotal", "interestincome"],
+        "non_halal_income": ["othernet", "nonpermissibleincome"],
+        "liquid_assets": ["liquidassets"],
+    }
+
+    for field, candidates in currency_fields.items():
+        value = pick(*candidates)
+        if value is not None:
+            metrics[field] = _scale_currency(value)
 
     short_term = pick("shortterminvestments")
+    if short_term is not None:
+        short_term = _scale_currency(short_term)
+
     receivables = metrics.get("accounts_receivable") or 0.0
     cash_equiv = metrics.get("cash_equiv") or 0.0
-    liquid_assets = pick("liquidassets")
+    liquid_assets = metrics.get("liquid_assets")
     if liquid_assets is None:
         liquid_assets = cash_equiv + receivables + (short_term or 0.0)
-    metrics["liquid_assets"] = liquid_assets if liquid_assets else None
+        metrics["liquid_assets"] = liquid_assets if liquid_assets else None
 
     if metrics.get("dividend_income") is not None:
         metrics["dividend_income"] = abs(metrics["dividend_income"])
@@ -279,4 +328,135 @@ def _to_float(value: Optional[object]) -> Optional[float]:
     return None
 
 
-__all__ = ["fetch_financial_snapshot", "fetch_market_quote", "is_enabled", "IndianAPISnapshot"]
+def _scale_currency(value: Optional[float]) -> Optional[float]:
+    if value is None:
+        return None
+    return value * INR_CRORE
+
+
+def fetch_financial_history(
+    symbol: str,
+    limit: int = 12,
+    *,
+    timeout: float = 10.0,
+) -> List[IndianAPISnapshot]:
+    """Return normalized historical entries for the symbol."""
+
+    if not BASE_URL:
+        return []
+    normalized = (symbol or "").strip().upper()
+    if not normalized:
+        return []
+
+    payload = _get_stock_payload(normalized, timeout=timeout)
+    if not payload:
+        return []
+
+    entries = payload.get("financials") or []
+    if not isinstance(entries, list):
+        return []
+
+    price_series = _fetch_price_series(normalized, timeout=timeout)
+    company_name = payload.get("companyName") or (
+        (payload.get("companyProfile") or {}).get("companyName")
+    )
+    bse_code = _normalize_bse_code(
+        payload.get("exchangeCodeBse")
+        or (payload.get("companyProfile") or {}).get("exchangeCodeBse")
+    )
+    nse_code = _normalize_symbol(
+        payload.get("exchangeCodeNse")
+        or (payload.get("companyProfile") or {}).get("exchangeCodeNse")
+    )
+
+    snapshots: List[IndianAPISnapshot] = []
+    sorted_entries = sorted(
+        entries,
+        key=lambda item: _parse_date((item or {}).get("EndDate"))
+        or date.min,
+        reverse=True,
+    )
+    for entry in sorted_entries:
+        if len(snapshots) >= limit:
+            break
+        flat = _flatten_entry(entry or {})
+        metrics = _build_metrics(flat)
+        period_end = _parse_date(entry.get("EndDate") or entry.get("StatementDate"))
+        if not period_end:
+            continue
+        shares = _extract_shares_from_flat(flat)
+        price = _nearest_price(price_series, period_end)
+        market_cap = None
+        if shares and price:
+            market_cap = price * shares
+        snapshot = IndianAPISnapshot(
+            symbol=normalized,
+            market_cap=market_cap,
+            share_price=price,
+            shares_outstanding=shares,
+            end_date=period_end,
+            metrics=metrics,
+            bse_code=bse_code,
+            nse_code=nse_code,
+            company_name=company_name,
+            raw=entry,
+        )
+        snapshots.append(snapshot)
+    return snapshots
+
+
+def _fetch_price_series(symbol: str, *, timeout: float) -> Dict[date, float]:
+    payload = _request_json(
+        "/historical_data",
+        {
+            "stock_name": symbol,
+            "period": "10yr",
+            "filter": "price",
+        },
+        timeout=timeout,
+    )
+    if not payload:
+        return {}
+    datasets = payload.get("datasets") or []
+    price_series: Dict[date, float] = {}
+    for dataset in datasets:
+        metric = (dataset or {}).get("metric") or ""
+        if "price" not in metric.lower():
+            continue
+        for value in dataset.get("values") or []:
+            if not isinstance(value, list) or len(value) < 2:
+                continue
+            dt = _parse_date(value[0])
+            price = _to_float(value[1])
+            if dt and price is not None:
+                price_series[dt] = price
+        break
+    return price_series
+
+
+def _nearest_price(series: Dict[date, float], target: date, window: int = 10) -> Optional[float]:
+    if not series or not target:
+        return None
+    for offset in range(window + 1):
+        candidate = target - timedelta(days=offset)
+        if candidate in series:
+            return series[candidate]
+    return None
+
+
+def _extract_shares_from_flat(flat: Dict[str, float]) -> Optional[float]:
+    for key in ("totalcommonsharesoutstanding", "totalsharesoutstanding"):
+        if key in flat:
+            value = _to_float(flat[key])
+            if value is not None:
+                return value * INR_CRORE
+    return None
+
+
+__all__ = [
+    "fetch_financial_snapshot",
+    "fetch_financial_history",
+    "fetch_market_quote",
+    "is_enabled",
+    "IndianAPISnapshot",
+]
