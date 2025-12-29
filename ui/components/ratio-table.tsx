@@ -15,13 +15,13 @@ export function RatioTable({
   const rows = Object.entries(evaluation.ratios);
   const baseCard =
     theme === "dark"
-      ? "rounded-3xl border border-white/10 bg-gradient-to-br from-slate-900/80 via-slate-900/60 to-slate-950/80 shadow-2xl shadow-black/40"
-      : "rounded-3xl border border-black/5 bg-white/80 shadow-2xl shadow-black/10";
+      ? "rounded-[28px] border border-white/10 bg-[linear-gradient(145deg,rgba(15,23,42,0.92),rgba(8,12,20,0.95))] shadow-[0_25px_80px_rgba(3,7,18,0.55)]"
+      : "rounded-[28px] border border-black/5 bg-white/85 shadow-[0_20px_60px_rgba(15,23,42,0.12)]";
   return (
     <article className={baseCard + " p-6"}>
       <header className="mb-4 flex items-center justify-between">
         <div>
-          <h2 className="text-xl font-semibold text-white">
+          <h2 className="text-display text-xl font-semibold text-white">
             {evaluation.symbol}
           </h2>
           <p className="text-sm text-slate-400">
@@ -30,7 +30,7 @@ export function RatioTable({
         </div>
         <span
           className={clsx(
-            "rounded-full px-3 py-1 text-sm font-semibold",
+            "rounded-full px-3 py-1 text-xs font-semibold uppercase tracking-[0.2em]",
             evaluation.is_compliant
               ? "bg-emerald-400/20 text-emerald-300"
               : "bg-rose-400/20 text-rose-300",
@@ -43,7 +43,7 @@ export function RatioTable({
       </header>
       <div className="overflow-x-auto">
         <table className="w-full text-left text-sm">
-          <thead className="text-slate-400">
+          <thead className="text-[11px] uppercase tracking-[0.2em] text-slate-400">
             <tr>
               <th className="pb-2">Ratio</th>
               <th className="pb-2">Value</th>

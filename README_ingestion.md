@@ -7,13 +7,13 @@ This document explains how to run the HalalLens ingestion stack locally: applyin
 Ensure your Postgres instance is running (e.g., `postgresql-x64-17` on Windows). Then apply the schema:
 
 ```bash
-psql -h localhost -U $POSTGRES_USER -d Halal-Lens -f database/schema.sql
+psql -h 192.168.1.9 -U $POSTGRES_USER -d Halal-Lens -f database/schema.sql
 ```
 
 Confirm tables exist:
 
 ```bash
-psql -h localhost -U $POSTGRES_USER -d Halal-Lens -c "\dt"
+psql -h 192.168.1.9 -U $POSTGRES_USER -d Halal-Lens -c "\dt"
 ```
 
 ## 2. Ingestion job
@@ -33,7 +33,7 @@ Successful runs will log the number of announcements inserted, snapshots stored,
 
 ## 3. Verify via API
 
-With the database populated, restart the FastAPI service (`pipenv run uvicorn api.app:app --reload --port 8000`). The new endpoint `GET /filings/recent?limit=20` returns recent filings (joined with any extracted snapshot metrics). Example response:
+With the database populated, restart the FastAPI service (`pipenv run uvicorn api.app:app --reload --port 8001`). The endpoint `GET /filings/recent?limit=20` returns recent filings (joined with any extracted snapshot metrics). Example response:
 
 ```json
 [
@@ -56,4 +56,4 @@ With the database populated, restart the FastAPI service (`pipenv run uvicorn ap
 
 ## 4. UI hookups
 
-The Next.js dashboard can call `/api/filings/recent` (proxying to FastAPI) to render recent filings—use the existing `.env.local` entry `HALAL_API_BASE_URL` to point at the backend. Components in `ui/components/` provide ratio/narration rendering; you can extend them to include a filings list that auto-populates the analyzer form.
+The Next.js dashboard calls the API directly to render recent filings—set `NEXT_PUBLIC_HALAL_API_BASE_URL` in `ui/.env.local` to point at the backend. Components in `ui/components/` provide ratio/narration rendering; you can extend them to include a filings list that auto-populates the analyzer form.

@@ -31,10 +31,10 @@ export function HistoryTimeline({
   return (
     <article
       className={clsx(
-        "rounded-2xl border p-4",
+        "rounded-[24px] border p-5",
         theme === "dark"
-          ? "border-slate-800 bg-slate-900/50"
-          : "border-slate-200 bg-white",
+          ? "border-white/10 bg-slate-900/60 shadow-[0_20px_60px_rgba(3,7,18,0.45)]"
+          : "border-slate-200 bg-white shadow-[0_20px_60px_rgba(15,23,42,0.08)]",
       )}
     >
       <header className="mb-4 flex items-center justify-between text-sm">
@@ -49,7 +49,7 @@ export function HistoryTimeline({
           </p>
           <h2
             className={clsx(
-              "text-lg font-semibold",
+              "text-display text-lg font-semibold",
               theme === "dark" ? "text-white" : "text-slate-900",
             )}
           >

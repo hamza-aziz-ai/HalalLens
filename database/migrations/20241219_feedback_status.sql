@@ -1,6 +1,6 @@
 -- Adds reviewer workflow columns to feedback_reports.
 -- Run with:
---   psql -h 127.0.0.1 -U hamza -d "Halal-Lens" -f database/migrations/20241219_feedback_status.sql
+--   psql -h 192.168.1.9 -U hamza -d "Halal-Lens" -f database/migrations/20241219_feedback_status.sql
 
 ALTER TABLE feedback_reports
     ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'open',

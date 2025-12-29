@@ -1,6 +1,6 @@
 -- Adds tracking tokens and re-evaluation metadata to feedback reports.
 -- Run with:
---   psql -h 127.0.0.1 -U hamza -d "Halal-Lens" -f database/migrations/20241221_feedback_tracking.sql
+--   psql -h 192.168.1.9 -U hamza -d "Halal-Lens" -f database/migrations/20241221_feedback_tracking.sql
 
 ALTER TABLE feedback_reports
     ADD COLUMN IF NOT EXISTS public_token TEXT UNIQUE,

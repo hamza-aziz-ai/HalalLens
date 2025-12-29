@@ -54,7 +54,7 @@ pipenv install --dev
 ```bash
 # defaults to rule_based
 export NARRATOR_MODE=llm
-export LLM_ENDPOINT=http://localhost:8001/v1/chat/completions
+export LLM_ENDPOINT=http://192.168.1.9:8001/v1/chat/completions
 export LLM_MODEL=llama-3-8b-instruct
 export LLM_API_KEY=local-token    # optional for self-hosted vLLM
 export LLM_TEMPERATURE=0.0
@@ -86,7 +86,7 @@ psql halallens_dev -f database/migrations/20241221_feedback_tracking.sql
 ### FastAPI service
 
 ```bash
-pipenv run uvicorn api.app:app --reload --port 8000
+pipenv run uvicorn api.app:app --reload --port 8001
 ```
 
 - `GET /health` - liveness probe
@@ -119,25 +119,42 @@ CI (GitHub Actions) installs the Pipenv environment and runs the same test suite
 ```bash
 cd ui
 npm install          # or pnpm install
-cp .env.local .env.local
-npm run dev          # http://localhost:3000
+npm run dev          # http://192.168.1.9:3000
 ```
 
-Set `HALAL_API_BASE_URL` to the FastAPI origin (default `http://localhost:8000`). The UI proxies analysis via `/api/analysis`, fetches recent filings via `/api/filings/recent`, auto-looks up market caps/share prices via `/api/market-data` (now using the BSE `SCRIP_CD` captured in ingestion for better coverage), and surfaces `/watchlist` + `/alerts/check` so you can add symbols and see compliance-flip alerts without leaving the dashboard.
+Set `NEXT_PUBLIC_HALAL_API_BASE_URL` in `ui/.env.local` to the FastAPI origin (default `http://192.168.1.9:8001`). The UI calls the API directly from the browser, fetches recent filings via `/filings/recent`, auto-looks up market caps/share prices via `/market-data`, and surfaces `/watchlist` + `/alerts/check` so you can add symbols and see compliance-flip alerts without leaving the dashboard.
 
-Head to `http://localhost:3000/login` to register/sign in; once authenticated the dashboard lives at `/dashboard` and mirrors the same routing when deployed with Docker (`/login` + `/dashboard` behind port 3001 in the compose stack). When the Google env vars are present you’ll also see a **Continue with Google** button—the FastAPI backend exchanges the OAuth code, issues a HalalLens bearer token, and redirects back to the dashboard with the token stored in `localStorage`.
+Head to `http://192.168.1.9:3000/login` to register/sign in; once authenticated the dashboard lives at `/dashboard` and mirrors the same routing when deployed with Docker (`/login` + `/dashboard` behind port 3001 in the compose stack). When the Google env vars are present you’ll also see a **Continue with Google** button—the FastAPI backend exchanges the OAuth code, issues a HalalLens bearer token, and redirects back to the dashboard with the token stored in `localStorage`.
+
+### Mobile app (Flutter)
+
+```bash
+cd halallens-mobile
+flutter pub get
+flutter run --dart-define=HALALLENS_API_BASE_URL=http://192.168.1.9:8001
+```
+
+Notes:
+- Use a LAN-accessible API URL when testing on a physical device (avoid `localhost`).
+- Optional defines:
+  - `HALALLENS_API_TIMEOUT_SECONDS=12`
+  - `HALALLENS_MOBILE_OAUTH_REDIRECT=halallens://auth/login`
+
+Google SSO on mobile uses deep links. The API accepts an optional `redirect` query param on `/auth/google/start` and will return the bearer token to `halallens://auth/login?...`. Android and iOS URL schemes are already configured in the app.
 
 ### Google SSO (optional)
 
-1. Create a Google Cloud project, configure the OAuth consent screen (External), and register a “Web application” OAuth client. Add the dashboard origin(s) as “Authorized JavaScript origins” and `https://api.example.com/auth/google/callback` (plus `http://localhost:8001/auth/google/callback` for local dev) as authorized redirect URIs.
+1. Create a Google Cloud project, configure the OAuth consent screen (External), and register a “Web application” OAuth client. Add the dashboard origin(s) as “Authorized JavaScript origins” and `https://api.example.com/auth/google/callback` (plus `http://192.168.1.9:8001/auth/google/callback` for local dev) as authorized redirect URIs.
 2. Populate `.env` with:
    ```env
    GOOGLE_CLIENT_ID=your-client-id.apps.googleusercontent.com
    GOOGLE_CLIENT_SECRET=super-secret
-   GOOGLE_REDIRECT_URI=http://localhost:8001/auth/google/callback
-   FRONTEND_BASE_URL=http://localhost:3000
+   GOOGLE_REDIRECT_URI=http://192.168.1.9:8001/auth/google/callback
+   FRONTEND_BASE_URL=http://192.168.1.9:3000
    ```
 3. Restart the API (or `docker compose up --build`). The `/auth/google/start` endpoint now redirects to Google; after consent the API links/creates a user record (using `google_sub`) and redirects back to `/login#token=...`.
+
+For mobile SSO, call `/auth/google/start?redirect=halallens://auth/login` so the token returns to the app.
 
 ### Reviewer workflow (feedback triage)
 
@@ -165,7 +182,7 @@ The repository ships Dockerfiles for both the FastAPI backend and the Next.js da
    GOOGLE_CLIENT_ID=your-client-id.apps.googleusercontent.com
    GOOGLE_CLIENT_SECRET=super-secret
    GOOGLE_REDIRECT_URI=http://api:8001/auth/google/callback
-   FRONTEND_BASE_URL=http://localhost:3000
+   FRONTEND_BASE_URL=http://192.168.1.9:3000
    NEXT_PUBLIC_HALAL_API_BASE_URL=http://api:8001
    ```
    If you run Docker on native Linux, `host.docker.internal` is provided via the `extra_hosts` entry in `docker-compose.yml`; you can also set `POSTGRES_HOST` to the IP/hostname of your Postgres instance explicitly.
@@ -174,8 +191,8 @@ The repository ships Dockerfiles for both the FastAPI backend and the Next.js da
    docker compose up --build
    ```
 3. Visit:
-   - API docs: http://localhost:8001/docs
-   - Dashboard: http://localhost:3001 (already wired to the containerized API)
+   - API docs: http://192.168.1.9:8001/docs
+   - Dashboard: http://192.168.1.9:3001 (already wired to the containerized API)
 
 The compose stack persists Postgres data in the `postgres_data` volume. Stop with `docker compose down` (add `-v` to drop the volume between runs).
 

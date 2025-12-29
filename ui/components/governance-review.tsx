@@ -51,14 +51,28 @@ export function GovernanceReviewPanel({
 }: Props) {
   if (loading) {
     return (
-      <div className={clsx("mt-4 rounded-2xl border p-4 text-sm", theme === "dark" ? "border-slate-800 bg-slate-900/40 text-slate-200" : "border-slate-200 bg-slate-50 text-slate-700")}>
+      <div
+        className={clsx(
+          "mt-4 rounded-[24px] border p-4 text-sm",
+          theme === "dark"
+            ? "border-white/10 bg-white/5 text-slate-200"
+            : "border-slate-200 bg-slate-50 text-slate-700",
+        )}
+      >
         Loading governance metrics…
       </div>
     );
   }
   if (error) {
     return (
-      <div className={clsx("mt-4 rounded-2xl border p-4 text-sm text-rose-400", theme === "dark" ? "border-rose-500/30 bg-rose-500/5" : "border-rose-200 bg-rose-50")}>
+      <div
+        className={clsx(
+          "mt-4 rounded-[24px] border p-4 text-sm text-rose-400",
+          theme === "dark"
+            ? "border-rose-500/30 bg-rose-500/5"
+            : "border-rose-200 bg-rose-50",
+        )}
+      >
         {error}
       </div>
     );
@@ -67,8 +81,8 @@ export function GovernanceReviewPanel({
 
   const cardClass =
     theme === "dark"
-      ? "rounded-2xl border border-white/10 bg-slate-900/60 text-slate-100"
-      : "rounded-2xl border border-slate-200 bg-white text-slate-800";
+      ? "rounded-[28px] border border-white/10 bg-[linear-gradient(145deg,rgba(15,23,42,0.92),rgba(8,12,20,0.95))] text-slate-100 shadow-[0_25px_80px_rgba(3,7,18,0.45)]"
+      : "rounded-[28px] border border-slate-200 bg-white text-slate-800 shadow-[0_20px_60px_rgba(15,23,42,0.12)]";
   const muted =
     theme === "dark" ? "text-slate-400" : "text-slate-500";
 
@@ -79,7 +93,9 @@ export function GovernanceReviewPanel({
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <p className={clsx("text-xs uppercase", muted)}>Governance comparison</p>
-          <h3 className="text-lg font-semibold">Structured vs manual metrics</h3>
+          <h3 className="text-display text-lg font-semibold">
+            Structured vs manual metrics
+          </h3>
         </div>
         {review.indian_api && onApplyIndian && (
           <button

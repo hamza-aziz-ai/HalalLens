@@ -131,10 +131,10 @@ export function RatioTrendChart({
   };
 
   const cardClass = clsx(
-    "rounded-2xl border p-4",
+    "rounded-[28px] border p-5 shadow-[0_25px_80px_rgba(3,7,18,0.5)]",
     theme === "dark"
-      ? "border-slate-800 bg-slate-900/50 text-slate-200"
-      : "border-slate-200 bg-white text-slate-800",
+      ? "border-white/10 bg-[linear-gradient(145deg,rgba(15,23,42,0.92),rgba(8,12,20,0.95))] text-slate-200"
+      : "border-slate-200/70 bg-white/85 text-slate-800",
   );
 
   const gridFractions = [0, 0.25, 0.5, 0.75, 1];
@@ -147,7 +147,7 @@ export function RatioTrendChart({
       <header className="mb-4">
         <p
           className={clsx(
-            "text-xs uppercase",
+            "text-xs uppercase tracking-[0.2em]",
             theme === "dark" ? "text-slate-500" : "text-slate-600",
           )}
         >
@@ -155,7 +155,7 @@ export function RatioTrendChart({
         </p>
         <h2
           className={clsx(
-            "text-lg font-semibold",
+            "text-display text-lg font-semibold",
             theme === "dark" ? "text-white" : "text-slate-900",
           )}
         >
