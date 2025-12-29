@@ -27,10 +27,10 @@ export function HistoryMatrix({
   if (!entries.length) return null;
 
   const cardClass = clsx(
-    "rounded-2xl border p-4",
+    "rounded-[24px] border p-5",
     theme === "dark"
-      ? "border-slate-800 bg-slate-900/50 text-slate-200"
-      : "border-slate-200 bg-white text-slate-800",
+      ? "border-white/10 bg-slate-900/60 text-slate-200 shadow-[0_20px_60px_rgba(3,7,18,0.45)]"
+      : "border-slate-200 bg-white text-slate-800 shadow-[0_20px_60px_rgba(15,23,42,0.08)]",
   );
 
   return (

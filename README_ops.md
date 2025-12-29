@@ -29,8 +29,8 @@ Store secrets in a `.env` file, Docker secrets, or whichever secret manager your
 4. Verify:
 
    ```bash
-   curl http://localhost:8001/health
-   curl http://localhost:8001/ops/metrics
+   curl http://192.168.1.9:8001/health
+   curl http://192.168.1.9:8001/ops/metrics
    ```
 
 5. Start the ingestion scheduler (systemd or `docker compose run --rm ingestion`). Monitor GPU narrator hosts via `curl http://host.docker.internal:11434/health`.
@@ -86,7 +86,7 @@ pipenv run python -m jobs.backfill_evaluations --from-date 20251009 --to-date 20
     ```yaml
     - job_name: halallens_ingestion
       static_configs:
-        - targets: [localhost]
+        - targets: [192.168.1.9]
           labels:
             __path__: /home/halal/logs/metrics/ingestion_metrics.jsonl
             job: halallens-ingestion
@@ -109,7 +109,7 @@ pipenv run python -m jobs.backfill_evaluations --from-date 20251009 --to-date 20
 - You can verify the persistence by running:
 
   ```bash
-  curl "http://localhost:8001/filings/TCS?refresh=true"
+  curl "http://192.168.1.9:8001/filings/TCS?refresh=true"
   psql -X -U $POSTGRES_USER -d $POSTGRES_DB -c \
       "SELECT symbol, filing_date, confidence FROM announcements ORDER BY filing_date DESC LIMIT 3;"
   ```
@@ -156,3 +156,9 @@ Keep this runbook alongside `README.md`; update both whenever operational requir
 - Persistent Indian API failures: inspect `logs/market_data/` and consider adjusting API rate limits, refreshing the key, or falling back to Bhavcopy-only mode temporarily.  
 - LLM narration errors: confirm Ollama/vLLM endpoint reachable from containers (`curl http://host.docker.internal:11434/health`).  
 - Feedback queue empty but users reported issues: check `logs/api/.../api.log` for errors around `/feedback` endpoints.
+
+## 10. Mobile app notes
+
+- The Flutter app lives in `halallens-mobile/` and expects `HALALLENS_API_BASE_URL` pointing to a LAN-accessible API origin (avoid `localhost` on device).
+- Google SSO deep-link return uses `halallens://auth/login` via `/auth/google/start?redirect=halallens://auth/login`.
+- If SSO redirects fail on mobile, verify the Android intent filter and iOS URL scheme are present in the app manifests.

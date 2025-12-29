@@ -32,13 +32,13 @@ def _as_list(value: str | None) -> list[str]:
     return [item.strip().lower() for item in value.split(",") if item.strip()]
 
 
-POSTGRES_HOST = os.getenv("POSTGRES_HOST", "localhost")
+POSTGRES_HOST = os.getenv("POSTGRES_HOST", "192.168.1.9")
 POSTGRES_PORT = _as_int(os.getenv("POSTGRES_PORT"), 5432)
 POSTGRES_DB = os.getenv("POSTGRES_DB", "Halal-Lens")
 POSTGRES_USER = os.getenv("POSTGRES_USER")
 POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD")
 
-MINIO_HOST = os.getenv("MINIO_HOST", "host.docker.internal")
+MINIO_HOST = os.getenv("MINIO_HOST", "192.168.1.9")
 MINIO_PORT = _as_int(os.getenv("MINIO_PORT"), 9000)
 MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY")
 MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY")
@@ -59,7 +59,7 @@ INDIAN_API_OVERRIDE_TOLERANCE = _as_float(
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
 GOOGLE_REDIRECT_URI = os.getenv("GOOGLE_REDIRECT_URI")
-FRONTEND_BASE_URL = os.getenv("FRONTEND_BASE_URL", "http://localhost:3000")
+FRONTEND_BASE_URL = os.getenv("FRONTEND_BASE_URL", "http://192.168.1.9:3001")
 ADMIN_EMAILS = _as_list(os.getenv("ADMIN_EMAILS"))
 TICKER_MAP_PATH = Path(__file__).resolve().parent / "ticker_map.json"
 TICKER_MAP: Dict[str, str] = {}
@@ -82,10 +82,8 @@ SUBSCRIPTION_PRICE_INR = _as_int(os.getenv("SUBSCRIPTION_PRICE_INR"), 50)
 SUBSCRIPTION_INTERVAL_DAYS = _as_int(os.getenv("SUBSCRIPTION_INTERVAL_DAYS"), 30)
 
 DEFAULT_ALLOWED_ORIGINS = [
-    "http://localhost:3000",
-    "http://127.0.0.1:3000",
-    "http://localhost:3001",
-    "http://127.0.0.1:3001",
+    "http://192.168.1.9:3000",
+    "http://192.168.1.9:3001",
 ]
 ALLOWED_ORIGINS = [
     origin.strip()
@@ -93,5 +91,5 @@ ALLOWED_ORIGINS = [
     if origin.strip()
 ]
 ALLOWED_ORIGIN_REGEX = os.getenv(
-    "ALLOWED_ORIGIN_REGEX", r"http://(127\.0\.0\.1|localhost):\d+"
+    "ALLOWED_ORIGIN_REGEX", r"http://192\.168\.1\.9:\d+"
 )

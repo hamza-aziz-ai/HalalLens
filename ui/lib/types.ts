@@ -104,6 +104,7 @@ export type Filing = {
   ratios?: Record<string, RatioComputation> | null;
   market_cap_used?: number | null;
   trailing_cap_used?: number | null;
+  share_price?: number | null;
   market_data_provider?: string | null;
   quality_issues?: string[];
 };

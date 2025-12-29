@@ -1,6 +1,7 @@
 import { AnalysisPayload, AnalysisResponse, HalalScoreResponse, NarrationResponse } from "./types";
+import { logClientEvent } from "./logger";
 
-const API_BASE = process.env.NEXT_PUBLIC_HALAL_API_BASE_URL || "http://localhost:8000";
+const API_BASE = process.env.NEXT_PUBLIC_HALAL_API_BASE_URL || "http://192.168.1.9:8001";
 
 export function getAuthToken(): string | null {
   if (typeof window === "undefined") return null;
@@ -16,12 +17,26 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   if (authToken) {
     headers.Authorization = `Bearer ${authToken}`;
   }
-  const response = await fetch(`${API_BASE}${path}`, {
-    headers,
-    ...init,
-  });
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE}${path}`, {
+      headers,
+      ...init,
+    });
+  } catch (error) {
+    logClientEvent("error", "api.request_failed", {
+      path,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    throw error;
+  }
   if (!response.ok) {
     const message = await response.text();
+    logClientEvent("error", "api.response_error", {
+      path,
+      status: response.status,
+      message: message.slice(0, 500),
+    });
     throw new Error(message || `Request failed: ${response.status}`);
   }
   return response.json() as Promise<T>;

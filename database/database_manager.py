@@ -1465,7 +1465,6 @@ class BSEDatabaseManager:
                     fe.verdict,
                     fe.summary,
                     fe.narration_source,
-                    fe.ratios,
                     fe.market_cap_used,
                     fe.trailing_cap_used,
                     fe.market_data_provider,

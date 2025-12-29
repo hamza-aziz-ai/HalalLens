@@ -18,7 +18,7 @@ import os
 import secrets
 import time
 import requests
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit, urlunsplit
 from fastapi import FastAPI, HTTPException, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
@@ -178,6 +178,18 @@ class LoginRequest(BaseModel):
     password: str
 
 
+class ClientLogRequest(BaseModel):
+    """Payload for client-side log events."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    level: Literal["debug", "info", "warning", "error"] = "info"
+    message: str
+    context: Optional[Dict[str, Any]] = None
+    url: Optional[str] = None
+    user_agent: Optional[str] = None
+
+
 class BillingPlan(BaseModel):
     code: str
     name: str
@@ -273,6 +285,46 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+LOG_HTTP_REQUESTS = os.getenv("LOG_HTTP_REQUESTS", "true").lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+
+
+@app.middleware("http")
+async def log_http_requests(request: Request, call_next):
+    if not LOG_HTTP_REQUESTS:
+        return await call_next(request)
+
+    start = time.perf_counter()
+    path = request.url.path
+    method = request.method
+    client_ip = request.client.host if request.client else "unknown"
+    try:
+        response = await call_next(request)
+    except Exception:
+        duration = (time.perf_counter() - start) * 1000
+        api_logger.exception(
+            "HTTP %s %s failed from %s after %.1fms",
+            method,
+            path,
+            client_ip,
+            duration,
+        )
+        raise
+    duration = (time.perf_counter() - start) * 1000
+    api_logger.info(
+        "HTTP %s %s -> %s from %s in %.1fms",
+        method,
+        path,
+        response.status_code,
+        client_ip,
+        duration,
+    )
+    return response
 engine = RatioEngine()
 narrator_config = NarratorConfig(
     mode=NARRATOR_MODE,
@@ -313,6 +365,7 @@ REALTIME_LOOKBACK_MULTIPLIER = 4
 _realtime_fetcher: Optional[BSEAnnouncementsFetcher] = None
 _realtime_processor: Optional[FinancialDataProcessor] = None
 api_logger = logging.getLogger("api")
+client_logger = logging.getLogger("client")
 FEEDBACK_STATUSES = {"open", "in_review", "resolved"}
 TRACKING_TOKEN_LENGTH = 18
 market_notifier = OpsNotifier(component="market_data")
@@ -369,7 +422,7 @@ GOOGLE_AUTH_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token"
 GOOGLE_USERINFO_ENDPOINT = "https://openidconnect.googleapis.com/v1/userinfo"
 GOOGLE_STATE_TTL = timedelta(minutes=10)
-GOOGLE_STATE_CACHE: Dict[str, datetime] = {}
+GOOGLE_STATE_CACHE: Dict[str, Dict[str, Optional[str]]] = {}
 RAZORPAY_API_BASE = "https://api.razorpay.com/v1"
 
 
@@ -515,20 +568,57 @@ def _ensure_google_oauth_enabled() -> None:
         raise HTTPException(status_code=503, detail="Google SSO not configured")
 
 
-def _store_google_state(state: str) -> None:
+def _normalize_redirect_base(value: str) -> str:
+    parts = urlsplit(value.strip())
+    return urlunsplit((parts.scheme, parts.netloc, parts.path.rstrip("/"), "", ""))
+
+
+def _sanitize_google_redirect(value: Optional[str]) -> Optional[str]:
+    if not value:
+        return None
+    try:
+        normalized = _normalize_redirect_base(value)
+    except Exception:
+        return None
+    if normalized.startswith("halallens://"):
+        return normalized
+    frontend_base = (FRONTEND_BASE_URL or "").rstrip("/")
+    if frontend_base and normalized.startswith(frontend_base):
+        return normalized
+    return None
+
+
+def _store_google_state(state: str, redirect: Optional[str]) -> None:
     now = datetime.now(timezone.utc)
-    GOOGLE_STATE_CACHE[state] = now
-    for key, created in list(GOOGLE_STATE_CACHE.items()):
+    GOOGLE_STATE_CACHE[state] = {
+        "created": now.isoformat(),
+        "redirect": redirect,
+    }
+    for key, entry in list(GOOGLE_STATE_CACHE.items()):
+        created_raw = entry.get("created")
+        if not created_raw:
+            GOOGLE_STATE_CACHE.pop(key, None)
+            continue
+        try:
+            created = datetime.fromisoformat(created_raw)
+        except ValueError:
+            GOOGLE_STATE_CACHE.pop(key, None)
+            continue
         if now - created > GOOGLE_STATE_TTL:
             GOOGLE_STATE_CACHE.pop(key, None)
 
 
-def _consume_google_state(state: str) -> None:
-    created = GOOGLE_STATE_CACHE.pop(state, None)
-    if not created:
+def _consume_google_state(state: str) -> Optional[str]:
+    entry = GOOGLE_STATE_CACHE.pop(state, None)
+    if not entry:
         raise HTTPException(status_code=400, detail="Invalid OAuth state")
+    created_raw = entry.get("created")
+    if not created_raw:
+        raise HTTPException(status_code=400, detail="Invalid OAuth state")
+    created = datetime.fromisoformat(created_raw)
     if datetime.now(timezone.utc) - created > GOOGLE_STATE_TTL:
         raise HTTPException(status_code=400, detail="Expired OAuth state")
+    return entry.get("redirect")
 
 
 def _build_google_authorization_url(state: str) -> str:
@@ -639,9 +729,16 @@ def _create_razorpay_order(
     return order
 
 
-def _build_google_redirect(token: str, expires_at: datetime) -> str:
+def _build_google_redirect(
+    token: str,
+    expires_at: datetime,
+    redirect_base: Optional[str] = None,
+) -> str:
     params = urlencode({"token": token, "expires": expires_at.isoformat()})
-    base = (FRONTEND_BASE_URL or "http://localhost:3001").rstrip("/")
+    if redirect_base:
+        base = redirect_base.rstrip("/")
+        return f"{base}?{params}#{params}"
+    base = (FRONTEND_BASE_URL or "http://192.168.1.9:3001").rstrip("/")
     return f"{base}/login?{params}#{params}"
 
 
@@ -1879,12 +1976,12 @@ async def narrate(
 
 
 @app.get("/auth/google/start")
-async def auth_google_start():
+async def auth_google_start(redirect: Optional[str] = None):
     """Initiate Google OAuth login."""
 
     _ensure_google_oauth_enabled()
     state = secrets.token_urlsafe(32)
-    _store_google_state(state)
+    _store_google_state(state, _sanitize_google_redirect(redirect))
     return RedirectResponse(_build_google_authorization_url(state), status_code=307)
 
 
@@ -1893,7 +1990,7 @@ async def auth_google_callback(code: str, state: str):
     """Handle Google's OAuth redirect, issue HalalLens session, and forward to the dashboard."""
 
     _ensure_google_oauth_enabled()
-    _consume_google_state(state)
+    redirect_base = _consume_google_state(state)
     token_data = _exchange_google_code(code)
     access_token = token_data.get("access_token")
     if not access_token:
@@ -1918,7 +2015,10 @@ async def auth_google_callback(code: str, state: str):
     _get_db().touch_user_login(user_row["id"])
     api_logger.info("Google SSO user upserted id=%s email=%s", user_row["id"], email)
     token, expires_at = _issue_session(user_row["id"])
-    return RedirectResponse(_build_google_redirect(token, expires_at), status_code=302)
+    return RedirectResponse(
+        _build_google_redirect(token, expires_at, redirect_base),
+        status_code=302,
+    )
 
 
 @app.post("/auth/register", response_model=AuthTokenResponse)
@@ -1941,6 +2041,7 @@ async def auth_register(payload: RegisterRequest) -> AuthTokenResponse:
         password_hash=password_hash,
         is_admin=_is_admin_email(email),
     )
+    api_logger.info("Registered user id=%s email=%s", user_row["id"], email)
     token, expires_at = _issue_session(user_row["id"])
     profile = _serialize_user_profile(user_row)
     return AuthTokenResponse(token=token, expires_at=expires_at, user=profile)
@@ -1961,6 +2062,7 @@ async def auth_login(payload: LoginRequest) -> AuthTokenResponse:
 
     user_row = _apply_admin_flag(user_row)
     _get_db().touch_user_login(user_row["id"])
+    api_logger.info("Login success id=%s email=%s", user_row["id"], email)
     token, expires_at = _issue_session(user_row["id"])
     profile = _serialize_user_profile(user_row)
     return AuthTokenResponse(token=token, expires_at=expires_at, user=profile)
@@ -1972,6 +2074,7 @@ async def auth_logout(authorization: Optional[str] = Header(None)) -> Dict[str, 
 
     token, _ = _require_session(authorization)
     _get_db().delete_session(token)
+    api_logger.info("Logout token revoked")
     return {"status": "logged_out"}
 
 
@@ -1992,6 +2095,39 @@ async def auth_me(authorization: Optional[str] = Header(None)) -> UserProfile:
         "is_admin": session.get("is_admin", False),
     }
     return _serialize_user_profile(profile_row)
+
+
+@app.post("/client-logs")
+async def client_logs(
+    payload: ClientLogRequest, request: Request, authorization: Optional[str] = Header(None)
+) -> Dict[str, str]:
+    """Collect client-side logs for debugging flows."""
+
+    session = None
+    token = _extract_token(authorization)
+    if token:
+        session = _get_db().get_session(token)
+    context = dict(payload.context or {})
+    if payload.url:
+        context["url"] = payload.url
+    if payload.user_agent:
+        context["user_agent"] = payload.user_agent
+    context["client_ip"] = request.client.host if request.client else "unknown"
+    if session:
+        context["user_id"] = session.get("user_id")
+        context["email"] = session.get("email")
+    message = payload.message
+    level = payload.level.lower()
+    context_payload = f" context={context}" if context else ""
+    if level == "debug":
+        client_logger.debug("%s%s", message, context_payload)
+    elif level == "warning":
+        client_logger.warning("%s%s", message, context_payload)
+    elif level == "error":
+        client_logger.error("%s%s", message, context_payload)
+    else:
+        client_logger.info("%s%s", message, context_payload)
+    return {"status": "ok"}
 
 
 @app.get("/billing/plans", response_model=List[BillingPlan])
@@ -2024,6 +2160,12 @@ async def create_razorpay_order(
         user_id=session["user_id"],
         email=session["email"],
         plan=plan,
+    )
+    api_logger.info(
+        "Razorpay order created user_id=%s plan=%s order_id=%s",
+        session["user_id"],
+        plan_code,
+        order.get("id"),
     )
     return RazorpayOrderResponse(
         key_id=RAZORPAY_KEY_ID,
@@ -2081,6 +2223,12 @@ async def verify_razorpay_payment(
             "order_id": payload.order_id,
             "payment_id": payload.payment_id,
         },
+    )
+    api_logger.info(
+        "Razorpay payment verified user_id=%s plan=%s payment_id=%s",
+        session["user_id"],
+        plan_code,
+        payload.payment_id,
     )
     return SubscriptionStatusResponse(
         plan=plan_code,
@@ -2417,10 +2565,7 @@ async def filing_detail(
     """Return the latest filing and computed ratios for a symbol."""
 
     normalized = symbol.strip().upper()
-    record: Optional[Dict[str, Any]] = None
-
-    if not refresh:
-        record = _get_db().get_latest_filing(normalized)
+    record: Optional[Dict[str, Any]] = _get_db().get_latest_filing(normalized)
 
     if refresh or not record or _needs_financial_refresh(record):
         _require_paid_feature(authorization, "Instant lookup")

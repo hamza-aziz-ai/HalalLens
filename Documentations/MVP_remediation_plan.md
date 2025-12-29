@@ -1,37 +1,35 @@
-# MVP Remediation Plan
+# MVP Remediation Plan (Updated)
+
+This plan tracks the remaining work after the current feature rollout.
 
 ## 1. Market-data resilience
+Status: **in progress**
 - Persist bhavcopy lookups in a `bhavcopy_quotes` table so data survives restarts.
-- Extend `BhavcopyMarketResolver` to read/write that table via `database_manager`.
-- Record per-symbol failures in `data_quality_issues` (issue type `market_data_fetch_failed`) so the UI can surface fallback status.
-- Alert the ops channel via `OpsNotifier` when a symbol fails N times in a row.
-- UI: add an auto/manual badge next to each ratio indicating provider (Indian Stock API, Bhavcopy, Cached, Manual).
+- Record per-symbol failures in `data_quality_issues` and alert ops after N retries.
+- UI already shows provider badges (web + mobile). Expand to show fallback reason.
 
 ## 2. Historical analytics view
-- Add cursor-based pagination to `/filings/{symbol}/history` so analysts can request older quarters (e.g. `before=<ISO>` + `next_cursor`).
-- Update UI timeline/heatmap to use the cursor and provide a "Load more" button.
-- Add pytest + Jest coverage for the new parameters and UI behavior.
+Status: **done**
+- Cursor-based history API exists with `next_cursor`.
+- Web + mobile provide "Load more" and timeline/trend UI.
 
 ## 3. Governance accuracy
-- Integrate structured parsing (XBRL/JSON) for high-volume filings; fall back to current regex heuristics only when structured data is absent and mark them low-confidence.
-- Extend governance overrides table with confidence + reviewer metadata and show override history in the UI.
-- Nightly validation comparing our metrics to reference providers for key tickers; log discrepancies as `data_quality_issue` entries.
+Status: **partial**
+- Governance overrides + reviewer metadata + history are live in web + mobile.
+- Remaining: structured XBRL/JSON parsing for filings and nightly validation checks.
 
 ## 4. Feedback visibility
-- Send notifications (email/Slack) to the reporter when reviewers update their ticket.
-- Improve `/feedback/status/{token}` payload: include status, last action date, and whether re-evaluation changed the verdict.
-- UI modal for users to paste their tracking token and view the timeline.
+Status: **partial**
+- Status endpoint now returns audit trail; web + mobile show it.
+- Remaining: notifications (email/Slack) when tickets update.
 
 ## 5. Monitoring & docs
-- Wire `OpsNotifier` to Slack/email so ingestion failures raise real alerts.
-- Provide a lightweight metrics dashboard or script summarizing `logs/metrics/ingestion_metrics.jsonl`.
-- Expand `README_ops.md` with a backfill playbook, log locations/rotation, and secret rotation/restart steps.
+Status: **in progress**
+- Ops runbook exists and was updated.
+- Remaining: lightweight metrics dashboard and automated alert wiring checks.
 
 ## 6. Execution order / focus
-1. Market data resilience (most visible gap).
-2. History pagination + UI enhancements.
-3. Governance structured parsing + reviewer workflow.
-4. Feedback notifications/UI.
-5. Monitoring/alerting + documentation polish.
-
-Track each item in Notion/Trello with owner + ETA, keep branches small (tests included), and deploy to staging VM before merging.
+1. Market-data resilience persistence + alerting.
+2. Governance structured parsing + validation.
+3. Feedback notifications.
+4. Monitoring dashboards.
