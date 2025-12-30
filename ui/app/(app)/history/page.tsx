@@ -13,19 +13,14 @@ import { ProviderBadge } from "@/components/provider-badge";
 import { useAuth } from "@/providers/AuthProvider";
 import { useTheme } from "@/providers/ThemeProvider";
 import { getAutoProviderLabel } from "@/lib/providers";
+import { hasPaidAccess as hasPaidAccessForUser } from "@/lib/subscription";
 
 const DEFAULT_LIMIT = 12;
 
 export default function HistoryPage() {
   const { theme } = useTheme();
   const { user } = useAuth();
-  const isAdmin = Boolean(user?.is_admin);
-  const hasPaidAccess = Boolean(
-    user &&
-      (isAdmin ||
-        (user.plan !== "free" &&
-          ["active", "trialing"].includes(user.subscription_status))),
-  );
+  const hasPaidAccess = hasPaidAccessForUser(user);
 
   const [symbol, setSymbol] = useState("");
   const [entries, setEntries] = useState<Filing[]>([]);
@@ -61,7 +56,7 @@ export default function HistoryPage() {
     const trimmed = target.trim().toUpperCase();
     if (!trimmed) return;
     if (!hasPaidAccess) {
-      setHistoryError("Upgrade to Starter to unlock historical analytics.");
+      setHistoryError("Upgrade to a paid plan to unlock historical analytics.");
       setEntries([]);
       setSelected(null);
       setNextCursor(null);
@@ -132,7 +127,7 @@ export default function HistoryPage() {
         </div>
         {!hasPaidAccess && (
           <p className={clsx("mt-3 text-xs", mutedTextClass)}>
-            History is a paid feature. Upgrade to Starter to unlock the timeline.
+            History is a paid feature. Upgrade to a paid plan to unlock the timeline.
           </p>
         )}
         {historyError && (

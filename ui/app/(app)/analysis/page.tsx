@@ -14,6 +14,7 @@ import { ExplainPanel } from "@/components/explain-panel";
 import { useAuth } from "@/providers/AuthProvider";
 import { useTheme } from "@/providers/ThemeProvider";
 import { getAutoProviderLabel } from "@/lib/providers";
+import { hasPaidAccess as hasPaidAccessForUser } from "@/lib/subscription";
 
 type SnapshotForm = {
   symbol: string;
@@ -124,13 +125,7 @@ export default function AnalysisPage() {
   const { theme } = useTheme();
   const { user } = useAuth();
   const searchParams = useSearchParams();
-  const isAdmin = Boolean(user?.is_admin);
-  const hasPaidAccess = Boolean(
-    user &&
-      (isAdmin ||
-        (user.plan !== "free" &&
-          ["active", "trialing"].includes(user.subscription_status))),
-  );
+  const hasPaidAccess = hasPaidAccessForUser(user);
 
   const [form, setForm] = useState<FormState>(defaultPayload);
   const [response, setResponse] = useState<AnalysisResponse | null>(null);
@@ -195,7 +190,7 @@ export default function AnalysisPage() {
     const trimmed = value.trim();
     if (!trimmed) return;
     if (!hasPaidAccess) {
-      setLookupError("Upgrade to unlock instant symbol lookup.");
+      setLookupError("Upgrade to a paid plan to unlock instant symbol lookup.");
       return;
     }
     setLookupLoading(true);

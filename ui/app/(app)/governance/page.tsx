@@ -14,6 +14,7 @@ import {
 import { GovernanceReviewPanel } from "@/components/governance-review";
 import { useAuth } from "@/providers/AuthProvider";
 import { useTheme } from "@/providers/ThemeProvider";
+import { hasPaidAccess as hasPaidAccessForUser } from "@/lib/subscription";
 
 const defaultOverrideForm = {
   accounts_receivable: "",
@@ -38,13 +39,7 @@ function parseOverrideNumber(value: string) {
 export default function GovernancePage() {
   const { theme } = useTheme();
   const { user } = useAuth();
-  const isAdmin = Boolean(user?.is_admin);
-  const hasPaidAccess = Boolean(
-    user &&
-      (isAdmin ||
-        (user.plan !== "free" &&
-          ["active", "trialing"].includes(user.subscription_status))),
-  );
+  const hasPaidAccess = hasPaidAccessForUser(user);
 
   const [symbol, setSymbol] = useState("");
   const [selectedFiling, setSelectedFiling] = useState<Filing | null>(null);
@@ -247,7 +242,7 @@ export default function GovernancePage() {
         )}
         {!hasPaidAccess && (
           <p className={clsx("mt-2 text-xs", mutedTextClass)}>
-            Governance overrides require the Starter plan.
+            Governance overrides require a paid plan.
           </p>
         )}
       </header>

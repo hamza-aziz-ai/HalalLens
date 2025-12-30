@@ -8,11 +8,13 @@ import {
   createRazorpayOrder,
   fetchBillingPlans,
   loadRazorpayScript,
+  startTrial,
   verifyRazorpayPayment,
 } from "@/lib/billing";
 import { logoutUser } from "@/lib/auth";
 import { useAuth } from "@/providers/AuthProvider";
 import { useTheme } from "@/providers/ThemeProvider";
+import { hasPaidAccess as hasPaidAccessForUser, isTrialEligible } from "@/lib/subscription";
 
 export default function AccountPage() {
   const { theme } = useTheme();
@@ -23,14 +25,11 @@ export default function AccountPage() {
   const [billingError, setBillingError] = useState<string | null>(null);
   const [upgradeLoading, setUpgradeLoading] = useState(false);
   const [upgradeMessage, setUpgradeMessage] = useState<string | null>(null);
+  const [trialLoading, setTrialLoading] = useState<string | null>(null);
 
   const isAdmin = Boolean(user?.is_admin);
-  const hasPaidAccess = Boolean(
-    user &&
-      (isAdmin ||
-        (user.plan !== "free" &&
-          ["active", "trialing"].includes(user.subscription_status))),
-  );
+  const hasPaidAccess = hasPaidAccessForUser(user);
+  const trialEligible = isTrialEligible(user);
 
   const cardClass =
     theme === "dark"
@@ -50,17 +49,11 @@ export default function AccountPage() {
       .finally(() => setBillingLoading(false));
   }, []);
 
-  const handleUpgrade = async () => {
+  const handleUpgrade = async (plan: BillingPlan) => {
     if (!user) return;
     setUpgradeLoading(true);
     setUpgradeMessage(null);
     try {
-      const plan =
-        billingPlans.find((item) => item.code === "starter") ??
-        billingPlans.find((item) => item.is_active);
-      if (!plan) {
-        throw new Error("Billing plan not available.");
-      }
       await loadRazorpayScript();
       const order = await createRazorpayOrder(plan.code);
 
@@ -100,7 +93,7 @@ export default function AccountPage() {
       });
 
       await refresh();
-      setUpgradeMessage("Subscription activated. Welcome to Starter!");
+      setUpgradeMessage(`Subscription activated. Welcome to ${plan.name}!`);
     } catch (err: any) {
       setUpgradeMessage(err.message ?? "Unable to start checkout.");
     } finally {
@@ -108,10 +101,45 @@ export default function AccountPage() {
     }
   };
 
+  const handleTrial = async (plan: BillingPlan) => {
+    if (!user) return;
+    setTrialLoading(plan.code);
+    setUpgradeMessage(null);
+    try {
+      await startTrial(plan.code);
+      await refresh();
+      setUpgradeMessage(`Trial started for ${plan.name}.`);
+    } catch (err: any) {
+      setUpgradeMessage(err.message ?? "Unable to start trial.");
+    } finally {
+      setTrialLoading(null);
+    }
+  };
+
   const handleLogout = async () => {
     await logoutUser();
     await refresh();
   };
+
+  const formatPlanPrice = (plan: BillingPlan) => {
+    if (plan.interval_days <= 0) {
+      return `₹${plan.price_inr} lifetime`;
+    }
+    if (plan.interval_days >= 365) {
+      return `₹${plan.price_inr}/year`;
+    }
+    return `₹${plan.price_inr}/month`;
+  };
+
+  const annualSavings = (() => {
+    const monthly = billingPlans.find((plan) => plan.interval_days === 30);
+    const annual = billingPlans.find((plan) => plan.interval_days >= 365 && plan.interval_days > 0);
+    if (!monthly || !annual) return null;
+    const yearly = monthly.price_inr * 12;
+    if (!yearly) return null;
+    const savings = ((yearly - annual.price_inr) / yearly) * 100;
+    return savings > 0 ? savings : null;
+  })();
 
   return (
     <main className="space-y-10">
@@ -157,8 +185,8 @@ export default function AccountPage() {
               </p>
             )}
             <p className={clsx("text-xs", mutedTextClass)}>
-              Starter ₹50/month unlocks unlimited lookups, Explain-Why, governance
-              overrides, and premium alerts.
+              Starter ₹50/month, Annual ₹500/year, and Lifetime ₹2000 unlock unlimited
+              lookups, Explain-Why, governance overrides, and premium alerts.
             </p>
             {billingError && (
               <p className="text-xs text-rose-300">{billingError}</p>
@@ -170,16 +198,6 @@ export default function AccountPage() {
           <div className="w-full max-w-sm space-y-3 rounded-2xl border border-white/10 bg-white/5 p-4 shadow-inner shadow-black/10">
             {user ? (
               <>
-                {!hasPaidAccess && (
-                  <button
-                    type="button"
-                    onClick={handleUpgrade}
-                    disabled={upgradeLoading || billingLoading}
-                    className="w-full rounded-lg bg-gradient-to-r from-cyan-400 to-emerald-400 px-4 py-2 text-sm font-semibold text-slate-950 hover:opacity-90 disabled:opacity-60"
-                  >
-                    {upgradeLoading ? "Starting checkout…" : "Upgrade to Starter ₹50/mo"}
-                  </button>
-                )}
                 <button
                   type="button"
                   onClick={handleLogout}
@@ -194,6 +212,95 @@ export default function AccountPage() {
               </p>
             )}
           </div>
+        </div>
+      </section>
+
+      <section className={cardClass}>
+        <div className="flex items-center justify-between">
+          <h2 className={clsx("text-lg font-semibold", headingClass)}>Plans</h2>
+          {billingLoading && (
+            <span className={clsx("text-xs", mutedTextClass)}>Loading…</span>
+          )}
+        </div>
+        {billingError && <p className="mt-2 text-xs text-rose-300">{billingError}</p>}
+        <div className="mt-4 grid gap-4 md:grid-cols-3">
+          {billingPlans.map((plan) => {
+            const isLifetimeUser = user?.plan === "lifetime" && hasPaidAccess;
+            const isCurrentPlan = user?.plan === plan.code && hasPaidAccess;
+            const showTrial = plan.trial_days > 0 && trialEligible;
+            const isAnnual = plan.interval_days >= 365 && plan.interval_days > 0;
+            const disableUpgrade =
+              upgradeLoading || billingLoading || isCurrentPlan || isLifetimeUser;
+            return (
+              <div
+                key={plan.code}
+                className={clsx(
+                  "rounded-2xl border p-4",
+                  theme === "dark"
+                    ? "border-white/10 bg-white/5 text-slate-200"
+                    : "border-slate-200 bg-white text-slate-700",
+                )}
+              >
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h3 className="text-base font-semibold">{plan.name}</h3>
+                    <p className={clsx("text-xs", mutedTextClass)}>{formatPlanPrice(plan)}</p>
+                  </div>
+                  {isAnnual && annualSavings && (
+                    <span className="rounded-full bg-emerald-500/15 px-2 py-1 text-[11px] font-semibold text-emerald-200">
+                      Save {annualSavings.toFixed(2)}%
+                    </span>
+                  )}
+                </div>
+                {plan.trial_days > 0 && (
+                  <p className={clsx("mt-2 text-xs", mutedTextClass)}>
+                    Includes 1-month trial
+                  </p>
+                )}
+                <ul className="mt-3 space-y-1 text-xs">
+                  {plan.features.map((feature) => (
+                    <li key={feature}>• {feature}</li>
+                  ))}
+                </ul>
+                <div className="mt-4 flex flex-col gap-2">
+                  {user ? (
+                    isLifetimeUser && plan.code !== "lifetime" ? (
+                      <p className={clsx("text-xs", mutedTextClass)}>
+                        Lifetime plan active.
+                      </p>
+                    ) : (
+                      <>
+                        {showTrial && (
+                          <button
+                            type="button"
+                            onClick={() => handleTrial(plan)}
+                            disabled={trialLoading === plan.code}
+                            className="w-full rounded-lg border border-amber-400/40 bg-amber-400/10 px-3 py-2 text-xs font-semibold text-amber-200 hover:bg-amber-400/20 disabled:opacity-60"
+                          >
+                            {trialLoading === plan.code
+                              ? "Starting trial…"
+                              : "Start 1‑month trial"}
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => handleUpgrade(plan)}
+                          disabled={disableUpgrade}
+                          className="w-full rounded-lg bg-gradient-to-r from-cyan-400 to-emerald-400 px-3 py-2 text-xs font-semibold text-slate-950 hover:opacity-90 disabled:opacity-60"
+                        >
+                          {isCurrentPlan ? "Current plan" : "Upgrade"}
+                        </button>
+                      </>
+                    )
+                  ) : (
+                    <p className={clsx("text-xs", mutedTextClass)}>
+                      Sign in to upgrade.
+                    </p>
+                  )}
+                </div>
+              </div>
+            );
+          })}
         </div>
       </section>
     </main>

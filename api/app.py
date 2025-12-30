@@ -147,6 +147,7 @@ class UserProfile(BaseModel):
     plan: str
     subscription_status: str
     subscription_renewal: Optional[date] = None
+    trial_used: bool = False
     full_name: Optional[str] = None
     avatar_url: Optional[str] = None
     is_admin: bool = False
@@ -195,6 +196,7 @@ class BillingPlan(BaseModel):
     name: str
     price_inr: int
     interval_days: int
+    trial_days: int
     features: List[str]
     is_active: bool
 
@@ -203,6 +205,12 @@ class RazorpayOrderRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     plan_code: Optional[str] = None
+
+
+class TrialStartRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    plan_code: str
 
 
 class RazorpayOrderResponse(BaseModel):
@@ -475,6 +483,7 @@ def _serialize_user_profile(row: Dict[str, Any]) -> UserProfile:
         plan=row.get("plan", "free"),
         subscription_status=row.get("subscription_status", "inactive"),
         subscription_renewal=row.get("subscription_renewal"),
+        trial_used=bool(row.get("trial_used")),
         full_name=row.get("full_name"),
         avatar_url=row.get("avatar_url"),
         is_admin=bool(row.get("is_admin")),
@@ -544,7 +553,28 @@ def _subscription_active(session: Dict[str, Any]) -> bool:
         return True
     plan = (session.get("plan") or "free").lower()
     status = (session.get("subscription_status") or "inactive").lower()
-    return plan != "free" and status in {"active", "trialing"}
+    if plan == "free" or status not in {"active", "trialing"}:
+        return False
+    if plan == "lifetime":
+        return True
+    renewal = session.get("subscription_renewal")
+    if isinstance(renewal, date) and not isinstance(renewal, datetime):
+        renewal = datetime.combine(renewal, datetime.min.time()).replace(tzinfo=timezone.utc)
+    if isinstance(renewal, datetime):
+        if renewal.tzinfo is None:
+            renewal = renewal.replace(tzinfo=timezone.utc)
+        if renewal < datetime.now(timezone.utc):
+            user_id = session.get("user_id")
+            if user_id:
+                _get_db().update_user_plan(
+                    user_id=user_id,
+                    plan="free",
+                    subscription_status="inactive",
+                    subscription_renewal=None,
+                    plan_started_at=None,
+                )
+            return False
+    return True
 
 
 def _require_paid_feature(
@@ -2139,11 +2169,56 @@ async def list_billing_plans() -> List[BillingPlan]:
             name=plan["name"],
             price_inr=int(plan["price_inr"]),
             interval_days=int(plan["interval_days"]),
+            trial_days=int(plan.get("trial_days") or 0),
             features=list(plan.get("features") or []),
             is_active=bool(plan["is_active"]),
         )
         for plan in plans
     ]
+
+
+@app.post("/billing/trial", response_model=SubscriptionStatusResponse)
+async def start_billing_trial(
+    payload: TrialStartRequest, authorization: Optional[str] = Header(None)
+) -> SubscriptionStatusResponse:
+    _, session = _require_session(authorization)
+    plan = _get_db().get_subscription_plan(payload.plan_code)
+    if not plan or not plan.get("is_active"):
+        raise HTTPException(status_code=404, detail="Plan not available")
+    trial_days = int(plan.get("trial_days") or 0)
+    if trial_days <= 0:
+        raise HTTPException(status_code=400, detail="Trial not available for this plan")
+    if session.get("trial_used"):
+        raise HTTPException(status_code=409, detail="Trial already used")
+    current_status = (session.get("subscription_status") or "inactive").lower()
+    current_plan = (session.get("plan") or "free").lower()
+    if current_plan != "free" and current_status in {"active", "trialing"}:
+        raise HTTPException(status_code=409, detail="Active subscription already exists")
+
+    now = datetime.now(timezone.utc)
+    renewal = now + timedelta(days=trial_days)
+    _get_db().upsert_user_subscription(
+        user_id=session["user_id"],
+        plan_code=plan["code"],
+        provider="razorpay",
+        status="trialing",
+        current_period_start=now,
+        current_period_end=renewal,
+        cancel_at_period_end=True,
+    )
+    _get_db().update_user_plan(
+        user_id=session["user_id"],
+        plan=plan["code"],
+        subscription_status="trialing",
+        subscription_renewal=renewal,
+        plan_started_at=now,
+        trial_used=True,
+    )
+    return SubscriptionStatusResponse(
+        plan=plan["code"],
+        subscription_status="trialing",
+        subscription_renewal=renewal,
+    )
 
 
 @app.post("/billing/razorpay/order", response_model=RazorpayOrderResponse)
@@ -2197,7 +2272,9 @@ async def verify_razorpay_payment(
         raise HTTPException(status_code=404, detail="Plan not found")
 
     now = datetime.now(timezone.utc)
-    renewal = now + timedelta(days=int(plan["interval_days"]))
+    interval_days = int(plan.get("interval_days") or 0)
+    renewal = None if interval_days <= 0 else now + timedelta(days=interval_days)
+    trial_days = int(plan.get("trial_days") or 0)
     _get_db().upsert_user_subscription(
         user_id=session["user_id"],
         plan_code=plan_code,
@@ -2213,6 +2290,7 @@ async def verify_razorpay_payment(
         subscription_status="active",
         subscription_renewal=renewal,
         plan_started_at=now,
+        trial_used=True if trial_days > 0 else None,
     )
     _get_db().record_payment_event(
         user_id=session["user_id"],

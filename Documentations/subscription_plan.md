@@ -8,7 +8,7 @@
 
 2. **Billing integration**
    - Razorpay order creation + verification endpoints exist.
-   - Web and mobile expose an upgrade flow for the Starter plan.
+   - Web and mobile expose upgrade + 1-month trial flows for Starter/Annual and a Lifetime purchase.
    - Razorpay webhook handler updates subscription state.
 
 3. **Feature gating**
@@ -29,6 +29,6 @@
    - Emails for welcome, payment confirmation, renewal, and failures.
    - Optional in-app notifications for status changes.
 
-4. **Plan expansion**
-   - Multi-tier plans (free / starter / pro) with explicit entitlements.
+4. **Plan evolution**
+   - Define usage/entitlement differences beyond Starter/Annual/Lifetime if needed.
    - Regional pricing support if needed.
