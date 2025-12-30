@@ -42,7 +42,7 @@ flowchart TD
 git clone https://github.com/hamzaziizzz/HalalLens.git
 cd HalalLens
 
-# 2. Create env file (see Documentations/Charter for required secrets)
+# 2. Create env file (see Documentations/ for the project charter / required secrets)
 cp .env.local .env
 
 # 3. Install dependencies

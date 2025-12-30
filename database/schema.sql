@@ -177,6 +177,7 @@ CREATE TABLE IF NOT EXISTS users (
     plan TEXT NOT NULL DEFAULT 'free',
     subscription_status TEXT NOT NULL DEFAULT 'inactive',
     subscription_renewal DATE,
+    trial_used BOOLEAN NOT NULL DEFAULT FALSE,
     plan_started_at TIMESTAMPTZ,
     last_login TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -199,6 +200,7 @@ CREATE TABLE IF NOT EXISTS subscription_plans (
     name TEXT NOT NULL,
     price_inr INTEGER NOT NULL,
     interval_days INTEGER NOT NULL DEFAULT 30,
+    trial_days INTEGER NOT NULL DEFAULT 0,
     features JSONB NOT NULL DEFAULT '{}'::jsonb,
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -242,12 +244,35 @@ CREATE TABLE IF NOT EXISTS payment_events (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-INSERT INTO subscription_plans (code, name, price_inr, interval_days, features)
+INSERT INTO subscription_plans (code, name, price_inr, interval_days, trial_days, features)
 VALUES (
     'starter',
     'Starter',
     50,
     30,
+    30,
+    '["instant_lookup","explain_why","governance_overrides","history","alerts"]'::jsonb
+)
+ON CONFLICT (code) DO NOTHING;
+
+INSERT INTO subscription_plans (code, name, price_inr, interval_days, trial_days, features)
+VALUES (
+    'annual',
+    'Annual',
+    500,
+    365,
+    30,
+    '["instant_lookup","explain_why","governance_overrides","history","alerts"]'::jsonb
+)
+ON CONFLICT (code) DO NOTHING;
+
+INSERT INTO subscription_plans (code, name, price_inr, interval_days, trial_days, features)
+VALUES (
+    'lifetime',
+    'Lifetime',
+    2000,
+    0,
+    0,
     '["instant_lookup","explain_why","governance_overrides","history","alerts"]'::jsonb
 )
 ON CONFLICT (code) DO NOTHING;

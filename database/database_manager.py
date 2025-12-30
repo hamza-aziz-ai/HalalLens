@@ -1796,7 +1796,7 @@ class BSEDatabaseManager:
                            subscription_status, subscription_renewal,
                            provider, google_sub, full_name, avatar_url,
                            plan_started_at, last_login, created_at, updated_at,
-                           is_admin
+                           is_admin, trial_used
                     FROM users
                     WHERE email = %(email)s
                     """,
@@ -1816,7 +1816,7 @@ class BSEDatabaseManager:
                            subscription_renewal, plan_started_at,
                            last_login, created_at, updated_at,
                            provider, google_sub, full_name, avatar_url,
-                           is_admin
+                           is_admin, trial_used
                     FROM users
                     WHERE id = %(user_id)s
                     """,
@@ -1836,7 +1836,7 @@ class BSEDatabaseManager:
                            subscription_renewal, plan_started_at,
                            last_login, created_at, updated_at,
                            provider, google_sub, full_name, avatar_url,
-                           is_admin
+                           is_admin, trial_used
                     FROM users
                     WHERE google_sub = %(google_sub)s
                     """,
@@ -1864,7 +1864,7 @@ class BSEDatabaseManager:
                            subscription_renewal, plan_started_at,
                            last_login, created_at, updated_at,
                            provider, google_sub, full_name, avatar_url,
-                           is_admin
+                           is_admin, trial_used
                     FROM users
                     WHERE google_sub = %(google_sub)s
                     """,
@@ -1994,6 +1994,7 @@ class BSEDatabaseManager:
                         u.plan,
                         u.subscription_status,
                         u.subscription_renewal,
+                        u.trial_used,
                         u.full_name,
                         u.avatar_url,
                         u.is_admin
@@ -2047,7 +2048,7 @@ class BSEDatabaseManager:
             with conn.cursor() as cursor:
                 cursor.execute(
                     """
-                    SELECT code, name, price_inr, interval_days, features, is_active
+                    SELECT code, name, price_inr, interval_days, trial_days, features, is_active
                     FROM subscription_plans
                     WHERE (%(active_only)s = false OR is_active = true)
                     ORDER BY price_inr ASC
@@ -2061,7 +2062,7 @@ class BSEDatabaseManager:
             with conn.cursor() as cursor:
                 cursor.execute(
                     """
-                    SELECT code, name, price_inr, interval_days, features, is_active
+                    SELECT code, name, price_inr, interval_days, trial_days, features, is_active
                     FROM subscription_plans
                     WHERE code = %(code)s
                     """,
@@ -2161,6 +2162,7 @@ class BSEDatabaseManager:
         subscription_status: str,
         subscription_renewal: Optional[datetime],
         plan_started_at: Optional[datetime],
+        trial_used: Optional[bool] = None,
     ) -> Dict:
         with self.get_connection() as conn:
             with conn.cursor() as cursor:
@@ -2171,11 +2173,12 @@ class BSEDatabaseManager:
                         subscription_status = %(subscription_status)s,
                         subscription_renewal = %(subscription_renewal)s,
                         plan_started_at = COALESCE(%(plan_started_at)s, plan_started_at),
+                        trial_used = COALESCE(%(trial_used)s, trial_used),
                         updated_at = NOW()
                     WHERE id = %(user_id)s
                     RETURNING id, email, plan, subscription_status,
                               subscription_renewal, plan_started_at,
-                              provider, google_sub, full_name, avatar_url
+                              provider, google_sub, full_name, avatar_url, trial_used
                     """,
                     {
                         "user_id": user_id,
@@ -2183,6 +2186,7 @@ class BSEDatabaseManager:
                         "subscription_status": subscription_status,
                         "subscription_renewal": subscription_renewal,
                         "plan_started_at": plan_started_at,
+                        "trial_used": trial_used,
                     },
                 )
                 row = cursor.fetchone()

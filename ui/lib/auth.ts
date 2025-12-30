@@ -7,6 +7,7 @@ export type UserProfile = {
   plan: string;
   subscription_status: string;
   subscription_renewal?: string | null;
+  trial_used?: boolean;
   is_admin?: boolean;
 };
 

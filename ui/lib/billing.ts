@@ -33,6 +33,15 @@ export async function verifyRazorpayPayment(
   });
 }
 
+export async function startTrial(
+  planCode: string,
+): Promise<{ plan: string; subscription_status: string; subscription_renewal?: string | null }> {
+  return request("/billing/trial", {
+    method: "POST",
+    body: JSON.stringify({ plan_code: planCode }),
+  });
+}
+
 export async function loadRazorpayScript(): Promise<void> {
   if (typeof window === "undefined") return;
   if (window.Razorpay) return;

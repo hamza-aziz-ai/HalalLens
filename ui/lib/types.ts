@@ -61,6 +61,7 @@ export type BillingPlan = {
   name: string;
   price_inr: number;
   interval_days: number;
+  trial_days: number;
   features: string[];
   is_active: boolean;
 };
