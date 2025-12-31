@@ -19,6 +19,15 @@ if [[ -z "$DATABASE_URL" ]]; then
   DATABASE_URL="postgresql://${POSTGRES_USER}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}"
 fi
 
+SCHEMA_FILE="${SCHEMA_FILE:-database/schema.sql}"
+if [[ -f "$SCHEMA_FILE" ]]; then
+  base_table="$(psql "$DATABASE_URL" -tA -c "SELECT to_regclass('public.financial_snapshots')" || true)"
+  if [[ -z "$base_table" || "$base_table" == "null" ]]; then
+    echo "Applying base schema from $SCHEMA_FILE"
+    psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$SCHEMA_FILE"
+  fi
+fi
+
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c \
   "CREATE TABLE IF NOT EXISTS schema_migrations (name TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW())"
 
