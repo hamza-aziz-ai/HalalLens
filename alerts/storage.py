@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict, dataclass
+import os
+import uuid
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -36,7 +38,9 @@ class WatchlistStorage:
             return json.load(handle)
 
     def _write(self, payload: Dict[str, Dict]) -> None:
-        temp_path = self.path.with_suffix(".tmp")
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        temp_name = f".{self.path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
+        temp_path = self.path.with_name(temp_name)
         with temp_path.open("w", encoding="utf-8") as handle:
             json.dump(payload, handle, indent=2)
         temp_path.replace(self.path)
