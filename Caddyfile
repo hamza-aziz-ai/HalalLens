@@ -8,6 +8,10 @@
 }
 
 {$HALAL_APP_DOMAIN} {
+  @policy_no_slash {
+    path /terms /privacy /refund-policy /shipping-policy /contact
+  }
+  redir @policy_no_slash {path}/ 308
   reverse_proxy ui:3000
   encode zstd gzip
 }
