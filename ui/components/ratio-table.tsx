@@ -13,6 +13,9 @@ export function RatioTable({
   theme?: "dark" | "light";
 }) {
   const rows = Object.entries(evaluation.ratios);
+  const missingEntries = Object.entries(evaluation.missing_inputs || {});
+  const mutedText = theme === "dark" ? "text-slate-400" : "text-slate-500";
+  const mutedStrong = theme === "dark" ? "text-slate-300" : "text-slate-600";
   const baseCard =
     theme === "dark"
       ? "rounded-[28px] border border-white/10 bg-[linear-gradient(145deg,rgba(15,23,42,0.92),rgba(8,12,20,0.95))] shadow-[0_25px_80px_rgba(3,7,18,0.55)]"
@@ -91,6 +94,18 @@ export function RatioTable({
           </tbody>
         </table>
       </div>
+      {missingEntries.length > 0 && (
+        <div className={clsx("mt-4 text-xs", mutedText)}>
+          <p className={clsx("font-semibold", mutedStrong)}>Missing inputs</p>
+          <ul className="mt-2 list-disc space-y-1 pl-4">
+            {missingEntries.map(([key, value]) => (
+              <li key={key}>
+                {humanize(key)}: {value}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
     </article>
   );
 }

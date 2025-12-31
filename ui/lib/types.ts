@@ -107,6 +107,9 @@ export type Filing = {
   trailing_cap_used?: number | null;
   share_price?: number | null;
   market_data_provider?: string | null;
+  snapshot_parsed_at?: string | null;
+  evaluation_updated_at?: string | null;
+  data_updated_at?: string | null;
   quality_issues?: string[];
 };
 

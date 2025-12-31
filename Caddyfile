@@ -1,0 +1,13 @@
+{
+  email {$ACME_EMAIL}
+}
+
+{$HALAL_API_DOMAIN} {
+  reverse_proxy api:8001
+  encode zstd gzip
+}
+
+{$HALAL_APP_DOMAIN} {
+  reverse_proxy ui:3000
+  encode zstd gzip
+}
