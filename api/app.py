@@ -3104,10 +3104,20 @@ def _serialize_feedback(row: Dict[str, Any]) -> FeedbackReportResponse:
 
 
 def _parse_path_datetime(value: str) -> datetime:
+    cleaned = value.strip()
+    if cleaned.endswith("Z"):
+        cleaned = f"{cleaned[:-1]}+00:00"
     try:
-        return datetime.fromisoformat(value)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail="Invalid filing_date format") from exc
+        parsed = datetime.fromisoformat(cleaned)
+    except ValueError:
+        try:
+            parsed_date = date.fromisoformat(cleaned[:10])
+            parsed = datetime.combine(parsed_date, datetime.min.time(), tzinfo=timezone.utc)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="Invalid filing_date format") from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
 
 
 @app.get("/feedback", response_model=List[FeedbackReportResponse])
