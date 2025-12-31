@@ -72,6 +72,7 @@ INDIAN_API_OVERRIDE_TOLERANCE = _as_float(
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
 GOOGLE_REDIRECT_URI = os.getenv("GOOGLE_REDIRECT_URI")
+OAUTH_STATE_SECRET = os.getenv("OAUTH_STATE_SECRET")
 FRONTEND_BASE_URL = os.getenv("FRONTEND_BASE_URL", "http://192.168.1.9:3001")
 ADMIN_EMAILS = _as_list(os.getenv("ADMIN_EMAILS"))
 TICKER_MAP_PATH = Path(__file__).resolve().parent / "ticker_map.json"
