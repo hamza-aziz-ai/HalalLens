@@ -18,10 +18,10 @@ export default function ContactPage() {
           <li>
             Email:{" "}
             <a
-              href="mailto:support@halallens.in"
+              href="mailto:contact@nourvix.com"
               className="text-cyan-200 hover:text-cyan-100"
             >
-              support@halallens.in
+              contact@nourvix.com
             </a>
           </li>
           <li>Response time: within 3 business days.</li>
@@ -34,10 +34,10 @@ export default function ContactPage() {
         <p className={`${policyBodyClass} mt-3`}>
           For partnerships or data requests, email{" "}
           <a
-            href="mailto:hello@halallens.in"
+            href="mailto:contact@nourvix.com"
             className="text-cyan-200 hover:text-cyan-100"
           >
-            hello@halallens.in
+            contact@nourvix.com
           </a>
           .
         </p>
