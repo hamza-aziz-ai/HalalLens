@@ -2303,7 +2303,7 @@ class BSEDatabaseManager:
                         "amount": amount,
                         "currency": currency,
                         "status": status,
-                        "payload": payload,
+                        "payload": Json(payload),
                     },
                 )
                 conn.commit()
@@ -2346,7 +2346,7 @@ class BSEDatabaseManager:
                         "provider": provider,
                         "event_type": event_type,
                         "event_id": event_id,
-                        "payload": payload,
+                        "payload": Json(payload),
                     },
                 )
                 conn.commit()
