@@ -1,3 +1,4 @@
+# debug
 {
   email {$ACME_EMAIL}
 }
