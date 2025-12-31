@@ -153,6 +153,29 @@ export default function HistoryPage() {
                   ? `Selected filing: ${new Date(selected.filing_date).toLocaleDateString()}`
                   : "Select a filing to see details."}
               </p>
+              {selected?.data_updated_at && (
+                <p className={clsx("text-xs", mutedTextClass)}>
+                  Last updated: {new Date(selected.data_updated_at).toLocaleDateString()}
+                </p>
+              )}
+              {selected?.confidence && (
+                <p className={clsx("text-xs", mutedTextClass)}>
+                  Confidence: {selected.confidence}
+                </p>
+              )}
+              {selected?.governance_override_applied && (
+                <p className={clsx("text-xs", mutedTextClass)}>
+                  Override applied
+                  {selected.governance_override_source
+                    ? ` (${selected.governance_override_source})`
+                    : ""}
+                </p>
+              )}
+              {selected?.quality_issues?.length ? (
+                <p className="text-xs text-amber-300">
+                  Data quality flags: {selected.quality_issues.join(", ")}
+                </p>
+              ) : null}
             </div>
             {selected && (
               <div className="flex flex-wrap items-center gap-2 text-xs">

@@ -40,11 +40,18 @@ services:
       MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:?set in .env}
       INGESTION_HEARTBEAT: /tmp/ingestion_heartbeat.txt
       INGESTION_INTERVAL_MINUTES: ${INGESTION_INTERVAL_MINUTES:-60}
+      API_WORKERS: ${API_WORKERS:-4}
     depends_on:
       preflight:
         condition: service_completed_successfully
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    command:
+      [
+        "sh",
+        "-c",
+        "uvicorn api.app:app --host 0.0.0.0 --port 8001 --workers ${API_WORKERS:-4} --proxy-headers"
+      ]
     ports:
       - "8001:8001"
     volumes:
@@ -108,6 +115,41 @@ services:
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python3", "-m", "jobs.ingestion_health"]
+      interval: 1m
+      timeout: 10s
+      retries: 3
+
+  evaluation:
+    build:
+      context: .
+      dockerfile: scheduler.Dockerfile
+    env_file:
+      - .env
+    environment:
+      POSTGRES_HOST: ${POSTGRES_HOST:-host.docker.internal}
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      INDIAN_API_BASE_URL: ${INDIAN_API_BASE_URL:?set in .env}
+      INDIAN_API_KEY: ${INDIAN_API_KEY:?set in .env}
+      MINIO_HOST: ${MINIO_HOST:-host.docker.internal}
+      MINIO_PORT: ${MINIO_PORT:-9000}
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:?set in .env}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:?set in .env}
+      EVALUATION_INTERVAL_MINUTES: ${EVALUATION_INTERVAL_MINUTES:-15}
+      EVALUATION_BATCH_LIMIT: ${EVALUATION_BATCH_LIMIT:-200}
+      EVALUATION_LOOKBACK_DAYS: ${EVALUATION_LOOKBACK_DAYS:-365}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./:/app
+    entrypoint: ["python3", "-m", "jobs.schedule_evaluations"]
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python3", "-m", "jobs.evaluation_health"]
       interval: 1m
       timeout: 10s
       retries: 3

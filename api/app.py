@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Literal, Deque
 from collections import deque
 
+import asyncio
 import base64
 import hashlib
 import hmac
@@ -17,6 +18,8 @@ import logging
 import os
 import secrets
 import time
+import json
+from concurrent.futures import ThreadPoolExecutor
 import requests
 from urllib.parse import urlencode, urlsplit, urlunsplit
 from fastapi import FastAPI, HTTPException, Header, Request
@@ -34,6 +37,13 @@ from config import (
     LLM_TEMPERATURE,
     LLM_TIMEOUT,
     NARRATOR_MODE,
+    NARRATION_TIMEOUT_SECONDS,
+    NARRATION_QUEUE_TIMEOUT_SECONDS,
+    NARRATION_MAX_WORKERS,
+    NARRATION_MAX_CONCURRENT,
+    NARRATION_CACHE_TTL_SECONDS,
+    HISTORY_CACHE_TTL_SECONDS,
+    RECENT_CACHE_TTL_SECONDS,
     SMTP_HOST,
     SMTP_PORT,
     SMTP_USERNAME,
@@ -58,7 +68,7 @@ from config import (
     SUBSCRIPTION_INTERVAL_DAYS,
 )
 from config.logging_config import configure_logging
-from narrator import NarrationEngine, NarratorConfig
+from narrator import NarrationEngine, NarratorConfig, NarrationResult
 from ratio_engine import (
     FinancialSnapshotInput,
     MarketDataInput,
@@ -367,6 +377,13 @@ MARKET_CACHE: Dict[
     str, tuple[float, tuple[Optional[float], Optional[float], Optional[str]]]
 ] = {}
 CACHE_TTL_SECONDS = 300
+RECENT_FILINGS_CACHE: Dict[str, tuple[float, List["FilingResponse"]]] = {}
+HISTORY_CACHE: Dict[str, tuple[float, "FilingHistoryResponse"]] = {}
+NARRATION_CACHE: Dict[str, tuple[float, Dict[str, Any]]] = {}
+NARRATION_IN_FLIGHT: Dict[str, asyncio.Future] = {}
+NARRATION_IN_FLIGHT_LOCK = asyncio.Lock()
+NARRATION_EXECUTOR = ThreadPoolExecutor(max_workers=NARRATION_MAX_WORKERS)
+NARRATION_SEMAPHORE = asyncio.Semaphore(NARRATION_MAX_CONCURRENT)
 BACKOFF_SECONDS = 30
 REALTIME_LOOKBACK_DAYS = 30
 REALTIME_LOOKBACK_MULTIPLIER = 4
@@ -1231,6 +1248,144 @@ def _load_quality_issues(symbol: str, filing_date: datetime) -> List[str]:
         return []
 
 
+def _attach_data_updated_at(record: Dict[str, Any]) -> None:
+    if not record:
+        return
+    candidates = []
+    for key in (
+        "evaluation_updated_at",
+        "snapshot_parsed_at",
+        "governance_override_updated_at",
+    ):
+        value = record.get(key)
+        if isinstance(value, datetime):
+            candidates.append(value)
+    record["data_updated_at"] = max(candidates) if candidates else None
+
+
+def _cache_get(cache: Dict[str, tuple[float, Any]], key: str) -> Optional[Any]:
+    entry = cache.get(key)
+    if not entry:
+        return None
+    expires_at, value = entry
+    if expires_at < time.time():
+        cache.pop(key, None)
+        return None
+    return value
+
+
+def _cache_set(cache: Dict[str, tuple[float, Any]], key: str, value: Any, ttl: int) -> None:
+    if ttl <= 0:
+        return
+    cache[key] = (time.time() + ttl, value)
+
+
+def _narration_cache_key(evaluation) -> str:
+    ratios_payload = {
+        key: {
+            "value": computation.value,
+            "threshold": computation.threshold,
+            "passed": computation.passed,
+            "note": computation.note,
+        }
+        for key, computation in evaluation.ratios.items()
+    }
+    payload = {
+        "symbol": evaluation.symbol,
+        "filing_date": evaluation.filing_date.isoformat(),
+        "ratios": ratios_payload,
+    }
+    raw = json.dumps(payload, sort_keys=True, default=str)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+async def _build_narration_async(evaluation) -> "NarrationResult":
+    cache_key = _narration_cache_key(evaluation)
+    cached = _cache_get(NARRATION_CACHE, cache_key)
+    if cached:
+        return NarrationResult(**cached)
+
+    loop = asyncio.get_running_loop()
+    future: Optional[asyncio.Future] = None
+    is_leader = False
+    async with NARRATION_IN_FLIGHT_LOCK:
+        future = NARRATION_IN_FLIGHT.get(cache_key)
+        if future is None or future.done():
+            future = loop.create_future()
+            NARRATION_IN_FLIGHT[cache_key] = future
+            is_leader = True
+
+    if not is_leader and future is not None:
+        try:
+            result = await asyncio.wait_for(
+                asyncio.shield(future),
+                timeout=NARRATION_TIMEOUT_SECONDS,
+            )
+            return result
+        except asyncio.TimeoutError:
+            result = narrator.rule_based.build(evaluation)
+            result.metadata["source"] = "rule_based_wait_timeout"
+            return result
+        except Exception:
+            result = narrator.rule_based.build(evaluation)
+            result.metadata["source"] = "rule_based_wait_error"
+            return result
+
+    async def _finalize_narration(result: "NarrationResult") -> "NarrationResult":
+        _cache_set(
+            NARRATION_CACHE,
+            cache_key,
+            {
+                "summary": result.summary,
+                "verdict": result.verdict,
+                "bullets": result.bullets,
+                "citations": result.citations,
+                "metadata": result.metadata,
+            },
+            NARRATION_CACHE_TTL_SECONDS,
+        )
+        try:
+            if future is not None and not future.done():
+                future.set_result(result)
+        finally:
+            async with NARRATION_IN_FLIGHT_LOCK:
+                if NARRATION_IN_FLIGHT.get(cache_key) is future:
+                    NARRATION_IN_FLIGHT.pop(cache_key, None)
+        return result
+
+    if narrator.llm_engine is None:
+        result = narrator.rule_based.build(evaluation)
+        return await _finalize_narration(result)
+
+    try:
+        await asyncio.wait_for(
+            NARRATION_SEMAPHORE.acquire(),
+            timeout=NARRATION_QUEUE_TIMEOUT_SECONDS,
+        )
+    except asyncio.TimeoutError:
+        result = narrator.rule_based.build(evaluation)
+        result.metadata["source"] = "rule_based_overload"
+        return await _finalize_narration(result)
+
+    try:
+        result = await asyncio.wait_for(
+            loop.run_in_executor(NARRATION_EXECUTOR, narrator.build, evaluation),
+            timeout=NARRATION_TIMEOUT_SECONDS,
+        )
+    except asyncio.TimeoutError:
+        result = narrator.rule_based.build(evaluation)
+        result.metadata["source"] = "rule_based_timeout"
+        _record_llm_failure(evaluation.symbol, "Narration timeout fallback.")
+    except Exception as exc:
+        result = narrator.rule_based.build(evaluation)
+        result.metadata["source"] = "rule_based_error"
+        _record_llm_failure(evaluation.symbol, f"Narration error fallback: {exc}")
+    finally:
+        NARRATION_SEMAPHORE.release()
+
+    return await _finalize_narration(result)
+
+
 def _supplement_history_from_indian_api(
     symbol: str, limit: int, existing_count: int
 ) -> bool:
@@ -1991,7 +2146,7 @@ async def narrate(
 
     _require_paid_feature(authorization, "Explain-Why narratives")
     evaluation = _evaluate_request(payload, provider=payload.market_data.provider or "manual")
-    narration = narrator.build(evaluation)
+    narration = await _build_narration_async(evaluation)
 
     return NarrationResponse(
         symbol=evaluation.symbol,
@@ -2421,6 +2576,9 @@ class FilingResponse(BaseModel):
     market_cap_used: Optional[float] = None
     trailing_cap_used: Optional[float] = None
     market_data_provider: Optional[str] = None
+    snapshot_parsed_at: Optional[datetime] = None
+    evaluation_updated_at: Optional[datetime] = None
+    data_updated_at: Optional[datetime] = None
     quality_issues: List[str] = Field(default_factory=list)
     governance_override_applied: bool = False
     governance_override_source: Optional[str] = None
@@ -2464,7 +2622,9 @@ def _detect_quality_issues(
     return issues
 
 
-def _ensure_filing_evaluation(record: Dict[str, Any]) -> Optional[Dict[str, RatioComputationPayload]]:
+def _ensure_filing_evaluation(
+    record: Dict[str, Any], *, allow_market_fetch: bool = True
+) -> Optional[Dict[str, RatioComputationPayload]]:
     _maybe_enrich_record_with_indian_api(record)
     ratios = _ratios_payload(record.get("ratios"))
     if ratios is not None:
@@ -2481,12 +2641,21 @@ def _ensure_filing_evaluation(record: Dict[str, Any]) -> Optional[Dict[str, Rati
     share_price: Optional[float] = None
 
     if market_cap is None and trailing is None:
-        market_cap, share_price, provider = _market_data_for_filing(
-            snapshot.symbol, snapshot.filing_date
-        )
+        if allow_market_fetch:
+            market_cap, share_price, provider = _market_data_for_filing(
+                snapshot.symbol, snapshot.filing_date
+            )
+        else:
+            cached = _get_db().get_cached_market_data(
+                snapshot.symbol, snapshot.filing_date
+            )
+            if cached:
+                market_cap, share_price, provider = cached
 
     if market_cap is None and trailing is None:
-        raise HTTPException(status_code=503, detail="Market data unavailable")
+        if allow_market_fetch:
+            raise HTTPException(status_code=503, detail="Market data unavailable")
+        return None
 
     evaluation = engine.evaluate(
         snapshot,
@@ -2610,13 +2779,21 @@ def _auto_reevaluate_feedback_reports(
 async def recent_filings(limit: int = 20) -> List[FilingResponse]:
     """Return recent filings from announcements."""
 
+    cache_key = f"recent:{limit}"
+    cached = _cache_get(RECENT_FILINGS_CACHE, cache_key)
+    if cached:
+        return cached
+
     rows = _get_db().get_recent_filings(limit=limit)
     for row in rows:
         symbol = row.get("symbol")
         filing_date = row.get("filing_date")
         if symbol and filing_date:
             row["quality_issues"] = _load_quality_issues(symbol, filing_date)
-    return [FilingResponse(**row) for row in rows]
+        _attach_data_updated_at(row)
+    responses = [FilingResponse(**row) for row in rows]
+    _cache_set(RECENT_FILINGS_CACHE, cache_key, responses, RECENT_CACHE_TTL_SECONDS)
+    return responses
 
 
 def _needs_financial_refresh(record: Dict[str, Any]) -> bool:
@@ -2668,6 +2845,7 @@ async def filing_detail(
             record["quality_issues"] = _load_quality_issues(symbol, filing_date)
     record.setdefault("company_name", "")
     record.setdefault("category", "")
+    _attach_data_updated_at(record)
     return FilingResponse(**record)
 
 
@@ -2676,6 +2854,7 @@ async def filing_history(
     symbol: str,
     limit: int = 10,
     cursor: Optional[str] = None,
+    include_ratios: bool = True,
     authorization: Optional[str] = Header(None),
 ) -> FilingHistoryResponse:
     """Return a symbol's recent filings for context/timeline views."""
@@ -2685,6 +2864,14 @@ async def filing_history(
     db = _get_db()
     parsed_cursor = _parse_path_datetime(cursor) if cursor else None
     effective_limit = max(1, min(limit, 40))
+    cache_key = (
+        f"history:{normalized}:{effective_limit}:"
+        f"{parsed_cursor.isoformat() if parsed_cursor else 'none'}:"
+        f"{'ratios' if include_ratios else 'lite'}"
+    )
+    cached = _cache_get(HISTORY_CACHE, cache_key)
+    if cached:
+        return cached
     rows = db.get_filing_history(
         normalized, limit=effective_limit + 1, cursor_ts=parsed_cursor
     )
@@ -2709,9 +2896,11 @@ async def filing_history(
 
     responses: List[FilingResponse] = []
     for row in entries:
-        if not row.get("ratios"):
+        if include_ratios and not row.get("ratios"):
             try:
-                ratio_payload = _ensure_filing_evaluation(row)
+                ratio_payload = _ensure_filing_evaluation(
+                    row, allow_market_fetch=False
+                )
                 if ratio_payload is not None:
                     row["ratios"] = ratio_payload
             except HTTPException:
@@ -2721,13 +2910,16 @@ async def filing_history(
         filing_date = row.get("filing_date")
         if symbol_value and filing_date:
             row["quality_issues"] = _load_quality_issues(symbol_value, filing_date)
+        _attach_data_updated_at(row)
         responses.append(FilingResponse(**row))
 
     next_cursor = None
     if has_more and responses:
         next_cursor = responses[-1].filing_date
 
-    return FilingHistoryResponse(entries=responses, next_cursor=next_cursor)
+    response = FilingHistoryResponse(entries=responses, next_cursor=next_cursor)
+    _cache_set(HISTORY_CACHE, cache_key, response, HISTORY_CACHE_TTL_SECONDS)
+    return response
 
 
 @app.get("/market-data/{symbol}", response_model=MarketQuoteResponse)

@@ -1465,9 +1465,11 @@ class BSEDatabaseManager:
                     fe.verdict,
                     fe.summary,
                     fe.narration_source,
+                    fe.evaluated_at AS evaluation_updated_at,
                     fe.market_cap_used,
                     fe.trailing_cap_used,
                     fe.market_data_provider,
+                    fs.parsed_at AS snapshot_parsed_at,
                     (go.symbol IS NOT NULL) AS governance_override_applied,
                     go.source AS governance_override_source,
                     go.reviewer AS governance_override_reviewer,
@@ -1492,6 +1494,78 @@ class BSEDatabaseManager:
                 LIMIT %(limit)s
                 """
                 cursor.execute(query, {"limit": limit})
+                return [dict(row) for row in cursor.fetchall()]
+
+    def get_filings_needing_evaluation(
+        self, *, limit: int = 200, lookback_days: int = 365
+    ) -> List[Dict]:
+        """Return filings missing or stale evaluations within a lookback window."""
+
+        lookback_days = max(1, int(lookback_days))
+        with self.get_connection() as conn:
+            with conn.cursor() as cursor:
+                query = """
+                SELECT
+                    a.symbol,
+                    a.company_name,
+                    a.filing_date,
+                    a.category,
+                    a.headline,
+                    a.confidence,
+                    fs.total_debt,
+                    fs.cash_equiv,
+                    fs.revenue,
+                    fs.interest_income,
+                    fs.dividend_income,
+                    COALESCE(go.accounts_receivable, fs.accounts_receivable) AS accounts_receivable,
+                    COALESCE(go.liquid_assets, fs.liquid_assets) AS liquid_assets,
+                    COALESCE(go.non_halal_income, fs.non_halal_income) AS non_halal_income,
+                    COALESCE(go.governance_notes, fs.governance_notes) AS governance_notes,
+                    fs.audit_status,
+                    fe.is_compliant,
+                    fe.verdict,
+                    fe.summary,
+                    fe.narration_source,
+                    fe.ratios,
+                    fe.evaluated_at AS evaluation_updated_at,
+                    fe.market_cap_used,
+                    fe.trailing_cap_used,
+                    fe.market_data_provider,
+                    fs.parsed_at AS snapshot_parsed_at,
+                    (go.symbol IS NOT NULL) AS governance_override_applied,
+                    go.source AS governance_override_source,
+                    go.reviewer AS governance_override_reviewer,
+                    go.reason AS governance_override_reason,
+                    go.updated_at AS governance_override_updated_at
+                FROM announcements a
+                JOIN financial_snapshots fs
+                  ON a.symbol = fs.symbol
+                 AND a.filing_date = fs.filing_date
+                 AND (
+                    fs.total_debt IS NOT NULL
+                    OR fs.cash_equiv IS NOT NULL
+                    OR fs.revenue IS NOT NULL
+                 )
+                LEFT JOIN filing_evaluations fe
+                  ON a.symbol = fe.symbol
+                 AND a.filing_date = fe.filing_date
+                LEFT JOIN governance_overrides go
+                  ON a.symbol = go.symbol
+                 AND a.filing_date = go.filing_date
+                WHERE a.filing_date >= (NOW() - (%(lookback_days)s * INTERVAL '1 day'))
+                  AND (
+                    fe.ratios IS NULL
+                    OR fe.evaluated_at IS NULL
+                    OR (go.updated_at IS NOT NULL AND (fe.evaluated_at IS NULL OR go.updated_at > fe.evaluated_at))
+                    OR (fs.parsed_at IS NOT NULL AND (fe.evaluated_at IS NULL OR fs.parsed_at > fe.evaluated_at))
+                  )
+                ORDER BY a.filing_date DESC
+                LIMIT %(limit)s
+                """
+                cursor.execute(
+                    query,
+                    {"limit": int(limit), "lookback_days": lookback_days},
+                )
                 return [dict(row) for row in cursor.fetchall()]
 
     def get_latest_filing(self, symbol: str) -> Optional[Dict]:
@@ -1526,9 +1600,11 @@ class BSEDatabaseManager:
                     fe.summary,
                     fe.narration_source,
                     fe.ratios,
+                    fe.evaluated_at AS evaluation_updated_at,
                     fe.market_cap_used,
                     fe.trailing_cap_used,
                     fe.market_data_provider,
+                    fs.parsed_at AS snapshot_parsed_at,
                     (go.symbol IS NOT NULL) AS governance_override_applied,
                     go.source AS governance_override_source,
                     go.reviewer AS governance_override_reviewer,
@@ -1588,9 +1664,11 @@ class BSEDatabaseManager:
                         fe.summary,
                         fe.narration_source,
                         fe.ratios,
+                        fe.evaluated_at AS evaluation_updated_at,
                         fe.market_cap_used,
                         fe.trailing_cap_used,
                         fe.market_data_provider,
+                        fs.parsed_at AS snapshot_parsed_at,
                         (go.symbol IS NOT NULL) AS governance_override_applied,
                         go.source AS governance_override_source,
                         go.reviewer AS governance_override_reviewer,
@@ -1648,9 +1726,11 @@ class BSEDatabaseManager:
                     fe.summary,
                     fe.narration_source,
                     fe.ratios,
+                    fe.evaluated_at AS evaluation_updated_at,
                     fe.market_cap_used,
                     fe.trailing_cap_used,
                     fe.market_data_provider,
+                    fs.parsed_at AS snapshot_parsed_at,
                     COALESCE(go.accounts_receivable, fs.accounts_receivable) AS accounts_receivable,
                     COALESCE(go.liquid_assets, fs.liquid_assets) AS liquid_assets,
                     COALESCE(go.non_halal_income, fs.non_halal_income) AS non_halal_income,

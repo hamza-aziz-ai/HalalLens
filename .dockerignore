@@ -16,3 +16,4 @@ ui/.env.local
 .venv/
 pipenv/
 *.sqlite
+logs_runtime/

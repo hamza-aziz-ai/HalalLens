@@ -308,14 +308,46 @@ export default function AnalysisPage() {
           <p className="mt-2 text-sm text-rose-400">{lookupError}</p>
         )}
         {selectedFiling && (
-          <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
-            <span className={mutedTextClass}>Market data source:</span>
-            <ProviderBadge
-              provider={marketProvider ?? selectedFiling.market_data_provider}
-              theme={theme}
-            />
-            {marketStatus && <span className={mutedTextClass}>{marketStatus}</span>}
-          </div>
+          <>
+            <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
+              <span className={mutedTextClass}>Market data source:</span>
+              <ProviderBadge
+                provider={marketProvider ?? selectedFiling.market_data_provider}
+                theme={theme}
+              />
+              {marketStatus && <span className={mutedTextClass}>{marketStatus}</span>}
+            </div>
+            <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
+              <span className={mutedTextClass}>
+                Filing date:{" "}
+                {new Date(selectedFiling.filing_date).toLocaleDateString()}
+              </span>
+              {selectedFiling.data_updated_at && (
+                <span className={mutedTextClass}>
+                  Last updated:{" "}
+                  {new Date(selectedFiling.data_updated_at).toLocaleDateString()}
+                </span>
+              )}
+              {selectedFiling.confidence && (
+                <span className={mutedTextClass}>
+                  Confidence: {selectedFiling.confidence}
+                </span>
+              )}
+              {selectedFiling.governance_override_applied && (
+                <span className={mutedTextClass}>
+                  Override applied
+                  {selectedFiling.governance_override_source
+                    ? ` (${selectedFiling.governance_override_source})`
+                    : ""}
+                </span>
+              )}
+            </div>
+            {selectedFiling.quality_issues?.length ? (
+              <p className="mt-2 text-xs text-amber-300">
+                Data quality flags: {selectedFiling.quality_issues.join(", ")}
+              </p>
+            ) : null}
+          </>
         )}
       </section>
 
