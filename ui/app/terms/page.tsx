@@ -72,10 +72,10 @@ export default function TermsPage() {
         <p className={`${policyBodyClass} mt-3`}>
           Reach us at{" "}
           <a
-            href="mailto:support@halallens.in"
+            href="mailto:contact@nourvix.com"
             className="text-cyan-200 hover:text-cyan-100"
           >
-            support@halallens.in
+            contact@nourvix.com
           </a>{" "}
           for questions about these terms.
         </p>
