@@ -58,6 +58,7 @@ from config import (
     GOOGLE_CLIENT_ID,
     GOOGLE_CLIENT_SECRET,
     GOOGLE_REDIRECT_URI,
+    OAUTH_STATE_SECRET,
     FRONTEND_BASE_URL,
     ADMIN_EMAILS,
     RAZORPAY_KEY_ID,
@@ -635,6 +636,36 @@ def _sanitize_google_redirect(value: Optional[str]) -> Optional[str]:
     return None
 
 
+def _google_state_secret() -> str:
+    return (OAUTH_STATE_SECRET or GOOGLE_CLIENT_SECRET or "").strip()
+
+
+def _build_google_state(redirect: Optional[str]) -> str:
+    secret = _google_state_secret()
+    if not secret:
+        state = secrets.token_urlsafe(32)
+        _store_google_state(state, redirect)
+        return state
+    now = datetime.now(timezone.utc)
+    payload = {
+        "nonce": secrets.token_urlsafe(16),
+        "created": now.isoformat(),
+        "redirect": redirect,
+    }
+    payload_json = json.dumps(payload, separators=(",", ":"), ensure_ascii=True)
+    payload_b64 = (
+        base64.urlsafe_b64encode(payload_json.encode("utf-8"))
+        .decode("ascii")
+        .rstrip("=")
+    )
+    signature = hmac.new(
+        secret.encode("utf-8"),
+        payload_b64.encode("ascii"),
+        hashlib.sha256,
+    ).hexdigest()
+    return f"{payload_b64}.{signature}"
+
+
 def _store_google_state(state: str, redirect: Optional[str]) -> None:
     now = datetime.now(timezone.utc)
     GOOGLE_STATE_CACHE[state] = {
@@ -657,15 +688,45 @@ def _store_google_state(state: str, redirect: Optional[str]) -> None:
 
 def _consume_google_state(state: str) -> Optional[str]:
     entry = GOOGLE_STATE_CACHE.pop(state, None)
-    if not entry:
+    if entry:
+        created_raw = entry.get("created")
+        if not created_raw:
+            raise HTTPException(status_code=400, detail="Invalid OAuth state")
+        created = datetime.fromisoformat(created_raw)
+        if datetime.now(timezone.utc) - created > GOOGLE_STATE_TTL:
+            raise HTTPException(status_code=400, detail="Expired OAuth state")
+        return entry.get("redirect")
+
+    secret = _google_state_secret()
+    if not secret:
         raise HTTPException(status_code=400, detail="Invalid OAuth state")
-    created_raw = entry.get("created")
+    parts = state.split(".", 1)
+    if len(parts) != 2:
+        raise HTTPException(status_code=400, detail="Invalid OAuth state")
+    payload_b64, signature = parts
+    expected = hmac.new(
+        secret.encode("utf-8"),
+        payload_b64.encode("ascii"),
+        hashlib.sha256,
+    ).hexdigest()
+    if not hmac.compare_digest(expected, signature):
+        raise HTTPException(status_code=400, detail="Invalid OAuth state")
+    padding = "=" * (-len(payload_b64) % 4)
+    try:
+        payload_raw = base64.urlsafe_b64decode(
+            (payload_b64 + padding).encode("ascii")
+        ).decode("utf-8")
+        payload = json.loads(payload_raw)
+    except (ValueError, json.JSONDecodeError):
+        raise HTTPException(status_code=400, detail="Invalid OAuth state")
+    created_raw = payload.get("created")
     if not created_raw:
         raise HTTPException(status_code=400, detail="Invalid OAuth state")
     created = datetime.fromisoformat(created_raw)
     if datetime.now(timezone.utc) - created > GOOGLE_STATE_TTL:
         raise HTTPException(status_code=400, detail="Expired OAuth state")
-    return entry.get("redirect")
+    redirect = payload.get("redirect")
+    return _sanitize_google_redirect(redirect)
 
 
 def _build_google_authorization_url(state: str) -> str:
@@ -2165,8 +2226,7 @@ async def auth_google_start(redirect: Optional[str] = None):
     """Initiate Google OAuth login."""
 
     _ensure_google_oauth_enabled()
-    state = secrets.token_urlsafe(32)
-    _store_google_state(state, _sanitize_google_redirect(redirect))
+    state = _build_google_state(_sanitize_google_redirect(redirect))
     return RedirectResponse(_build_google_authorization_url(state), status_code=307)
 
 

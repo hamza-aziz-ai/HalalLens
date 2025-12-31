@@ -27,7 +27,7 @@ cleanup() {
 
 trap cleanup INT TERM
 
-serve -s out -l 3000 >>"$LOG_FILE" 2>&1 &
+serve out -l 3000 >>"$LOG_FILE" 2>&1 &
 SERVER_PID=$!
 wait "$SERVER_PID"
 STATUS=$?
