@@ -74,6 +74,7 @@ GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
 GOOGLE_REDIRECT_URI = os.getenv("GOOGLE_REDIRECT_URI")
 OAUTH_STATE_SECRET = os.getenv("OAUTH_STATE_SECRET")
 FRONTEND_BASE_URL = os.getenv("FRONTEND_BASE_URL", "http://192.168.1.9:3001")
+HALAL_APP_DOMAIN = os.getenv("HALAL_APP_DOMAIN", "").strip()
 ADMIN_EMAILS = _as_list(os.getenv("ADMIN_EMAILS"))
 TICKER_MAP_PATH = Path(__file__).resolve().parent / "ticker_map.json"
 TICKER_MAP: Dict[str, str] = {}
@@ -99,6 +100,13 @@ DEFAULT_ALLOWED_ORIGINS = [
     "http://192.168.1.9:3000",
     "http://192.168.1.9:3001",
 ]
+if HALAL_APP_DOMAIN:
+    DEFAULT_ALLOWED_ORIGINS.extend(
+        [
+            f"https://{HALAL_APP_DOMAIN}",
+            f"https://www.{HALAL_APP_DOMAIN}",
+        ]
+    )
 ALLOWED_ORIGINS = [
     origin.strip()
     for origin in os.getenv("ALLOWED_ORIGINS", "").split(",")

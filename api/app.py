@@ -19,6 +19,7 @@ import os
 import secrets
 import time
 import json
+import re
 from concurrent.futures import ThreadPoolExecutor
 import requests
 from urllib.parse import urlencode, urlsplit, urlunsplit
@@ -304,6 +305,38 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+_ALLOWED_ORIGIN_RE = (
+    re.compile(ALLOWED_ORIGIN_REGEX)
+    if ALLOWED_ORIGIN_REGEX
+    else None
+)
+
+
+@app.middleware("http")
+async def inject_cors_headers(request: Request, call_next):
+    response = await call_next(request)
+    origin = request.headers.get("origin")
+    if not origin:
+        return response
+    allowed = origin in (ALLOWED_ORIGINS or DEFAULT_ALLOWED_ORIGINS)
+    if not allowed and _ALLOWED_ORIGIN_RE:
+        allowed = bool(_ALLOWED_ORIGIN_RE.match(origin))
+    if not allowed:
+        return response
+    if "access-control-allow-origin" not in response.headers:
+        response.headers["Access-Control-Allow-Origin"] = origin
+    response.headers.setdefault("Access-Control-Allow-Credentials", "true")
+    response.headers.setdefault(
+        "Access-Control-Allow-Methods",
+        "DELETE, GET, HEAD, OPTIONS, PATCH, POST, PUT",
+    )
+    response.headers.setdefault(
+        "Access-Control-Allow-Headers",
+        "Authorization, Content-Type",
+    )
+    response.headers.setdefault("Vary", "Origin")
+    return response
 
 LOG_HTTP_REQUESTS = os.getenv("LOG_HTTP_REQUESTS", "true").lower() in {
     "1",
