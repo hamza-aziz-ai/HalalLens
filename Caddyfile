@@ -4,20 +4,6 @@
 }
 
 {$HALAL_API_DOMAIN} {
-  @cors_preflight {
-    method OPTIONS
-  }
-  handle @cors_preflight {
-    header Access-Control-Allow-Origin "{http.request.header.Origin}"
-    header Access-Control-Allow-Credentials "true"
-    header Access-Control-Allow-Methods "GET,POST,PUT,PATCH,DELETE,OPTIONS"
-    header Access-Control-Allow-Headers "Authorization,Content-Type"
-    respond 204
-  }
-  header Access-Control-Allow-Origin "{http.request.header.Origin}"
-  header Access-Control-Allow-Credentials "true"
-  header Access-Control-Allow-Methods "GET,POST,PUT,PATCH,DELETE,OPTIONS"
-  header Access-Control-Allow-Headers "Authorization,Content-Type"
   reverse_proxy api:8001
   encode zstd gzip
 }
