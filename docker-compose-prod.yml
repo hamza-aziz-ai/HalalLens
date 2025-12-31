@@ -149,6 +149,7 @@ services:
     environment:
       HALAL_APP_DOMAIN: ${HALAL_APP_DOMAIN:?set in .env}
       HALAL_API_DOMAIN: ${HALAL_API_DOMAIN:?set in .env}
+      ACME_EMAIL: ${ACME_EMAIL:?set in .env}
     depends_on:
       api:
         condition: service_healthy
