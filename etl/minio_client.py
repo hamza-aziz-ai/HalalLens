@@ -73,10 +73,12 @@ class BSEPDFStorage:
             'session_initialized': False
         }
 
-        # Verify MinIO connection
+        # Verify MinIO connection and ensure the bucket exists.
         try:
-            self.client.bucket_exists(self.bucket_name)
-            logger.info(f"Connected to MinIO - bucket '{self.bucket_name}' ready")
+            if not self.client.bucket_exists(self.bucket_name):
+                self.client.make_bucket(self.bucket_name)
+                logger.info("Created MinIO bucket '%s'", self.bucket_name)
+            logger.info("Connected to MinIO - bucket '%s' ready", self.bucket_name)
         except Exception as e:
             logger.error(f"MinIO connection failed: {e}")
             raise
