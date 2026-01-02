@@ -1696,6 +1696,71 @@ class BSEDatabaseManager:
                 row = cursor.fetchone()
                 return dict(row) if row else None
 
+    def get_filing_by_date(self, symbol: str, filing_date: date) -> Optional[Dict]:
+        """Return the most recent filing for a symbol on a given date."""
+
+        if not symbol or not filing_date:
+            return None
+
+        with self.get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT
+                        a.symbol,
+                        a.company_name,
+                        a.filing_date,
+                        a.category,
+                        a.headline,
+                        a.confidence,
+                        fs.total_debt,
+                        fs.cash_equiv,
+                        fs.revenue,
+                        fs.interest_income,
+                        fs.dividend_income,
+                        COALESCE(go.accounts_receivable, fs.accounts_receivable) AS accounts_receivable,
+                        COALESCE(go.liquid_assets, fs.liquid_assets) AS liquid_assets,
+                        COALESCE(go.non_halal_income, fs.non_halal_income) AS non_halal_income,
+                        COALESCE(go.governance_notes, fs.governance_notes) AS governance_notes,
+                        fs.audit_status,
+                        fe.is_compliant,
+                        fe.verdict,
+                        fe.summary,
+                        fe.narration_source,
+                        fe.ratios,
+                        fe.evaluated_at AS evaluation_updated_at,
+                        fe.market_cap_used,
+                        fe.trailing_cap_used,
+                        fe.market_data_provider,
+                        fs.parsed_at AS snapshot_parsed_at,
+                        (go.symbol IS NOT NULL) AS governance_override_applied,
+                        go.source AS governance_override_source,
+                        go.reviewer AS governance_override_reviewer,
+                        go.reason AS governance_override_reason,
+                        go.updated_at AS governance_override_updated_at
+                    FROM announcements a
+                    LEFT JOIN financial_snapshots fs
+                      ON a.symbol = fs.symbol
+                     AND a.filing_date = fs.filing_date
+                    LEFT JOIN filing_evaluations fe
+                      ON a.symbol = fe.symbol
+                     AND a.filing_date = fe.filing_date
+                    LEFT JOIN governance_overrides go
+                      ON a.symbol = go.symbol
+                     AND a.filing_date = go.filing_date
+                    WHERE a.symbol = %(symbol)s
+                      AND a.filing_date::date = %(filing_date)s
+                    ORDER BY a.filing_date DESC
+                    LIMIT 1
+                    """,
+                    {
+                        "symbol": symbol.strip().upper(),
+                        "filing_date": filing_date,
+                    },
+                )
+                row = cursor.fetchone()
+                return dict(row) if row else None
+
     def get_filing_history(
         self, symbol: str, limit: int = 10, cursor_ts: Optional[datetime] = None
     ) -> List[Dict]:

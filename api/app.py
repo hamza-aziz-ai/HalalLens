@@ -3224,11 +3224,17 @@ async def governance_review(
     """Provide a reviewer-friendly comparison of governance metrics."""
 
     _require_paid_feature(authorization, "Governance overrides")
+    normalized_symbol = symbol.strip().upper()
+    date_only = bool(re.fullmatch(r"\d{4}-\d{2}-\d{2}", filing_date.strip()))
     parsed_date = _parse_path_datetime(filing_date)
     db = _get_db()
-    record = db.get_filing(symbol.strip().upper(), parsed_date)
+    record = db.get_filing(normalized_symbol, parsed_date)
+    if not record and date_only:
+        record = db.get_filing_by_date(normalized_symbol, parsed_date.date())
     if not record:
         raise HTTPException(status_code=404, detail="Filing not found")
+    if record.get("filing_date") and record["filing_date"] != parsed_date:
+        parsed_date = record["filing_date"]
 
     ingested_set = _build_governance_metric_set(
         record,
@@ -3242,7 +3248,7 @@ async def governance_review(
         market_cap=record.get("market_cap_used"),
     )
 
-    override_row = db.get_governance_override(symbol.strip().upper(), parsed_date)
+    override_row = db.get_governance_override(normalized_symbol, parsed_date)
     override_set = (
         _build_governance_metric_set(
             override_row,
