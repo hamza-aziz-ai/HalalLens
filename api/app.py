@@ -3111,7 +3111,10 @@ def _parse_path_datetime(value: str) -> datetime:
         parsed = datetime.fromisoformat(cleaned)
     except ValueError:
         try:
-            parsed_date = date.fromisoformat(cleaned[:10])
+            match = re.search(r"\d{4}-\d{2}-\d{2}", cleaned)
+            if not match:
+                raise ValueError("No ISO date found")
+            parsed_date = date.fromisoformat(match.group(0))
             parsed = datetime.combine(parsed_date, datetime.min.time(), tzinfo=timezone.utc)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail="Invalid filing_date format") from exc
