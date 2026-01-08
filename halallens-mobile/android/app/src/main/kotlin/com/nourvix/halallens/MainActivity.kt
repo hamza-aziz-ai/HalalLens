@@ -1,4 +1,4 @@
-package com.example.halallens_mobile
+package com.nourvix.halallens
 
 import io.flutter.embedding.android.FlutterActivity
 
