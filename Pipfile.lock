@@ -1524,11 +1524,12 @@
         },
         "pypdf": {
             "hashes": [
-                "sha256:6aa0f61b33779b64486de3f42835d3668badd48dac4a536aeb87da187a5eacd2",
-                "sha256:ec96e2e4fc9648ac609d19c00d41e9d606e0ae2ce5a0bbe7691426f5f157166a"
+                "sha256:7d09ce108eff6bf67465d461b6ef352dcb8d84f7a91befc02f904455c6eea11d",
+                "sha256:aa53be9826655b51c96741e5d7983ca224d898ac0a77896e64636810517624aa"
             ],
-            "markers": "python_version >= '3.6'",
-            "version": "==3.17.4"
+            "index": "pip_conf_index_global",
+            "markers": "python_version >= '3.9'",
+            "version": "==6.10.2"
         },
         "pypdfium2": {
             "hashes": [
