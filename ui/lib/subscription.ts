@@ -19,6 +19,15 @@ export function hasPaidAccess(user?: UserProfile | null): boolean {
   return true;
 }
 
+/**
+ * Governance overrides rewrite the AAOIFI inputs behind every user's verdict,
+ * so the API restricts them to admins. Mirror that here rather than gating on
+ * a paid plan, otherwise subscribers see controls that always return 403.
+ */
+export function hasGovernanceAccess(user?: UserProfile | null): boolean {
+  return Boolean(user?.is_admin);
+}
+
 export function isTrialEligible(user?: UserProfile | null): boolean {
   if (!user) return false;
   if (user.is_admin) return false;

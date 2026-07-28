@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Integration-ish tests that mock DB manager for filings endpoint."""
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict
 
 import importlib
@@ -71,10 +71,10 @@ class DummyDB:
             "resolved_at": None,
             "resolved_by": None,
             "public_token": kwargs.get("public_token", "token"),
-            "status_updated_at": datetime.utcnow(),
+            "status_updated_at": datetime.now(timezone.utc),
             "reevaluated_at": None,
             "reevaluation_notes": None,
-            "created_at": datetime.utcnow(),
+            "created_at": datetime.now(timezone.utc),
         }
 
 

@@ -17,7 +17,6 @@ from typing import Any, Dict, List, Optional
 import warnings
 import camelot
 import requests
-from cryptography.utils import CryptographyDeprecationWarning
 from pdfminer.high_level import extract_text
 from lxml import etree
 
@@ -25,11 +24,21 @@ from etl.minio_client import BSEPDFStorage
 from database.database_manager import BSEDatabaseManager
 
 warnings.filterwarnings("ignore", message="Cannot set non-stroke color.*")
-warnings.filterwarnings(
-    "ignore",
-    message="ARC4 has been moved to cryptography.hazmat.decrepit.ciphers.algorithms.ARC4",
-    category=CryptographyDeprecationWarning,
-)
+
+# `cryptography` is only a transitive dependency of the PDF stack and is used
+# here purely to silence a deprecation warning. Importing it at module scope
+# made it a hard requirement of the whole API, so a slim install without it
+# could not even start.
+try:
+    from cryptography.utils import CryptographyDeprecationWarning
+except ImportError:  # pragma: no cover - optional dependency
+    pass
+else:
+    warnings.filterwarnings(
+        "ignore",
+        message="ARC4 has been moved to cryptography.hazmat.decrepit.ciphers.algorithms.ARC4",
+        category=CryptographyDeprecationWarning,
+    )
 
 logger = logging.getLogger(__name__)
 logging.getLogger("pdfminer").setLevel(logging.ERROR)

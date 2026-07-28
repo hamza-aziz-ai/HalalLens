@@ -11,7 +11,7 @@ import logging
 import json
 from contextlib import contextmanager
 from datetime import datetime, date, timezone
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Dict, List, Optional, Sequence, Tuple, Any
 
 import pandas as pd
 import psycopg2
@@ -1972,6 +1972,34 @@ class BSEDatabaseManager:
                     return None
                 return dict(row)
 
+    def update_user_password_hash(self, user_id: int, password_hash: str) -> None:
+        """Persist a re-derived password hash (transparent upgrade on login)."""
+
+        with self.get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    UPDATE users
+                    SET password_hash = %(password_hash)s, updated_at = NOW()
+                    WHERE id = %(user_id)s
+                    """,
+                    {"user_id": user_id, "password_hash": password_hash},
+                )
+                conn.commit()
+
+    def delete_sessions_for_user(self, user_id: int) -> int:
+        """Revoke every session for a user; returns the number removed."""
+
+        with self.get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "DELETE FROM user_sessions WHERE user_id = %(user_id)s",
+                    {"user_id": user_id},
+                )
+                deleted = cursor.rowcount or 0
+                conn.commit()
+                return deleted
+
     def get_user_by_google_sub(self, google_sub: str) -> Optional[Dict]:
         with self.get_connection() as conn:
             with conn.cursor() as cursor:
@@ -2387,6 +2415,60 @@ class BSEDatabaseManager:
                 row = cursor.fetchone()
                 return dict(row) if row else None
 
+    def update_razorpay_order_status(
+        self,
+        order_id: str,
+        status: str,
+        *,
+        only_if_status: Optional[Sequence[str]] = None,
+    ) -> Optional[Dict]:
+        """Transition an order's status.
+
+        When ``only_if_status`` is supplied the update is conditional, which
+        makes it usable as an atomic claim: exactly one concurrent caller sees a
+        row returned, every other caller sees ``None``. That is what keeps
+        payment verification and webhook delivery from granting a subscription
+        twice for the same order.
+        """
+
+        with self.get_connection() as conn:
+            with conn.cursor() as cursor:
+                params: Dict[str, Any] = {"order_id": order_id, "status": status}
+                condition = ""
+                if only_if_status is not None:
+                    params["allowed"] = list(only_if_status)
+                    condition = " AND status = ANY(%(allowed)s)"
+                cursor.execute(
+                    f"""
+                    UPDATE razorpay_orders
+                    SET status = %(status)s, updated_at = NOW()
+                    WHERE order_id = %(order_id)s{condition}
+                    RETURNING order_id, user_id, amount, currency, status, payload
+                    """,
+                    params,
+                )
+                row = cursor.fetchone()
+                conn.commit()
+                return dict(row) if row else None
+
+    def payment_event_exists(self, provider: str, event_id: str) -> bool:
+        """True when this provider event was already processed (idempotency)."""
+
+        if not event_id:
+            return False
+        with self.get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT 1
+                    FROM payment_events
+                    WHERE provider = %(provider)s AND event_id = %(event_id)s
+                    LIMIT 1
+                    """,
+                    {"provider": provider, "event_id": event_id},
+                )
+                return cursor.fetchone() is not None
+
     def record_payment_event(
         self,
         *,
@@ -2395,7 +2477,13 @@ class BSEDatabaseManager:
         event_type: str,
         event_id: Optional[str],
         payload: Dict[str, Any],
-    ) -> None:
+    ) -> bool:
+        """Store a payment event.
+
+        Returns False when an event with the same ``(provider, event_id)`` was
+        already recorded, so callers can skip re-applying its side effects.
+        """
+
         with self.get_connection() as conn:
             with conn.cursor() as cursor:
                 cursor.execute(
@@ -2405,6 +2493,7 @@ class BSEDatabaseManager:
                     ) VALUES (
                         %(user_id)s, %(provider)s, %(event_type)s, %(event_id)s, %(payload)s
                     )
+                    ON CONFLICT (provider, event_id) DO NOTHING
                     """,
                     {
                         "user_id": user_id,
@@ -2414,7 +2503,9 @@ class BSEDatabaseManager:
                         "payload": Json(payload),
                     },
                 )
+                inserted = (cursor.rowcount or 0) > 0
                 conn.commit()
+                return inserted
 
     def get_database_stats(self) -> Dict:
         """Get comprehensive database statistics"""

@@ -1,4 +1,5 @@
-FROM python:3.10-slim
+# Must match [requires] python_version in Pipfile (see api.Dockerfile).
+FROM python:3.14-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -17,7 +18,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 COPY Pipfile Pipfile.lock /app/
 
-RUN pip install --no-cache-dir pipenv==2023.3.20 \
+RUN pip install --no-cache-dir "pipenv>=2024.4.0" \
  && PIPENV_VENV_IN_PROJECT=1 pipenv install --system --deploy
 
 COPY . /app

@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Dict, Optional, Tuple
 
@@ -88,7 +88,7 @@ class BhavcopyMarketResolver:
             return value.date()
         if isinstance(value, date):
             return value
-        return datetime.utcnow().date()
+        return datetime.now(timezone.utc).date()
 
     def _candidate_dates(self, start: date) -> Tuple[date, ...]:
         days = []
