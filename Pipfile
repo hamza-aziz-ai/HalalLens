@@ -1,7 +1,15 @@
 [[source]]
 url = "https://pypi.org/simple"
-verify_ssl = false
+# Must stay true: with verification disabled anyone able to intercept the
+# install (CI runner, Docker build, developer laptop on a hostile network) can
+# substitute package contents.
+verify_ssl = true
 name = "pip_conf_index_global"
+
+[[source]]
+url = "https://download.pytorch.org/whl/cu130"
+verify_ssl = true
+name = "downloadpytorch"
 
 [packages]
 firecrawl-py = "*"
@@ -16,15 +24,22 @@ lxml = "*"
 minio = "*"
 pandas = "*"
 camelot-py = "*"
+# Imported directly by etl/financial_data_processor.py. camelot-py no longer
+# pulls it in transitively, so without this the API fails to import at startup.
+pdfminer-six = "*"
 ghostscript = "*"
 uvicorn = "*"
 fastapi = "*"
 pytest = "*"
-pandas-stubs = "~=2.3.1"
+pandas-stubs = "*"
+langchain = "*"
+ollama = "*"
+langchain-ollama = "*"
+torch = {version = "*", index = "downloadpytorch"}
 
 [dev-packages]
 pytest = "*"
 
 [requires]
-python_version = "3.10"
-python_full_version = "3.10.12"
+python_version = "3.14"
+python_full_version = "3.14.6"

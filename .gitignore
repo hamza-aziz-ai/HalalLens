@@ -16,7 +16,10 @@ downloads/
 eggs/
 .eggs/
 lib/
+# Application source directories that happen to be named lib/ - these are NOT
+# Python build output and must stay in version control.
 !ui/lib/
+!halallens-mobile/lib/
 lib64/
 parts/
 sdist/

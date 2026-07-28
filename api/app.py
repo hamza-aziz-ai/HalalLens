@@ -68,6 +68,25 @@ from config import (
     SUBSCRIPTION_PLAN_CODE,
     SUBSCRIPTION_PRICE_INR,
     SUBSCRIPTION_INTERVAL_DAYS,
+    RATE_LIMIT_ENABLED,
+    RATE_LIMIT_LOGIN_PER_MINUTE,
+    RATE_LIMIT_REGISTER_PER_HOUR,
+    RATE_LIMIT_PUBLIC_PER_MINUTE,
+    RATE_LIMIT_METERED_PER_MINUTE,
+    RATE_LIMIT_WRITE_PER_HOUR,
+    TRUST_PROXY_HEADERS,
+)
+from api.security import (
+    RateLimitRule,
+    SlidingWindowRateLimiter,
+    dummy_verify,
+    generate_session_token,
+    hash_password,
+    hash_session_token,
+    needs_rehash,
+    password_policy_error,
+    redact_token,
+    verify_password,
 )
 from config.logging_config import configure_logging
 from narrator import NarrationEngine, NarratorConfig, NarrationResult
@@ -313,16 +332,53 @@ _ALLOWED_ORIGIN_RE = (
 )
 
 
+SECURITY_HEADERS = {
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Referrer-Policy": "no-referrer",
+    "Cross-Origin-Opener-Policy": "same-origin",
+    "Permissions-Policy": "geolocation=(), microphone=(), camera=()",
+}
+
+
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    response = await call_next(request)
+    for header, value in SECURITY_HEADERS.items():
+        response.headers.setdefault(header, value)
+    # HSTS only makes sense once TLS terminates in front of the API (Caddy in
+    # the shipped compose stack); advertising it over plain HTTP is a footgun.
+    if request.url.scheme == "https" or (
+        TRUST_PROXY_HEADERS
+        and request.headers.get("x-forwarded-proto", "").lower() == "https"
+    ):
+        response.headers.setdefault(
+            "Strict-Transport-Security", "max-age=31536000; includeSubDomains"
+        )
+    return response
+
+
+def _origin_allowed(origin: str) -> bool:
+    """Decide whether `origin` may receive credentialed CORS headers."""
+
+    if not origin:
+        return False
+    if origin in (ALLOWED_ORIGINS or DEFAULT_ALLOWED_ORIGINS):
+        return True
+    if _ALLOWED_ORIGIN_RE is None:
+        return False
+    # fullmatch, not match: `re.match` anchors only at the start, so a pattern
+    # like `https://app\.example\.com` would happily accept
+    # `https://app.example.com.attacker.test` and, because credentials are
+    # allowed, hand that origin the caller's bearer token.
+    return bool(_ALLOWED_ORIGIN_RE.fullmatch(origin))
+
+
 @app.middleware("http")
 async def inject_cors_headers(request: Request, call_next):
     response = await call_next(request)
     origin = request.headers.get("origin")
-    if not origin:
-        return response
-    allowed = origin in (ALLOWED_ORIGINS or DEFAULT_ALLOWED_ORIGINS)
-    if not allowed and _ALLOWED_ORIGIN_RE:
-        allowed = bool(_ALLOWED_ORIGIN_RE.match(origin))
-    if not allowed:
+    if not origin or not _origin_allowed(origin):
         return response
     if "access-control-allow-origin" not in response.headers:
         response.headers["Access-Control-Allow-Origin"] = origin
@@ -441,9 +497,71 @@ narration_notifier = OpsNotifier(component="narrator")
 MARKET_ALERT_EVENTS: Deque[Dict[str, Any]] = deque(maxlen=OPS_EVENT_HISTORY)
 LLM_FAILURE_EVENTS: Deque[Dict[str, Any]] = deque(maxlen=OPS_EVENT_HISTORY)
 
+RATE_LIMITER = SlidingWindowRateLimiter()
+RATE_LIMIT_RULES: Dict[str, RateLimitRule] = {
+    "auth_login": RateLimitRule(RATE_LIMIT_LOGIN_PER_MINUTE, 60.0),
+    "auth_register": RateLimitRule(RATE_LIMIT_REGISTER_PER_HOUR, 3600.0),
+    "public_compute": RateLimitRule(RATE_LIMIT_PUBLIC_PER_MINUTE, 60.0),
+    "metered": RateLimitRule(RATE_LIMIT_METERED_PER_MINUTE, 60.0),
+    "anon_write": RateLimitRule(RATE_LIMIT_WRITE_PER_HOUR, 3600.0),
+}
+
+
+def _client_identity(request: Optional[Request]) -> str:
+    """Best-effort caller identity for rate limiting.
+
+    ``X-Forwarded-For`` is trusted only when TRUST_PROXY_HEADERS is set, because
+    a client can otherwise spoof it and mint a fresh rate-limit bucket per
+    request.
+    """
+
+    if request is None:
+        return "unknown"
+    if TRUST_PROXY_HEADERS:
+        forwarded = request.headers.get("x-forwarded-for", "")
+        if forwarded:
+            return forwarded.split(",")[0].strip() or "unknown"
+    return request.client.host if request.client else "unknown"
+
+
+def _enforce_rate_limit(bucket: str, identity: str) -> None:
+    """Raise 429 when ``identity`` has exhausted ``bucket``'s allowance."""
+
+    if not RATE_LIMIT_ENABLED:
+        return
+    rule = RATE_LIMIT_RULES.get(bucket)
+    if rule is None:
+        return
+    allowed, retry_after = RATE_LIMITER.check(bucket, identity, rule)
+    if allowed:
+        return
+    api_logger.warning("Rate limit hit bucket=%s identity=%s", bucket, identity)
+    raise HTTPException(
+        status_code=429,
+        detail="Too many requests. Please retry shortly.",
+        headers={"Retry-After": str(max(1, int(retry_after) + 1))},
+    )
+
+
+_LOG_CONTROL_RE = re.compile(r"[\r\n\x00-\x1f\x7f]")
+
+
+def _sanitize_log_text(value: Any, *, limit: int = 500) -> str:
+    """Strip control characters and clamp length before logging caller input.
+
+    Without this a client can embed newlines in a log message and inject
+    convincing fake log lines into the operator's audit trail.
+    """
+
+    text = value if isinstance(value, str) else str(value)
+    cleaned = _LOG_CONTROL_RE.sub(" ", text).strip()
+    if len(cleaned) > limit:
+        cleaned = f"{cleaned[:limit]}...[truncated]"
+    return cleaned
+
 
 def _now_iso() -> str:
-    return datetime.utcnow().replace(tzinfo=timezone.utc).isoformat()
+    return datetime.now(timezone.utc).isoformat()
 
 
 def _record_market_event(event_type: str, **payload: Any) -> None:
@@ -509,22 +627,11 @@ def _apply_admin_flag(user_row: Optional[Dict[str, Any]]) -> Optional[Dict[str, 
 
 
 def _hash_password(password: str) -> str:
-    salt = secrets.token_bytes(16)
-    derived = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, 100000)
-    return base64.b64encode(salt + derived).decode("ascii")
+    return hash_password(password)
 
 
-def _verify_password(password: str, stored_hash: str) -> bool:
-    try:
-        data = base64.b64decode(stored_hash.encode("ascii"))
-    except Exception:
-        return False
-    if len(data) < 32:
-        return False
-    salt = data[:16]
-    saved = data[16:]
-    derived = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, 100000)
-    return hmac.compare_digest(saved, derived)
+def _verify_password(password: str, stored_hash: Optional[str]) -> bool:
+    return verify_password(password, stored_hash)
 
 
 def _serialize_user_profile(row: Dict[str, Any]) -> UserProfile:
@@ -542,14 +649,18 @@ def _serialize_user_profile(row: Dict[str, Any]) -> UserProfile:
 
 
 def _issue_session(user_id: int) -> Tuple[str, datetime]:
+    """Mint a bearer token and persist only its digest."""
+
     expires_at = datetime.now(timezone.utc) + timedelta(hours=AUTH_TOKEN_TTL_HOURS)
-    token = secrets.token_urlsafe(32)
-    _get_db().create_user_session(token, user_id, expires_at)
+    token = generate_session_token()
+    _get_db().create_user_session(hash_session_token(token), user_id, expires_at)
     return token, expires_at
 
 
 def _extract_token(authorization: Optional[str]) -> Optional[str]:
-    if not authorization:
+    # Anything that is not a string (missing header, or the FastAPI Header
+    # sentinel when a handler is invoked directly) counts as "no credentials".
+    if not authorization or not isinstance(authorization, str):
         return None
     parts = authorization.strip().split(" ", 1)
     if len(parts) != 2:
@@ -561,18 +672,21 @@ def _extract_token(authorization: Optional[str]) -> Optional[str]:
 
 
 def _redact_token(token: Optional[str]) -> str:
-    if not token:
-        return "<none>"
-    if len(token) <= 8:
-        return token
-    return f"{token[:6]}...{token[-4:]}"
+    return redact_token(token)
 
 
 def _require_session(authorization: Optional[str]) -> Tuple[str, Dict[str, Any]]:
+    """Resolve the caller's session, or raise 401.
+
+    Returns the *stored* token digest so callers can revoke the session without
+    the raw token ever reaching the database layer.
+    """
+
     token = _extract_token(authorization)
     if not token:
         raise HTTPException(status_code=401, detail="Authorization token required")
-    session = _get_db().get_session(token)
+    token_hash = hash_session_token(token)
+    session = _get_db().get_session(token_hash)
     if not session:
         raise HTTPException(status_code=401, detail="Invalid session")
     expires_at = session.get("expires_at")
@@ -580,9 +694,26 @@ def _require_session(authorization: Optional[str]) -> Tuple[str, Dict[str, Any]]
         if expires_at.tzinfo is None:
             expires_at = expires_at.replace(tzinfo=timezone.utc)
         if expires_at < datetime.now(timezone.utc):
-            _get_db().delete_session(token)
+            _get_db().delete_session(token_hash)
             raise HTTPException(status_code=401, detail="Session expired")
-    return token, session
+    return token_hash, session
+
+
+def _require_admin(authorization: Optional[str], feature: str) -> Dict[str, Any]:
+    """Gate reviewer/operator surfaces behind the admin flag.
+
+    A paid subscription is not sufficient here: governance overrides rewrite the
+    AAOIFI inputs that every user's verdict is derived from, and the feedback
+    queue exposes other users' contact details.
+    """
+
+    _, session = _require_session(authorization)
+    if session.get("is_admin") or _is_admin_email(session.get("email", "")):
+        user_id = session.get("user_id")
+        if user_id and not session.get("is_admin"):
+            _get_db().set_user_admin(user_id, True)
+        return session
+    raise HTTPException(status_code=403, detail=f"{feature} requires an admin account")
 
 
 def _razorpay_enabled() -> bool:
@@ -654,19 +785,38 @@ def _normalize_redirect_base(value: str) -> str:
     return urlunsplit((parts.scheme, parts.netloc, parts.path.rstrip("/"), "", ""))
 
 
+MOBILE_REDIRECT_SCHEME = "halallens"
+
+
 def _sanitize_google_redirect(value: Optional[str]) -> Optional[str]:
+    """Allow-list the post-login redirect target.
+
+    The OAuth callback hands a bearer token to whatever URL this returns, so the
+    check compares parsed scheme+host+port. A plain ``startswith`` on the
+    frontend base would accept ``https://app.example.com.attacker.test`` and
+    leak the token to that host.
+    """
+
     if not value:
         return None
     try:
+        parts = urlsplit(value.strip())
         normalized = _normalize_redirect_base(value)
     except Exception:
         return None
-    if normalized.startswith("halallens://"):
+
+    if parts.scheme == MOBILE_REDIRECT_SCHEME:
         return normalized
-    frontend_base = (FRONTEND_BASE_URL or "").rstrip("/")
-    if frontend_base and normalized.startswith(frontend_base):
-        return normalized
-    return None
+
+    frontend_base = (FRONTEND_BASE_URL or "").strip().rstrip("/")
+    if not frontend_base:
+        return None
+    allowed = urlsplit(frontend_base)
+    if parts.scheme != allowed.scheme or parts.netloc.lower() != allowed.netloc.lower():
+        return None
+    # Same origin: keep the path so /login, /dashboard etc. still work, but the
+    # query and fragment were already stripped by _normalize_redirect_base.
+    return normalized
 
 
 def _google_state_secret() -> str:
@@ -875,12 +1025,20 @@ def _build_google_redirect(
     expires_at: datetime,
     redirect_base: Optional[str] = None,
 ) -> str:
+    """Return the post-consent redirect, passing the token in the fragment only.
+
+    Query strings land in server access logs, browser history and the Referer
+    header of any subsequent outbound request; fragments do not leave the
+    browser. The frontend reads ``location.hash``.
+    """
+
     params = urlencode({"token": token, "expires": expires_at.isoformat()})
     if redirect_base:
-        base = redirect_base.rstrip("/")
-        return f"{base}?{params}#{params}"
-    base = (FRONTEND_BASE_URL or "http://192.168.1.9:3001").rstrip("/")
-    return f"{base}/login?{params}#{params}"
+        return f"{redirect_base.rstrip('/')}#{params}"
+    base = (FRONTEND_BASE_URL or "").rstrip("/")
+    if not base:
+        raise HTTPException(status_code=500, detail="FRONTEND_BASE_URL is not configured")
+    return f"{base}/login#{params}"
 
 
 def _placeholder_password_hash() -> str:
@@ -1103,7 +1261,7 @@ def _build_indian_snapshot_record(
 ) -> Tuple[Dict[str, Any], str, str, datetime]:
     """Return a filing-style record constructed from an Indian API snapshot."""
 
-    filing_date = snapshot.end_date or datetime.utcnow().date()
+    filing_date = snapshot.end_date or datetime.now(timezone.utc).date()
     filing_dt = datetime(
         filing_date.year, filing_date.month, filing_date.day, tzinfo=timezone.utc
     )
@@ -1227,7 +1385,7 @@ def _fetch_latest_filing_from_bse(symbol: str) -> Optional[Dict[str, Any]]:
 
     fetcher = _get_realtime_fetcher()
     processor = _get_realtime_processor()
-    today = datetime.utcnow().date()
+    today = datetime.now(timezone.utc).date()
     db = _get_db()
     normalized = (symbol or "").strip().upper()
     script_code = _resolve_bse_script_code(symbol)
@@ -1323,6 +1481,15 @@ def _build_record_from_indian_api(symbol: str) -> Optional[Dict[str, Any]]:
     return None
 
 
+def _bound_cache(cache: Dict[str, Any], limit: int) -> None:
+    """Keep a plain (non-TTL) dict cache from growing without limit."""
+
+    if len(cache) < limit:
+        return
+    for key in list(cache)[: max(1, limit // 4)]:
+        cache.pop(key, None)
+
+
 def _get_symbol_metadata_cached(identifier: str) -> Optional[Dict[str, str]]:
     key = (identifier or "").strip().upper()
     if not key:
@@ -1331,6 +1498,7 @@ def _get_symbol_metadata_cached(identifier: str) -> Optional[Dict[str, str]]:
         return SYMBOL_METADATA_CACHE[key]
     metadata = _get_db().get_symbol_metadata(key)
     if metadata:
+        _bound_cache(SYMBOL_METADATA_CACHE, CACHE_MAX_ENTRIES)
         SYMBOL_METADATA_CACHE[key] = metadata
     return metadata
 
@@ -1368,10 +1536,32 @@ def _cache_get(cache: Dict[str, tuple[float, Any]], key: str) -> Optional[Any]:
     return value
 
 
+#: Ceiling for every TTL cache in this module. Keys are symbol- and
+#: pagination-derived, i.e. attacker-influenced, so an unbounded dict is a slow
+#: memory leak that ends as an OOM kill on the API container.
+CACHE_MAX_ENTRIES = int(os.getenv("CACHE_MAX_ENTRIES", "2000"))
+
+
 def _cache_set(cache: Dict[str, tuple[float, Any]], key: str, value: Any, ttl: int) -> None:
     if ttl <= 0:
         return
+    if len(cache) >= CACHE_MAX_ENTRIES and key not in cache:
+        _cache_evict(cache)
     cache[key] = (time.time() + ttl, value)
+
+
+def _cache_evict(cache: Dict[str, tuple[float, Any]]) -> None:
+    """Drop expired entries; if that frees nothing, drop the oldest quarter."""
+
+    now = time.time()
+    expired = [key for key, (expires_at, _) in cache.items() if expires_at < now]
+    for key in expired:
+        cache.pop(key, None)
+    if expired:
+        return
+    # dicts preserve insertion order, so the head is the oldest.
+    for key in list(cache)[: max(1, len(cache) // 4)]:
+        cache.pop(key, None)
 
 
 def _narration_cache_key(evaluation) -> str:
@@ -1642,6 +1832,8 @@ def _prime_symbol_metadata(
     if not key or not symbol_code:
         return
     cached = SYMBOL_METADATA_CACHE.get(key, {})
+    if key not in SYMBOL_METADATA_CACHE:
+        _bound_cache(SYMBOL_METADATA_CACHE, CACHE_MAX_ENTRIES)
     SYMBOL_METADATA_CACHE[key] = {
         "symbol": symbol_code,
         "symbol_alias": alias or cached.get("symbol_alias"),
@@ -1897,6 +2089,7 @@ def _fetch_and_cache_market_data(
                 share_price=indian_snapshot.share_price,
                 provider="indianapi",
             )
+            _bound_cache(MARKET_CACHE, CACHE_MAX_ENTRIES)
             MARKET_CACHE[key] = (
                 now,
                 (indian_snapshot.market_cap, indian_snapshot.share_price, "indianapi"),
@@ -1943,6 +2136,7 @@ def _fetch_and_cache_market_data(
             share_price=fallback_price,
             provider="bhavcopy",
         )
+        _bound_cache(MARKET_CACHE, CACHE_MAX_ENTRIES)
         MARKET_CACHE[key] = (now, (fallback_cap, fallback_price, "bhavcopy"))
         if primary_failed and as_of:
             _record_market_issue(
@@ -2211,9 +2405,16 @@ def _evaluate_request(payload: HalalScoreRequest, provider: Optional[str] = None
 
 
 @app.post("/halal-score", response_model=HalalScoreResponse)
-async def halal_score(payload: HalalScoreRequest) -> HalalScoreResponse:
-    """Compute the halal verdict for provided financial metrics."""
+async def halal_score(
+    payload: HalalScoreRequest, request: Request = None
+) -> HalalScoreResponse:
+    """Compute the halal verdict for provided financial metrics.
 
+    Open by design (it scores caller-supplied numbers and reads no stored data),
+    but throttled so it cannot be used as free compute.
+    """
+
+    _enforce_rate_limit("public_compute", _client_identity(request))
     evaluation = _evaluate_request(payload, provider=payload.market_data.provider or "manual")
 
     ratios: Dict[str, RatioComputationPayload] = {}
@@ -2238,7 +2439,8 @@ async def narrate(
 ) -> NarrationResponse:
     """Generate a plain-English explanation alongside the halal verdict."""
 
-    _require_paid_feature(authorization, "Explain-Why narratives")
+    session = _require_paid_feature(authorization, "Explain-Why narratives")
+    _enforce_rate_limit("metered", f"user:{session['user_id']}")
     evaluation = _evaluate_request(payload, provider=payload.market_data.provider or "manual")
     narration = await _build_narration_async(evaluation)
 
@@ -2299,17 +2501,26 @@ async def auth_google_callback(code: str, state: str):
     )
 
 
+EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s.]+(\.[^@\s.]+)+$")
+
+
+def _validate_email(email: str) -> str:
+    if not email or not EMAIL_RE.match(email) or len(email) > 254:
+        raise HTTPException(status_code=400, detail="Valid email required")
+    return email
+
+
 @app.post("/auth/register", response_model=AuthTokenResponse)
-async def auth_register(payload: RegisterRequest) -> AuthTokenResponse:
+async def auth_register(
+    payload: RegisterRequest, request: Request = None
+) -> AuthTokenResponse:
     """Register a new user and issue a session token."""
 
-    email = _normalize_email(payload.email)
-    if not email or "@" not in email:
-        raise HTTPException(status_code=400, detail="Valid email required")
-    if len(payload.password or "") < 8:
-        raise HTTPException(
-            status_code=400, detail="Password must be at least 8 characters"
-        )
+    _enforce_rate_limit("auth_register", _client_identity(request))
+    email = _validate_email(_normalize_email(payload.email))
+    policy_error = password_policy_error(payload.password)
+    if policy_error:
+        raise HTTPException(status_code=400, detail=policy_error)
     if _get_db().get_user_by_email(email):
         raise HTTPException(status_code=409, detail="Email already registered")
 
@@ -2326,17 +2537,38 @@ async def auth_register(payload: RegisterRequest) -> AuthTokenResponse:
 
 
 @app.post("/auth/login", response_model=AuthTokenResponse)
-async def auth_login(payload: LoginRequest) -> AuthTokenResponse:
+async def auth_login(
+    payload: LoginRequest, request: Request = None
+) -> AuthTokenResponse:
     """Authenticate an existing user."""
 
+    _enforce_rate_limit("auth_login", _client_identity(request))
     email = _normalize_email(payload.email)
     user_row = _get_db().get_user_by_email(email)
-    if not user_row or not _verify_password(payload.password, user_row["password_hash"]):
+    if not user_row:
+        # Burn equivalent CPU so response time does not reveal which addresses
+        # are registered.
+        dummy_verify(payload.password)
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+    if not _verify_password(payload.password, user_row.get("password_hash")):
+        # Deliberately checked before the provider branch: answering "use Google
+        # sign-in" to an unauthenticated caller would confirm the address exists.
         raise HTTPException(status_code=401, detail="Invalid email or password")
     if user_row.get("provider") == "google":
         raise HTTPException(
             status_code=400, detail="Use Google sign-in for this account"
         )
+
+    if needs_rehash(user_row.get("password_hash")):
+        # Transparent upgrade from the legacy 100k-iteration scheme.
+        try:
+            _get_db().update_user_password_hash(
+                user_row["id"], _hash_password(payload.password)
+            )
+        except Exception:  # pragma: no cover - upgrade is best-effort
+            api_logger.warning(
+                "Password hash upgrade failed for user id=%s", user_row["id"]
+            )
 
     user_row = _apply_admin_flag(user_row)
     _get_db().touch_user_login(user_row["id"])
@@ -2381,10 +2613,11 @@ async def client_logs(
 ) -> Dict[str, str]:
     """Collect client-side logs for debugging flows."""
 
+    _enforce_rate_limit("anon_write", _client_identity(request))
     session = None
     token = _extract_token(authorization)
     if token:
-        session = _get_db().get_session(token)
+        session = _get_db().get_session(hash_session_token(token))
     context = dict(payload.context or {})
     if payload.url:
         context["url"] = payload.url
@@ -2394,7 +2627,12 @@ async def client_logs(
     if session:
         context["user_id"] = session.get("user_id")
         context["email"] = session.get("email")
-    message = payload.message
+    # Client-controlled text must not be able to forge extra log lines.
+    message = _sanitize_log_text(payload.message, limit=500)
+    context = {
+        key: _sanitize_log_text(value, limit=200) if isinstance(value, str) else value
+        for key, value in list(context.items())[:20]
+    }
     level = payload.level.lower()
     context_payload = f" context={context}" if context else ""
     if level == "debug":
@@ -2501,6 +2739,131 @@ async def create_razorpay_order(
     )
 
 
+#: Order states that may still be converted into a paid subscription. Anything
+#: else means the order was already settled (or refunded) and must not grant a
+#: second billing period.
+RAZORPAY_CLAIMABLE_STATES = ("created", "attempted")
+
+#: Webhook events that grant access, and those that revoke it.
+RAZORPAY_GRANT_EVENTS = {"payment.captured", "order.paid"}
+RAZORPAY_REVOKE_EVENTS = {
+    "refund.processed",
+    "subscription.cancelled",
+    "subscription.halted",
+}
+
+
+def _plan_code_for_order(order: Dict[str, Any]) -> str:
+    notes = (order.get("payload") or {}).get("notes") or {}
+    return notes.get("plan_code") or SUBSCRIPTION_PLAN_CODE
+
+
+def _activate_subscription(
+    *, user_id: int, plan: Dict[str, Any], now: Optional[datetime] = None
+) -> Tuple[str, Optional[datetime]]:
+    """Grant a paid period for ``plan``. Returns ``(plan_code, renewal)``."""
+
+    moment = now or datetime.now(timezone.utc)
+    plan_code = plan["code"]
+    interval_days = int(plan.get("interval_days") or 0)
+    renewal = None if interval_days <= 0 else moment + timedelta(days=interval_days)
+    trial_days = int(plan.get("trial_days") or 0)
+    db = _get_db()
+    db.upsert_user_subscription(
+        user_id=user_id,
+        plan_code=plan_code,
+        provider="razorpay",
+        status="active",
+        current_period_start=moment,
+        current_period_end=renewal,
+        cancel_at_period_end=False,
+    )
+    db.update_user_plan(
+        user_id=user_id,
+        plan=plan_code,
+        subscription_status="active",
+        subscription_renewal=renewal,
+        plan_started_at=moment,
+        # A paid conversion consumes the free trial so it cannot be claimed
+        # again after the period lapses.
+        trial_used=True if trial_days > 0 else None,
+    )
+    return plan_code, renewal
+
+
+def _revoke_subscription(user_id: int, *, status: str = "inactive") -> None:
+    """Drop a user back to the free plan (refund, chargeback, cancellation)."""
+
+    db = _get_db()
+    db.update_user_plan(
+        user_id=user_id,
+        plan="free",
+        subscription_status=status,
+        subscription_renewal=None,
+        plan_started_at=None,
+    )
+
+
+def _settle_razorpay_order(
+    *,
+    order_id: str,
+    payment_id: Optional[str],
+    expected_user_id: Optional[int] = None,
+    event_type: str,
+    event_payload: Dict[str, Any],
+) -> Optional[Tuple[int, str, Optional[datetime]]]:
+    """Convert a paid Razorpay order into a subscription period, exactly once.
+
+    Both the browser-side verification call and the server-to-server webhook
+    funnel through here. The conditional status update acts as the claim: the
+    loser of the race gets ``None`` back and skips the grant, so a user who
+    completes checkout is never billed one period and given two - nor, if the
+    browser call is lost, given none.
+    """
+
+    db = _get_db()
+    claimed = db.update_razorpay_order_status(
+        order_id, "paid", only_if_status=RAZORPAY_CLAIMABLE_STATES
+    )
+    if claimed is None:
+        return None
+    if expected_user_id is not None and claimed.get("user_id") != expected_user_id:
+        raise HTTPException(status_code=404, detail="Order not found")
+
+    user_id = claimed["user_id"]
+    plan_code = _plan_code_for_order(claimed)
+    plan = db.get_subscription_plan(plan_code)
+    if not plan:
+        raise HTTPException(status_code=404, detail="Plan not found")
+
+    db.record_payment_event(
+        user_id=user_id,
+        provider="razorpay",
+        event_type=event_type,
+        event_id=payment_id,
+        payload=event_payload,
+    )
+    granted_plan, renewal = _activate_subscription(user_id=user_id, plan=plan)
+    api_logger.info(
+        "Subscription granted user_id=%s plan=%s order_id=%s payment_id=%s via=%s",
+        user_id,
+        granted_plan,
+        order_id,
+        payment_id,
+        event_type,
+    )
+    return user_id, granted_plan, renewal
+
+
+def _current_subscription_response(user_id: int) -> SubscriptionStatusResponse:
+    row = _get_db().get_user_by_id(user_id) or {}
+    return SubscriptionStatusResponse(
+        plan=row.get("plan", "free"),
+        subscription_status=row.get("subscription_status", "inactive"),
+        subscription_renewal=row.get("subscription_renewal"),
+    )
+
+
 @app.post("/billing/razorpay/verify", response_model=SubscriptionStatusResponse)
 async def verify_razorpay_payment(
     payload: RazorpayVerifyRequest, authorization: Optional[str] = Header(None)
@@ -2512,50 +2875,29 @@ async def verify_razorpay_payment(
         raise HTTPException(status_code=404, detail="Order not found")
     message = f"{payload.order_id}|{payload.payment_id}"
     if not _verify_razorpay_signature(message, payload.signature):
+        api_logger.warning(
+            "Razorpay signature rejected user_id=%s order_id=%s",
+            session.get("user_id"),
+            payload.order_id,
+        )
         raise HTTPException(status_code=400, detail="Invalid payment signature")
 
-    plan_code = order.get("payload", {}).get("notes", {}).get("plan_code") or SUBSCRIPTION_PLAN_CODE
-    plan = _get_db().get_subscription_plan(plan_code)
-    if not plan:
-        raise HTTPException(status_code=404, detail="Plan not found")
-
-    now = datetime.now(timezone.utc)
-    interval_days = int(plan.get("interval_days") or 0)
-    renewal = None if interval_days <= 0 else now + timedelta(days=interval_days)
-    trial_days = int(plan.get("trial_days") or 0)
-    _get_db().upsert_user_subscription(
-        user_id=session["user_id"],
-        plan_code=plan_code,
-        provider="razorpay",
-        status="active",
-        current_period_start=now,
-        current_period_end=renewal,
-        cancel_at_period_end=False,
-    )
-    _get_db().update_user_plan(
-        user_id=session["user_id"],
-        plan=plan_code,
-        subscription_status="active",
-        subscription_renewal=renewal,
-        plan_started_at=now,
-        trial_used=True if trial_days > 0 else None,
-    )
-    _get_db().record_payment_event(
-        user_id=session["user_id"],
-        provider="razorpay",
+    settled = _settle_razorpay_order(
+        order_id=payload.order_id,
+        payment_id=payload.payment_id,
+        expected_user_id=session["user_id"],
         event_type="payment.verified",
-        event_id=payload.payment_id,
-        payload={
+        event_payload={
             "order_id": payload.order_id,
             "payment_id": payload.payment_id,
         },
     )
-    api_logger.info(
-        "Razorpay payment verified user_id=%s plan=%s payment_id=%s",
-        session["user_id"],
-        plan_code,
-        payload.payment_id,
-    )
+    if settled is None:
+        # Already settled (usually the webhook landed first). Report the state
+        # the user actually has rather than granting another period.
+        return _current_subscription_response(session["user_id"])
+
+    _, plan_code, renewal = settled
     return SubscriptionStatusResponse(
         plan=plan_code,
         subscription_status="active",
@@ -2563,27 +2905,94 @@ async def verify_razorpay_payment(
     )
 
 
+@app.post("/billing/cancel", response_model=SubscriptionStatusResponse)
+async def cancel_subscription(
+    authorization: Optional[str] = Header(None),
+) -> SubscriptionStatusResponse:
+    """Stop auto-renewal; paid access continues until the period ends."""
+
+    _, session = _require_session(authorization)
+    user_id = session["user_id"]
+    row = _get_db().get_user_by_id(user_id) or {}
+    plan_code = (row.get("plan") or "free").lower()
+    status = (row.get("subscription_status") or "inactive").lower()
+    if plan_code == "free" or status not in {"active", "trialing"}:
+        raise HTTPException(status_code=409, detail="No active subscription to cancel")
+
+    renewal = row.get("subscription_renewal")
+    _get_db().upsert_user_subscription(
+        user_id=user_id,
+        plan_code=plan_code,
+        provider="razorpay",
+        status=status,
+        current_period_start=row.get("plan_started_at"),
+        current_period_end=renewal if isinstance(renewal, (date, datetime)) else None,
+        cancel_at_period_end=True,
+    )
+    api_logger.info("Subscription cancellation scheduled user_id=%s", user_id)
+    return SubscriptionStatusResponse(
+        plan=plan_code,
+        subscription_status=status,
+        subscription_renewal=renewal,
+    )
+
+
 @app.post("/webhooks/razorpay")
 async def razorpay_webhook(request: Request) -> Dict[str, str]:
+    """Authoritative billing callback.
+
+    Entitlement is granted here as well as in ``/billing/razorpay/verify``: the
+    browser call can be lost (tab closed, network drop) after money has moved,
+    and a user who paid must still get access.
+    """
+
     signature = request.headers.get("X-Razorpay-Signature")
     if not signature:
         raise HTTPException(status_code=400, detail="Missing signature")
     body = await request.body()
     if not _verify_razorpay_webhook(body, signature):
+        api_logger.warning("Razorpay webhook signature rejected")
         raise HTTPException(status_code=400, detail="Invalid signature")
 
     event = await request.json()
     event_type = event.get("event", "unknown")
-    payment_entity = (
-        event.get("payload", {})
-        .get("payment", {})
-        .get("entity", {})
-    )
-    order_id = payment_entity.get("order_id")
-    payment_id = payment_entity.get("id")
-    order = _get_db().get_razorpay_order(order_id) if order_id else None
+    entities = event.get("payload") or {}
+    payment_entity = (entities.get("payment") or {}).get("entity") or {}
+    order_entity = (entities.get("order") or {}).get("entity") or {}
+    order_id = payment_entity.get("order_id") or order_entity.get("id")
+    payment_id = payment_entity.get("id") or event.get("id")
+
+    db = _get_db()
+    order = db.get_razorpay_order(order_id) if order_id else None
     user_id = order.get("user_id") if order else None
-    _get_db().record_payment_event(
+
+    if event_type in RAZORPAY_GRANT_EVENTS and order_id:
+        settled = _settle_razorpay_order(
+            order_id=order_id,
+            payment_id=payment_id,
+            event_type=event_type,
+            event_payload=event,
+        )
+        if settled is not None:
+            return {"status": "granted"}
+        # Order already settled elsewhere; fall through to record the event.
+
+    if event_type in RAZORPAY_REVOKE_EVENTS and user_id:
+        recorded = db.record_payment_event(
+            user_id=user_id,
+            provider="razorpay",
+            event_type=event_type,
+            event_id=payment_id,
+            payload=event,
+        )
+        if recorded:
+            _revoke_subscription(user_id, status="cancelled")
+            api_logger.info(
+                "Subscription revoked user_id=%s event=%s", user_id, event_type
+            )
+        return {"status": "revoked"}
+
+    db.record_payment_event(
         user_id=user_id,
         provider="razorpay",
         event_type=event_type,
@@ -2593,22 +3002,33 @@ async def razorpay_webhook(request: Request) -> Dict[str, str]:
     return {"status": "ok"}
 
 
+def _watchlist_owner(session: Dict[str, Any]) -> str:
+    """Watchlist key derived from the session, never from the request body."""
+
+    return f"user:{session['user_id']}"
+
+
 @app.post("/watchlist", response_model=WatchlistEntryPayload)
 async def add_watchlist(
     entry: WatchlistEntryPayload,
     authorization: Optional[str] = Header(None),
 ) -> WatchlistEntryPayload:
-    """Register or update a watchlist entry."""
+    """Register or update a watchlist entry for the authenticated user."""
 
-    _require_paid_feature(authorization, "Watchlist alerts")
+    session = _require_paid_feature(authorization, "Watchlist alerts")
+    owner = _watchlist_owner(session)
     watch_storage.upsert(
         WatchEntry(
-            user_id=entry.user_id,
-            symbol=entry.symbol,
+            user_id=owner,
+            symbol=entry.symbol.strip().upper(),
             trigger=entry.trigger,
         )
     )
-    return entry
+    return WatchlistEntryPayload(
+        user_id=owner,
+        symbol=entry.symbol.strip().upper(),
+        trigger=entry.trigger,
+    )
 
 
 @app.get("/watchlist/{user_id}", response_model=List[WatchlistEntryPayload])
@@ -2616,10 +3036,16 @@ async def list_watchlist(
     user_id: str,
     authorization: Optional[str] = Header(None),
 ) -> List[WatchlistEntryPayload]:
-    """List watchlist entries for a user."""
+    """List the authenticated user's watchlist.
 
-    _require_paid_feature(authorization, "Watchlist alerts")
-    entries = watch_storage.list(user_id=user_id)
+    ``user_id`` is kept for URL compatibility but is ignored: the entries
+    returned are always the caller's own. Honouring the path parameter let any
+    subscriber enumerate every other subscriber's watchlist.
+    """
+
+    session = _require_paid_feature(authorization, "Watchlist alerts")
+    owner = _watchlist_owner(session)
+    entries = watch_storage.list(user_id=owner)
     sanitized = []
     for entry in entries:
         data = asdict(entry)
@@ -2633,9 +3059,17 @@ async def list_watchlist(
 
 
 @app.post("/alerts/check", response_model=List[AlertEventPayload])
-async def check_alerts(payload: AlertCheckPayload) -> List[AlertEventPayload]:
-    """Evaluate compliance flip alerts for a symbol."""
+async def check_alerts(
+    payload: AlertCheckPayload,
+    authorization: Optional[str] = Header(None),
+) -> List[AlertEventPayload]:
+    """Evaluate compliance flip alerts for a symbol.
 
+    Authenticated because a flip sends operator email; leaving it open turned
+    the endpoint into an unauthenticated mail trigger.
+    """
+
+    _require_paid_feature(authorization, "Watchlist alerts")
     events: List[AlertEvent] = alert_engine.process_verdict(
         payload.symbol, payload.is_compliant
     )
@@ -3016,9 +3450,19 @@ async def filing_history(
 
 
 @app.get("/market-data/{symbol}", response_model=MarketQuoteResponse)
-async def market_data(symbol: str) -> MarketQuoteResponse:
-    """Fetch market cap/share price for a symbol via the Indian market API."""
+async def market_data(
+    symbol: str,
+    authorization: Optional[str] = Header(None),
+) -> MarketQuoteResponse:
+    """Fetch market cap/share price for a symbol via the Indian market API.
 
+    Requires a session and is metered per user: a cache miss here bills a
+    request against the upstream vendor quota, so an open endpoint is a direct
+    cost-of-goods leak.
+    """
+
+    _, session = _require_session(authorization)
+    _enforce_rate_limit("metered", f"user:{session['user_id']}")
     key = symbol.strip().upper()
     now = time.time()
     cached = MARKET_CACHE.get(key)
@@ -3031,6 +3475,7 @@ async def market_data(symbol: str) -> MarketQuoteResponse:
         db_snapshot = _get_db().get_cached_market_data(key)
         if db_snapshot:
             market_cap, share_price, provider = db_snapshot
+            _bound_cache(MARKET_CACHE, CACHE_MAX_ENTRIES)
             MARKET_CACHE[key] = (now, db_snapshot)
         else:
             market_cap, share_price, provider = _fetch_and_cache_market_data(symbol)
@@ -3041,17 +3486,27 @@ async def market_data(symbol: str) -> MarketQuoteResponse:
 
 
 @app.get("/ingestion/stats")
-async def ingestion_stats() -> Dict[str, Any]:
-    """Fetch counts for announcements and financial snapshots."""
+async def ingestion_stats(
+    authorization: Optional[str] = Header(None),
+) -> Dict[str, Any]:
+    """Fetch counts for announcements and financial snapshots (operators only)."""
 
+    _require_admin(authorization, "Ingestion stats")
     stats = _get_db().get_database_stats()
     return stats
 
 
 @app.get("/ops/metrics")
-async def ops_metrics() -> Dict[str, Any]:
-    """Expose summarized ingestion + reliability metrics for dashboards."""
+async def ops_metrics(
+    authorization: Optional[str] = Header(None),
+) -> Dict[str, Any]:
+    """Expose summarized ingestion + reliability metrics for dashboards.
 
+    Operator-only: the payload names failing symbols, upstream providers and
+    LLM error strings, which is internal reliability detail.
+    """
+
+    _require_admin(authorization, "Ops metrics")
     ingestion_summary = summarize_ingestion_metrics(INGESTION_METRICS_PATH)
     return {
         "ingestion": ingestion_summary,
@@ -3068,9 +3523,12 @@ async def ops_metrics() -> Dict[str, Any]:
 
 
 @app.post("/feedback", response_model=FeedbackSubmissionResponse, status_code=201)
-async def submit_feedback(payload: FeedbackPayload) -> FeedbackSubmissionResponse:
+async def submit_feedback(
+    payload: FeedbackPayload, request: Request = None
+) -> FeedbackSubmissionResponse:
     """Store user feedback about a filing or verdict."""
 
+    _enforce_rate_limit("anon_write", _client_identity(request))
     message = payload.message.strip()
     if not message:
         raise HTTPException(status_code=400, detail="Feedback message is required")
@@ -3125,10 +3583,16 @@ def _parse_path_datetime(value: str) -> datetime:
 
 @app.get("/feedback", response_model=List[FeedbackReportResponse])
 async def list_feedback(
-    status: Optional[str] = None, limit: int = 50
+    status: Optional[str] = None,
+    limit: int = 50,
+    authorization: Optional[str] = Header(None),
 ) -> List[FeedbackReportResponse]:
-    """List feedback reports for reviewers."""
+    """List feedback reports for reviewers.
 
+    Admin-only: rows carry the reporter's free-text contact details.
+    """
+
+    _require_admin(authorization, "Feedback queue")
     normalized = status.lower() if status else None
     if normalized and normalized not in FEEDBACK_STATUSES:
         raise HTTPException(status_code=400, detail="Invalid feedback status filter")
@@ -3142,15 +3606,20 @@ async def list_feedback(
 
 @app.patch("/feedback/{feedback_id}", response_model=FeedbackReportResponse)
 async def update_feedback(
-    feedback_id: int, payload: FeedbackUpdatePayload
+    feedback_id: int,
+    payload: FeedbackUpdatePayload,
+    authorization: Optional[str] = Header(None),
 ) -> FeedbackReportResponse:
     """Update a feedback report (resolve/reopen, add reviewer notes)."""
 
+    session = _require_admin(authorization, "Feedback triage")
     status = payload.status.lower()
     if status not in FEEDBACK_STATUSES:
         raise HTTPException(status_code=400, detail="Invalid feedback status")
 
-    reviewer = payload.reviewer or "dashboard"
+    # Attribute the action to the authenticated reviewer rather than to a
+    # self-declared name in the request body.
+    reviewer = session.get("email") or payload.reviewer or "dashboard"
     row = _get_db().update_feedback_report(
         feedback_id,
         status=status,
@@ -3177,9 +3646,17 @@ async def update_feedback(
 
 
 @app.get("/feedback/{feedback_id}/events", response_model=List[FeedbackEventResponse])
-async def feedback_events(feedback_id: int) -> List[FeedbackEventResponse]:
-    """Return audit history for reviewers."""
+async def feedback_events(
+    feedback_id: int,
+    authorization: Optional[str] = Header(None),
+) -> List[FeedbackEventResponse]:
+    """Return audit history for reviewers.
 
+    Requesters use ``GET /feedback/status/{token}`` instead, which is scoped to
+    their own ticket by an unguessable token.
+    """
+
+    _require_admin(authorization, "Feedback audit trail")
     rows = _get_db().get_feedback_events(feedback_id)
     return [FeedbackEventResponse(**row) for row in rows]
 
@@ -3223,7 +3700,7 @@ async def governance_review(
 ) -> GovernanceReviewResponse:
     """Provide a reviewer-friendly comparison of governance metrics."""
 
-    _require_paid_feature(authorization, "Governance overrides")
+    _require_admin(authorization, "Governance review")
     normalized_symbol = symbol.strip().upper()
     date_only = bool(re.fullmatch(r"\d{4}-\d{2}-\d{2}", filing_date.strip()))
     parsed_date = _parse_path_datetime(filing_date)
@@ -3302,7 +3779,7 @@ async def list_governance_overrides(
 ) -> List[GovernanceOverrideResponse]:
     """List governance overrides applied to filings."""
 
-    _require_paid_feature(authorization, "Governance overrides")
+    _require_admin(authorization, "Governance overrides")
     rows = _get_db().list_governance_overrides(symbol=symbol, limit=max(1, min(limit, 200)))
     return [GovernanceOverrideResponse(**row) for row in rows]
 
@@ -3312,9 +3789,14 @@ async def upsert_governance_override(
     payload: GovernanceOverridePayload,
     authorization: Optional[str] = Header(None),
 ) -> GovernanceOverrideResponse:
-    """Create or update a governance override entry."""
+    """Create or update a governance override entry.
 
-    _require_paid_feature(authorization, "Governance overrides")
+    Admin-only. An override rewrites the AAOIFI inputs used for *every* user's
+    verdict on that filing, so it is a data-integrity operation, not a paid
+    feature.
+    """
+
+    session = _require_admin(authorization, "Governance overrides")
     if not any(
         [
             payload.accounts_receivable is not None,
@@ -3328,6 +3810,7 @@ async def upsert_governance_override(
             detail="Provide at least one metric to override.",
         )
 
+    reviewer = session.get("email") or payload.reviewer
     row = _get_db().upsert_governance_override(
         symbol=payload.symbol,
         filing_date=payload.filing_date,
@@ -3335,15 +3818,21 @@ async def upsert_governance_override(
         liquid_assets=payload.liquid_assets,
         non_halal_income=payload.non_halal_income,
         governance_notes=payload.governance_notes,
-        reviewer=payload.reviewer,
+        reviewer=reviewer,
         reason=payload.reason,
         source=payload.source or "manual",
+    )
+    api_logger.info(
+        "Governance override applied symbol=%s filing_date=%s reviewer=%s",
+        payload.symbol,
+        payload.filing_date,
+        reviewer,
     )
     reeval_note = _trigger_feedback_reevaluation(payload.symbol, payload.filing_date)
     _auto_reevaluate_feedback_reports(
         payload.symbol,
         payload.filing_date,
-        payload.reviewer,
+        reviewer,
         reeval_note,
     )
     return GovernanceOverrideResponse(**row)
@@ -3357,7 +3846,7 @@ async def delete_governance_override(
 ) -> None:
     """Remove an override (switch back to raw extracted metrics)."""
 
-    _require_paid_feature(authorization, "Governance overrides")
+    _require_admin(authorization, "Governance overrides")
     parsed_date = _parse_path_datetime(filing_date)
     deleted = _get_db().delete_governance_override(symbol, parsed_date)
     if not deleted:

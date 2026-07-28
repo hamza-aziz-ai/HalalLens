@@ -53,8 +53,26 @@ def paid_access(monkeypatch):
         "_require_paid_feature",
         lambda authorization, feature: {
             "user_id": 1,
+            "email": "subscriber@example.com",
             "plan": "starter",
             "subscription_status": "active",
+        },
+    )
+
+
+@pytest.fixture()
+def admin_access(monkeypatch):
+    """Stand in for an authenticated operator on admin-gated routes."""
+
+    monkeypatch.setattr(
+        api_module,
+        "_require_admin",
+        lambda authorization, feature: {
+            "user_id": 99,
+            "email": "ops@example.com",
+            "plan": "starter",
+            "subscription_status": "active",
+            "is_admin": True,
         },
     )
 
@@ -91,18 +109,21 @@ def isolated_watch_storage(tmp_path):
 
 
 def test_watchlist_and_alert_handlers(isolated_watch_storage, paid_access):
+    # The client-supplied user_id is deliberately someone else's: the handler
+    # must ignore it and key the entry off the authenticated session instead.
     entry = WatchlistEntryPayload(
-        user_id="user-1",
+        user_id="victim-user",
         symbol="INFY",
         trigger="compliance_flip",
     )
 
     stored = _run(api_module.add_watchlist(entry))
-    assert stored.user_id == "user-1"
+    assert stored.user_id == "user:1"
 
-    items = _run(api_module.list_watchlist("user-1"))
+    items = _run(api_module.list_watchlist("victim-user"))
     assert len(items) == 1
     assert items[0].symbol == "INFY"
+    assert items[0].user_id == "user:1"
 
     empty_events = _run(
         api_module.check_alerts(AlertCheckPayload(symbol="INFY", is_compliant=True))
@@ -276,7 +297,7 @@ def test_google_callback_creates_session(monkeypatch):
     )
 
     api_module.GOOGLE_STATE_CACHE.clear()
-    api_module._store_google_state("static-state")
+    api_module._store_google_state("static-state", None)
 
     monkeypatch.setattr(
         api_module, "_exchange_google_code", lambda code: {"access_token": "token"}
@@ -606,7 +627,7 @@ class HistoryDBStub:
         return None
 
 
-def test_feedback_queue_endpoints(monkeypatch):
+def test_feedback_queue_endpoints(monkeypatch, admin_access):
     db = FeedbackDBStub()
     monkeypatch.setattr(api_module, "DB_MANAGER", db)
 
@@ -663,7 +684,7 @@ def test_feedback_public_status(monkeypatch):
     assert len(response.events) >= 1
 
 
-def test_feedback_events_endpoint(monkeypatch):
+def test_feedback_events_endpoint(monkeypatch, admin_access):
     db = FeedbackDBStub()
     monkeypatch.setattr(api_module, "DB_MANAGER", db)
     events = _run(api_module.feedback_events(1))
@@ -749,7 +770,7 @@ def test_filing_detail_respects_governance_overrides(monkeypatch):
     assert "debt_to_market_cap" in result.ratios
 
 
-def test_governance_override_endpoints(monkeypatch, paid_access):
+def test_governance_override_endpoints(monkeypatch, admin_access):
     db = GovernanceOverrideDBStub()
     monkeypatch.setattr(api_module, "DB_MANAGER", db)
     filing_date = datetime(2024, 6, 30, tzinfo=timezone.utc)
@@ -789,7 +810,7 @@ def test_filing_history_endpoint(monkeypatch, paid_access):
     assert response.next_cursor is None
 
 
-def test_governance_review_endpoint(monkeypatch, paid_access):
+def test_governance_review_endpoint(monkeypatch, admin_access):
     db = HistoryDBStub()
     monkeypatch.setattr(api_module, "DB_MANAGER", db)
 
@@ -821,7 +842,7 @@ def test_governance_review_endpoint(monkeypatch, paid_access):
     assert "accounts_receivable" in response.differences
 
 
-def test_filing_history_pagination_cursor(monkeypatch):
+def test_filing_history_pagination_cursor(monkeypatch, paid_access):
     db = HistoryDBStub()
     monkeypatch.setattr(api_module, "DB_MANAGER", db)
     cursor = datetime(2024, 6, 30, tzinfo=timezone.utc).isoformat()
@@ -829,7 +850,7 @@ def test_filing_history_pagination_cursor(monkeypatch):
     assert db.last_history_cursor == datetime(2024, 6, 30, tzinfo=timezone.utc)
 
 
-def test_filing_history_falls_back_to_indian_api(monkeypatch):
+def test_filing_history_falls_back_to_indian_api(monkeypatch, paid_access):
     db = HistoryDBStub()
     db.history = []
     monkeypatch.setattr(api_module, "DB_MANAGER", db)
@@ -1123,7 +1144,7 @@ def test_reset_provider_failure(monkeypatch):
     assert captured == []
 
 
-def test_ops_metrics_endpoint(monkeypatch, tmp_path):
+def test_ops_metrics_endpoint(monkeypatch, tmp_path, admin_access):
     metrics_file = tmp_path / "ingestion.jsonl"
     metrics_file.write_text(
         json.dumps(

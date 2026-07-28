@@ -86,7 +86,7 @@ def _ingest_symbol(db: BSEDatabaseManager, symbol: str) -> bool:
     symbol_code = snapshot.bse_code or snapshot.nse_code or snapshot.symbol
     alias = snapshot.nse_code or snapshot.symbol
     company = snapshot.company_name or alias or symbol_code
-    filing_date = snapshot.end_date or datetime.utcnow().date()
+    filing_date = snapshot.end_date or datetime.now(timezone.utc).date()
     filing_dt = datetime(
         filing_date.year,
         filing_date.month,

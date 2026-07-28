@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import argparse
 import logging
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -32,7 +32,7 @@ def _determine_range(
         if start > end:
             raise argparse.ArgumentTypeError("from-date cannot be after to-date")
         return start, end
-    today = datetime.utcnow().date()
+    today = datetime.now(timezone.utc).date()
     lookback = max(1, lookback_days)
     computed_start = today - timedelta(days=lookback)
     return computed_start, today

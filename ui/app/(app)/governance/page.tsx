@@ -14,7 +14,7 @@ import {
 import { GovernanceReviewPanel } from "@/components/governance-review";
 import { useAuth } from "@/providers/AuthProvider";
 import { useTheme } from "@/providers/ThemeProvider";
-import { hasPaidAccess as hasPaidAccessForUser } from "@/lib/subscription";
+import { hasGovernanceAccess } from "@/lib/subscription";
 
 const defaultOverrideForm = {
   accounts_receivable: "",
@@ -39,7 +39,9 @@ function parseOverrideNumber(value: string) {
 export default function GovernancePage() {
   const { theme } = useTheme();
   const { user } = useAuth();
-  const hasPaidAccess = hasPaidAccessForUser(user);
+  // Named hasPaidAccess throughout this page for historical reasons; the API
+  // now requires an admin account for every governance route.
+  const hasPaidAccess = hasGovernanceAccess(user);
 
   const [symbol, setSymbol] = useState("");
   const [selectedFiling, setSelectedFiling] = useState<Filing | null>(null);
