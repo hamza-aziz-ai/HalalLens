@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
@@ -154,7 +154,7 @@ def evaluate_snapshots(
 
 def write_output(records: List[Dict], output_path: Optional[Path]) -> Path:
     if not output_path:
-        ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         output_path = Path("cache") / f"ratio_evaluations_{ts}.json"
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with output_path.open("w") as handle:

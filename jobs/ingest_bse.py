@@ -6,7 +6,7 @@ from __future__ import annotations
 import argparse
 import logging
 from dataclasses import asdict
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from collections import defaultdict
@@ -60,7 +60,7 @@ def _normalize_bse_date(date_str: str) -> str:
 def parse_args() -> argparse.Namespace:
     """Parse CLI arguments for the ingestion job."""
 
-    today = datetime.utcnow().date()
+    today = datetime.now(timezone.utc).date()
     default_start = (today - timedelta(days=1)).strftime("%Y%m%d")
     default_end = today.strftime("%Y%m%d")
 
@@ -514,7 +514,7 @@ def run_ingestion(
 ) -> Dict[str, int]:
     """Programmatic entry point for running BSE ingestion."""
 
-    today = datetime.utcnow().date()
+    today = datetime.now(timezone.utc).date()
     default_start = (today - timedelta(days=1)).strftime("%Y%m%d")
     default_end = today.strftime("%Y%m%d")
 

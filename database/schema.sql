@@ -184,6 +184,7 @@ CREATE TABLE IF NOT EXISTS users (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- token holds a SHA-256 hex digest of the bearer token, never the raw token.
 CREATE TABLE IF NOT EXISTS user_sessions (
     token TEXT PRIMARY KEY,
     user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -194,6 +195,7 @@ CREATE TABLE IF NOT EXISTS user_sessions (
 CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
 CREATE INDEX IF NOT EXISTS idx_users_google_sub ON users(google_sub);
 CREATE INDEX IF NOT EXISTS idx_user_sessions_user ON user_sessions(user_id);
+CREATE INDEX IF NOT EXISTS idx_user_sessions_expires_at ON user_sessions(expires_at);
 
 CREATE TABLE IF NOT EXISTS subscription_plans (
     code TEXT PRIMARY KEY,
@@ -243,6 +245,11 @@ CREATE TABLE IF NOT EXISTS payment_events (
     payload JSONB NOT NULL DEFAULT '{}'::jsonb,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- Idempotency guard: a replayed webhook or double-submitted verification must
+-- not be able to grant the same subscription period twice.
+CREATE UNIQUE INDEX IF NOT EXISTS payment_events_provider_event_key
+    ON payment_events (provider, event_id);
 
 INSERT INTO subscription_plans (code, name, price_inr, interval_days, trial_days, features)
 VALUES (

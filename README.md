@@ -77,7 +77,15 @@ psql halallens_dev -f database/migrations/20241219_feedback_status.sql
 psql halallens_dev -f database/migrations/20241220_governance_overrides.sql
 # Feedback tracking tokens + re-evaluation metadata
 psql halallens_dev -f database/migrations/20241221_feedback_tracking.sql
+# Session-token hashing + payment idempotency (see "Security model" below)
+psql halallens_dev -f database/migrations/20260728_security_hardening.sql
 ```
+
+> **Heads-up on `20260728_security_hardening.sql`:** it clears `user_sessions`,
+> because tokens are now stored as SHA-256 digests rather than in plaintext.
+> Everyone signs in again once after deployment. It also adds a unique index on
+> `payment_events (provider, event_id)`; if you have duplicate rows from replayed
+> webhooks the migration collapses them first.
 
 > **Heads-up:** if you are pointing the app at an established Postgres instance, run the migration file above (or apply the equivalent `ALTER TABLE financial_snapshots ...` statements) before restarting the API. Without the `accounts_receivable`, `liquid_assets`, `non_halal_income`, and `governance_notes` columns, `/filings/recent` will fail as soon as the backend starts selecting the AAOIFI fields.
 >
@@ -101,10 +109,63 @@ pipenv run uvicorn api.app:app --reload --port 8001
 - `GET /feedback` - reviewer list endpoint (filter by status/limit)
 - `PATCH /feedback/{id}` - update status, reviewer, and notes
 - `GET /feedback/status/{token}` - requester view: track ticket status + audit trail
-- `GET /governance/overrides` - list manual overrides applied to AAOIFI metrics
-- `PUT /governance/overrides` - create/update an override for a filing
-- `DELETE /governance/overrides/{symbol}/{filing_date}` - remove an override (reverts to extracted values)
+- `GET /governance/overrides` - list manual overrides applied to AAOIFI metrics **(admin)**
+- `PUT /governance/overrides` - create/update an override for a filing **(admin)**
+- `DELETE /governance/overrides/{symbol}/{filing_date}` - remove an override (reverts to extracted values) **(admin)**
+- `POST /billing/cancel` - stop auto-renewal; paid access runs to the end of the period
 - `tools/metrics_inspector.py` - summarize `logs/metrics/ingestion_metrics.jsonl` (success/failure counts, durations). Helpful for quick CLI dashboards or feeding Promtail/Grafana.
+
+### Security model
+
+| Tier | Who | Routes |
+| ---- | --- | ------ |
+| **Public** | anyone (rate limited per IP) | `/health`, `/halal-score`, `/filings/recent`, `POST /feedback`, `GET /feedback/status/{token}`, `/billing/plans`, `/auth/*`, `/webhooks/razorpay` |
+| **Authenticated** | any signed-in user | `/auth/me`, `/auth/logout`, `/market-data/{symbol}`, `/billing/trial`, `/billing/razorpay/*`, `/billing/cancel` |
+| **Paid** | active or trialing subscription | `/narrate`, `/watchlist*`, `/alerts/check`, `/filings/{symbol}/history`, `/filings/{symbol}?refresh=true` |
+| **Admin** | `is_admin`, seeded from `ADMIN_EMAILS` | `GET/PATCH /feedback`, `/feedback/{id}/events`, `/governance/*`, `/ingestion/stats`, `/ops/metrics` |
+
+Notes on the boundaries:
+
+- **Governance overrides are admin-only, not a paid feature.** An override rewrites
+  the AAOIFI inputs behind *every* user's verdict for that filing, so it is a
+  data-integrity operation. The reviewer recorded on an override and on feedback
+  triage comes from the session, not from the request body.
+- **Watchlists are keyed off the session**, not off the `user_id` in the path or
+  body. The path parameter on `GET /watchlist/{user_id}` is retained only for URL
+  compatibility and is ignored.
+- **`/market-data` requires a session** because a cache miss spends the upstream
+  vendor quota.
+- **Session tokens are stored as SHA-256 digests.** A database dump cannot be
+  replayed against the API.
+- **Passwords** use PBKDF2-HMAC-SHA256 at 600k iterations, with a versioned hash
+  string. Accounts created under the old 100k scheme are re-hashed transparently
+  on their next successful login.
+- **Google SSO returns the token in the URL fragment only** (never the query
+  string, which would land in access logs and `Referer` headers), and the
+  post-login redirect must match `FRONTEND_BASE_URL`'s exact scheme and host, or
+  use the `halallens://` mobile scheme.
+
+Rate limits (per worker process - see the caveat below):
+
+```env
+RATE_LIMIT_ENABLED=true
+RATE_LIMIT_LOGIN_PER_MINUTE=10       # per IP
+RATE_LIMIT_REGISTER_PER_HOUR=5       # per IP, also throttles trial farming
+RATE_LIMIT_PUBLIC_PER_MINUTE=60      # per IP, /halal-score
+RATE_LIMIT_METERED_PER_MINUTE=30     # per user, /narrate + /market-data
+RATE_LIMIT_WRITE_PER_HOUR=30         # per IP, /feedback + /client-logs
+TRUST_PROXY_HEADERS=false            # set true only behind Caddy/your own proxy
+ALLOWED_ORIGIN_REGEX=                # opt-in; matched with fullmatch, not a prefix
+```
+
+> **Caveat:** the limiter keeps its counters in process memory, so running
+> `uvicorn --workers N` multiplies every limit by `N`, and the counters reset on
+> restart. That is acceptable for the pilot; move `SlidingWindowRateLimiter` in
+> `api/security.py` onto Redis before scaling out horizontally.
+>
+> `TRUST_PROXY_HEADERS` gates whether `X-Forwarded-For` is believed for rate-limit
+> identity. Leave it off unless a proxy you control strips client-supplied values,
+> otherwise a caller can mint a fresh bucket per request.
 
 ### Tests
 

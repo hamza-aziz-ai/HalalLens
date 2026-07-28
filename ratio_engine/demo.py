@@ -3,7 +3,7 @@
 Minimal demonstration for the RatioEngine.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 from ratio_engine import (
     FinancialSnapshotInput,
@@ -18,7 +18,7 @@ def main():
 
     snapshot = FinancialSnapshotInput(
         symbol="TEST",
-        filing_date=datetime.utcnow(),
+        filing_date=datetime.now(timezone.utc),
         total_debt=5_000_000,
         cash_equiv=2_000_000,
         revenue=50_000_000,

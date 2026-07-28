@@ -32,6 +32,12 @@ def _as_list(value: str | None) -> list[str]:
     return [item.strip().lower() for item in value.split(",") if item.strip()]
 
 
+def _as_bool(value: str | None, default: bool) -> bool:
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 POSTGRES_HOST = os.getenv("POSTGRES_HOST", "192.168.1.9")
 POSTGRES_PORT = _as_int(os.getenv("POSTGRES_PORT"), 5432)
 POSTGRES_DB = os.getenv("POSTGRES_DB", "Halal-Lens")
@@ -112,6 +118,25 @@ ALLOWED_ORIGINS = [
     for origin in os.getenv("ALLOWED_ORIGINS", "").split(",")
     if origin.strip()
 ]
-ALLOWED_ORIGIN_REGEX = os.getenv(
-    "ALLOWED_ORIGIN_REGEX", r"http://192\.168\.1\.9:\d+"
-)
+# Opt-in only. A default regex here would be applied in production too, and any
+# pattern loose enough to be a useful default (e.g. a bare LAN prefix) also
+# matches attacker-controlled origins such as http://192.168.1.9:3000.evil.com.
+ALLOWED_ORIGIN_REGEX = os.getenv("ALLOWED_ORIGIN_REGEX", "").strip()
+
+# ---------------------------------------------------------------------------
+# Rate limiting (see api/security.py). Limits are per worker process.
+# ---------------------------------------------------------------------------
+RATE_LIMIT_ENABLED = _as_bool(os.getenv("RATE_LIMIT_ENABLED"), True)
+#: Failed-or-successful sign-in attempts allowed per IP per window.
+RATE_LIMIT_LOGIN_PER_MINUTE = _as_int(os.getenv("RATE_LIMIT_LOGIN_PER_MINUTE"), 10)
+#: Registrations allowed per IP per hour (throttles trial farming).
+RATE_LIMIT_REGISTER_PER_HOUR = _as_int(os.getenv("RATE_LIMIT_REGISTER_PER_HOUR"), 5)
+#: Compute-bound public endpoints (/halal-score) per IP per minute.
+RATE_LIMIT_PUBLIC_PER_MINUTE = _as_int(os.getenv("RATE_LIMIT_PUBLIC_PER_MINUTE"), 60)
+#: Endpoints that hit a metered upstream or an LLM, per authenticated user.
+RATE_LIMIT_METERED_PER_MINUTE = _as_int(os.getenv("RATE_LIMIT_METERED_PER_MINUTE"), 30)
+#: Anonymous write endpoints (/feedback, /client-logs) per IP per hour.
+RATE_LIMIT_WRITE_PER_HOUR = _as_int(os.getenv("RATE_LIMIT_WRITE_PER_HOUR"), 30)
+#: Trusted reverse proxies are terminated by Caddy in the shipped compose stack,
+#: so X-Forwarded-For is only honoured when this is enabled.
+TRUST_PROXY_HEADERS = _as_bool(os.getenv("TRUST_PROXY_HEADERS"), False)

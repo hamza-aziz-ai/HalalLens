@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import argparse
 import logging
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterator, Optional
 
@@ -31,7 +31,7 @@ def _generate_days(start: date, end: date) -> Iterator[date]:
 
 
 def parse_args() -> argparse.Namespace:
-    today = datetime.utcnow().date()
+    today = datetime.now(timezone.utc).date()
     parser = argparse.ArgumentParser(description="Ingest official NSE/BSE bhavcopy market data.")
     parser.add_argument("--from-date", default=today.strftime("%Y%m%d"), type=_parse_date)
     parser.add_argument("--to-date", default=today.strftime("%Y%m%d"), type=_parse_date)

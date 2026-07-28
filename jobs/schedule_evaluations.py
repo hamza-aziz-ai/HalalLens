@@ -100,7 +100,7 @@ def main() -> None:
             )
         finally:
             _record_heartbeat()
-        due = datetime.datetime.utcnow() + datetime.timedelta(minutes=SLEEP_MINUTES)
+        due = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(minutes=SLEEP_MINUTES)
         logger.info("Next run scheduled at ~%s UTC", due.isoformat())
         time.sleep(SLEEP_MINUTES * 60)
 

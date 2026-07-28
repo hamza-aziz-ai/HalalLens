@@ -34,13 +34,21 @@ export default function DashboardPage() {
       })
       .catch((err) => setFilingError(err.message ?? "Unable to load filings."));
 
+    // Ingestion stats are an operator surface; non-admins get 403 from the API,
+    // so don't render a scary error for them.
+    if (!user?.is_admin) {
+      setStats(null);
+      setStatsError(null);
+      return;
+    }
+
     fetchIngestionStats()
       .then((data) => {
         setStats(data);
         setStatsError(null);
       })
       .catch((err) => setStatsError(err.message ?? "Unable to load stats."));
-  }, []);
+  }, [user?.is_admin]);
 
   return (
     <main className="space-y-10">
