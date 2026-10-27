@@ -6,19 +6,11 @@ url = "https://pypi.org/simple"
 verify_ssl = true
 name = "pip_conf_index_global"
 
-[[source]]
-url = "https://download.pytorch.org/whl/cu130"
-verify_ssl = true
-name = "downloadpytorch"
-
 [packages]
-firecrawl-py = "*"
 psycopg2-binary = "*"
-bs4 = "*"
 requests = "*"
 python-dotenv = "*"
 cloudscraper = "*"
-playwright = "*"
 fake-useragent = "*"
 lxml = "*"
 minio = "*"
@@ -27,19 +19,14 @@ camelot-py = "*"
 # Imported directly by etl/financial_data_processor.py. camelot-py no longer
 # pulls it in transitively, so without this the API fails to import at startup.
 pdfminer-six = "*"
-ghostscript = "*"
 uvicorn = "*"
 fastapi = "*"
-pytest = "*"
-pandas-stubs = "*"
-langchain = "*"
-ollama = "*"
-langchain-ollama = "*"
-torch = {version = "*", index = "downloadpytorch"}
 
 [dev-packages]
 pytest = "*"
+pandas-stubs = "*"
 
+# Minor version only: pinning a patch release (python_full_version) makes
+# `pipenv install --deploy` abort as soon as python:3.14-slim moves on.
 [requires]
 python_version = "3.14"
-python_full_version = "3.14.6"

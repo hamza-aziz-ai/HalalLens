@@ -1,6 +1,7 @@
 .git
 .gitignore
-__pycache__/
+.github/
+**/__pycache__/
 .pytest_cache/
 .mypy_cache/
 *.pyo
@@ -8,12 +9,29 @@ __pycache__/
 .DS_Store
 cache/
 downloads/
-node_modules/
+logs/
+logs_runtime/
+# Patterns are root-relative: ** is needed to match ui/node_modules, which
+# would otherwise overwrite the container's `npm ci` result on `COPY ui/`.
+**/node_modules/
 ui/.next/
 ui/out/
 ui/.env.local
 .env
+.env.*
+!.env.example
+*.pem
+*.key
 .venv/
 pipenv/
 *.sqlite
-logs_runtime/
+# Dev tooling and docs: not needed at runtime.
+.claude/
+.agents/
+.codex/
+graphify-out/
+halallens-mobile/
+Documentations/
+AGENTS.md
+CLAUDE.md
+skills-lock.json
