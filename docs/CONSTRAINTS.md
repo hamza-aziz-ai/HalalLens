@@ -5,7 +5,7 @@ Hard rules for people and AI sessions. If a task needs to break one, **stop and 
 ## Never
 - Derive a verdict anywhere except `RatioEngine._aggregate_verdict`. No `if is_compliant` truthiness on a nullable value.
 - Treat `insufficient-data` / `null` as `non-compliant`, or an unknown amount as zero.
-- Turn an LLM's text into a Shariah label or explanation on a screening path.
+- Let LLM text replace the engine's label, or present it without the AI-generated caveat. LLM prose is best-effort; only the rule-based narrator is guaranteed consistent with the verdict.
 - Commit or print secrets, keys, `.env`, or CSVs of keys. Never paste the Razorpay secret anywhere.
 - Store or log raw session tokens (SHA-256 digests only; use `redact_token`).
 - Force-push or rewrite history on `main` (owner bypass is for hotfixes only).

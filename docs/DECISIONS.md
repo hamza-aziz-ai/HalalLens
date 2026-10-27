@@ -26,12 +26,11 @@ Why:      Boundary cases are the ones users care about. 1500 digits holds any su
 Trade-off: Adapters still reduce values to float; integer exactness is engine-local only.
 Revisit if: inputs ever arrive as arbitrary-precision decimals.
 
-## D-004: LLM narration is bypassed on screening paths
+## D-004: LLM narration bypassed on screening paths  (SUPERSEDED by D-010)
+Date: 2026-10-27   Model: Claude Sonnet 5.5 + Codex review
 Context:  A model can echo the right status while its prose says the opposite; no keyword filter closes that (Codex produced counterexamples).
-Chosen:   `NarrationEngine` always returns the rule-based narration; LLM code stays in `narrator/llm.py`; one warning if `NARRATOR_MODE=llm`.
-Why:      The Shariah label and its explanation must not contradict.
-Trade-off: The advertised "optional LLM mode" no longer works.
-Revisit if: a structured, per-claim check against the ratio facts exists.
+Chosen (then): `NarrationEngine` always returned the rule-based narration; LLM code kept.
+Why superseded: the bypass removed an advertised feature without the maintainer deciding it. See D-010.
 
 ## D-005: One shared `coerce_amount` for untrusted numbers
 Chosen:   `ratio_engine/amounts.py`; bool, NaN/inf and underflowing strings become unknown, exact zeros stay zero. API, jobs, ETL, vendor mapper and cache runner delegate to it.
@@ -54,3 +53,13 @@ Chosen:   `python_version = "3.14"`; hashes in `Pipfile.lock` still pin every de
 ## D-009: Remove unused heavy dependencies
 Chosen:   Dropped torch (CUDA index), langchain*, ollama, playwright, firecrawl-py, ghostscript, bs4 (nothing imports them); pytest/pandas-stubs moved to dev.
 Why:      CI time, image size, attack surface. Camelot 2.0.0 needs only `pypdfium2`.
+
+## D-010: Restore the optional LLM mode with a best-effort guard
+Date: 2026-10-27   Model: Claude Sonnet 5.5
+Context:  The maintainer reviewed D-004 and chose to keep the LLM mode, accepting weaker consistency. Codex had said this is acceptable only under an explicit, weaker contract.
+Options:  1) keep it bypassed  2) restore with a guard, UI caveat and honest docs  3) LLM only for non-decisive commentary.
+Chosen:   2 (maintainer's decision).
+Why:      The mode is advertised and opt-in (`NARRATOR_MODE=llm`, default `rule_based`); the engine verdict and the badge stay authoritative.
+How:      The model is asked only about `compliant` / `non-compliant`; it must repeat the verdict in `screen_verdict`; summary/verdict/bullets pass a keyword check; the label shown is the engine's; any doubt or error falls back to rule-based; `insufficient-data` never reaches the model; the UI shows an AI-generated caveat.
+Trade-off: Not a guarantee. A paraphrase the word lists miss can still contradict the verdict (a test documents that ceiling).
+Revisit if: a user is shown contradicting text, or a structured per-claim validation against the ratio facts is built (then the caveat can go).

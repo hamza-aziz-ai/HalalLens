@@ -7,7 +7,7 @@ What we turned down, why, and what would change our mind. Decisions that chose b
 | Verdict states | A fourth numeric "borderline" state | Closeness to a cap does not change `<=` semantics; `needs-review` already covers data quality | A scholar defines a review band |
 | Required ratios | Only debt, cash and income required | Methodology change smuggled into a bug fix; SS21 does not back the two extra gates either way | Scholar-approved methodology |
 | Float tolerance | Epsilon (e.g. 1e-9) around thresholds | An undocumented tolerance can flip a real failure to a pass; exact Decimal has no tolerance | Never for decisions |
-| LLM prose | Keyword/polarity guard, then structured status field | Both passed contradictory prose in Codex's counterexamples | Per-claim validation against ratio facts |
+| LLM prose | Bypass the LLM entirely (D-004), or a keyword/polarity guard presented as safe | Bypass removed a feature the maintainer wanted; any keyword guard passes some paraphrases (Codex's counterexamples). Chosen: keep the mode, call the guard best-effort, add the UI caveat (D-010) | Per-claim validation against ratio facts exists |
 | Legacy rows | A quarantine flag / schema field to hide unrecomputed results | Needs a migration; a controlled cutover (recompute in the maintenance window) gives the same safety | Cutover cannot be done atomically |
 | Registry | Docker Hub as primary | Needs a stored token and has pull limits; GHCR uses the built-in token | The user wants Docker Hub discoverability (mirror on release tags) |
 | Releases | semantic-release; manual tags | semantic-release needs more secrets; manual tags get forgotten | Release volume grows |

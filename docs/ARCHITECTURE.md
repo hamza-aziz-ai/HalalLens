@@ -8,7 +8,7 @@ One page. Trust boundaries are marked **[B]**. Deeper docs: [FLOW.md](FLOW.md), 
 | ------ | ---- |
 | `api/app.py`, `api/security.py` | HTTP routes (public / authenticated / paid / admin), auth, billing, rate limiting |
 | `ratio_engine/` | The five ratios and the **only** verdict derivation (`engine.py`), `summary.py`, `amounts.py` |
-| `narrator/` | Deterministic explain-why text (LLM code kept, bypassed) |
+| `narrator/` | Explain-why text: rule-based by default; optional LLM text for conclusive verdicts behind a best-effort guard (`narrator/explainer.py`) |
 | `alerts/` | File-backed watchlists, flip detection, SMTP notifier |
 | `crawler/`, `etl/`, `jobs/` | BSE announcements -> PDF/XBRL parsing -> Postgres + MinIO; schedulers |
 | `market_data/` | Indian Stock API and Bhavcopy market caps |

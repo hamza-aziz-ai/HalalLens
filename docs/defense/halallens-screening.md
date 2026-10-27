@@ -10,7 +10,7 @@
 - Three states, not a boolean: unknown is not a failure (D-001, ALTERNATIVES).
 - All five ratios required: never a false pass; narrowing is a scholar's decision (D-002).
 - Exact decimals, no tolerance: borderline cases are exactly where users look (D-003).
-- No LLM prose: a model can echo the right label with contradicting text (D-004).
+- Optional LLM text is best-effort: a model can echo the right label with contradicting text, so the label comes from the engine, doubtful text falls back to rules, and the UI marks LLM text as AI-generated (D-010).
 
 **Data structures and why:** one `filing_evaluations` row per `(symbol, filing_date)` with `is_compliant` nullable, a `verdict` text and ratios as JSONB; inputs in `financial_snapshots`, overridable by admin-only `governance_overrides`. See [DATA.md](../DATA.md).
 

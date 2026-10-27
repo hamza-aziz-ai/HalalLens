@@ -12,14 +12,14 @@ This guide captures day‑to‑day operations for running HalalLens in a pilot o
 | `OPS_*` | Ops alerting (SMTP + Slack). See README for full list. |
 | `HALAL_LOG_ROOT` | Where component logs live (default `./logs`). |
 | `LOG_LEVEL` | `DEBUG` / `INFO`. Set globally or per service. |
-| `NARRATOR_*`, `LLM_*` | LLM narrator configuration. **Currently ignored for screening results** (LLM narration is bypassed); keep `NARRATOR_MODE=rule_based`, because `tools/preflight.py` still requires an LLM endpoint in `llm` mode. |
+| `NARRATOR_*`, `LLM_*` | Narrator configuration. Default `NARRATOR_MODE=rule_based`. In `llm` mode the model is asked only about conclusive verdicts and its text is best-effort (UI marks it AI-generated); `tools/preflight.py` requires the endpoint to be reachable in that mode. |
 
 Store secrets in a `.env` file, Docker secrets, or whichever secret manager your platform provides. Rotate them periodically; when rotating DB passwords, restart API + ingestion containers to pick up the new values.
 
 ### Deployment quick-start
 
-1. Provision a host with Docker Compose v2. No GPU or LLM server is needed: narration is rule-based.
-2. Prepare external Postgres + MinIO/S3 endpoints (or reuse existing ones). Populate `.env` from `.env.example` with all `POSTGRES_*`, `MINIO_*`, `INDIAN_API_*`, `OPS_*`, and `NARRATOR_MODE=rule_based`.
+1. Provision a host with Docker Compose v2. No GPU or LLM server is needed for the default rule-based narration; an LLM server is only needed if you set `NARRATOR_MODE=llm` (a compatible GPU if you self-host it).
+2. Prepare external Postgres + MinIO/S3 endpoints (or reuse existing ones). Populate `.env` from `.env.example` with all `POSTGRES_*`, `MINIO_*`, `INDIAN_API_*`, `OPS_*`, and (only for the LLM narrator) `NARRATOR_MODE` / `LLM_*`.
 3. Launch the stack:
 
    ```bash
@@ -154,7 +154,7 @@ Keep this runbook alongside `README.md`; update both whenever operational requir
 - `GET /health` returns `{"status": "ok"}` – verifies FastAPI + DB connectivity.  
 - Scheduler heartbeat: check `/tmp/ingestion_heartbeat.txt` timestamp (or your custom path).  
 - Persistent Indian API failures: inspect `logs/market_data/` and consider adjusting API rate limits, refreshing the key, or falling back to Bhavcopy-only mode temporarily.  
-- `preflight` fails with an LLM endpoint error: set `NARRATOR_MODE=rule_based` (LLM narration is bypassed; the preflight check is stale).  
+- `preflight` fails with an LLM endpoint error: the LLM endpoint is unreachable while `NARRATOR_MODE=llm`. Fix the endpoint or set `NARRATOR_MODE=rule_based`. Narration errors fall back to the rule-based narrator and show up in `/ops/metrics`.
 - Feedback queue empty but users reported issues: check `logs/api/.../api.log` for errors around `/feedback` endpoints.
 
 ## 10. Mobile app notes

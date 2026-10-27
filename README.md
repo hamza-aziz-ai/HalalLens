@@ -14,7 +14,7 @@
 | Area | What exists today |
 | ---- | ----------------- |
 | **Screening** | `ratio_engine/` computes five ratios per filing and returns one verdict: `compliant`, `non-compliant` or `insufficient-data`. |
-| **Explain-Why** | Deterministic, rule-based narration. An LLM narrator exists in `narrator/llm.py` but is **bypassed** on screening paths: its prose cannot be validated against the verdict. |
+| **Explain-Why** | Rule-based by default. An optional LLM narrator (`NARRATOR_MODE=llm`) is used only for conclusive verdicts and only if its text passes a best-effort consistency check; the badge and ratio table always show the engine's verdict. Unknown results are always narrated by the rule-based narrator. |
 | **Alerts** | File-backed watchlists and a compliance-flip engine; email delivery through SMTP. `/alerts/check` is a paid route that still trusts a caller-supplied verdict (see [Known limitations](#known-limitations)). |
 | **Filings ingestion** | BSE announcements crawler, PDF capture in MinIO, Camelot tables plus XBRL/JSON parsing, Indian Stock API and Bhavcopy market data. |
 | **API + UI** | FastAPI service (`/docs` lists every route) and a Next.js 14 static-export dashboard. |
@@ -106,7 +106,7 @@ Tests must not need live Postgres, MinIO, an LLM or vendor APIs.
 
 ### Narrator
 
-`NARRATOR_MODE` defaults to `rule_based`. Setting it to `llm` currently has **no effect on screening results**: the service logs one warning and still uses the deterministic narrator. Keep `NARRATOR_MODE=rule_based` in production because `tools/preflight.py` still demands an LLM endpoint in `llm` mode.
+`NARRATOR_MODE` defaults to `rule_based` (the only path whose consistency with the verdict is guaranteed). With `NARRATOR_MODE=llm` (plus `LLM_ENDPOINT`, `LLM_MODEL`, optional `LLM_API_KEY`, `LLM_TEMPERATURE`, `LLM_MAX_TOKENS`, `LLM_TIMEOUT`) the model is asked only about `compliant` / `non-compliant` results. Its text is shown only if it repeats the engine's verdict in a `screen_verdict` field and its summary, verdict and bullets pass a keyword check; otherwise, on any LLM error, and for `insufficient-data`, the rule-based narrator is used, and the label shown is always the engine's. **This is best-effort, not a guarantee:** a paraphrase the check does not know can still contradict the verdict, so the UI marks LLM text as AI-generated. `tools/preflight.py` requires the LLM endpoint to be reachable in `llm` mode. Set `LLM_MAX_TOKENS=0` and/or `LLM_TIMEOUT=0` to let the server decide limits (useful for reasoning-heavy models).
 
 ### Google SSO (optional)
 
@@ -206,7 +206,7 @@ halallens-mobile/ Flutter platform scaffold (no Dart source)
 jobs/             ingestion, evaluation and scheduler entry points
 market_data/      Indian Stock API and Bhavcopy resolution
 monitoring/       ops notifier and metrics
-narrator/         rule-based narrator (LLM code kept, bypassed)
+narrator/         rule-based narrator and optional best-effort LLM narrator
 ratio_engine/     ratio math, verdict, summary, amount coercion
 scripts/          run_migrations.sh and helpers
 tests/            pytest suite

@@ -15,5 +15,5 @@ Status: **verified** / **unverified** / **wrong**. Clear the unverified list bef
 | 9 | Old credentials were rotated and no misuse occurred | **unverified** | Maintainer confirmed rotation; Razorpay activity not reviewed here |
 | 10 | Anyone who cloned before the history purge no longer matters | **unverified** | GitHub caches / `refs/pull/*` may still serve old objects; contact GitHub Support |
 | 11 | `halallens.ai` is the product site | **wrong** | No response (HTTP 000) at the time of checking; link removed from the repo metadata |
-| 12 | Narrator labels "AAOIFI screens" are acceptable wording | open | Maintainer's call; the screen is AAOIFI-inspired, not verified AAOIFI |
+| 12 | LLM text that passes the keyword guard is consistent with the verdict | **wrong** (known ceiling) | Paraphrases the word lists miss can pass; accepted by the maintainer (D-010); UI shows an AI-generated caveat |
 | 13 | Codex re-check of PR #87's last three fixes | open | Its usage limit hit; resets 2026-10-28 00:17 |

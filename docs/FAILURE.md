@@ -10,7 +10,7 @@ For each dependency: what if it is slow, down, wrong or empty? First limit expec
 | BSE site | Down / blocks | Ingestion run fails; heartbeat stops advancing | Scheduler heartbeat, `/ops/metrics`, ops email/Slack |
 | Razorpay | Down / webhook delayed | Orders fail; webhook replays are idempotent | Razorpay dashboard, api logs |
 | SMTP | Down | Alert email fails after the verdict is computed | Notifier log lines |
-| Narrator LLM | n/a | Not called (bypassed) | n/a |
+| Narrator LLM (`NARRATOR_MODE=llm`) | Down / slow / malformed / contradicts the verdict | Falls back to the rule-based narration (error, doubtful text, or unknown verdict); the label shown is always the engine's | Warning logs, `failure_callback`, `/ops/metrics` narration failures |
 | Filing PDF | Scanned/odd layout | Metrics missing -> `insufficient-data`, not a pass | Quality issues, feedback queue |
 | The verdict engine | Bad input | Unknown, never a pass; non-finite quotients are `invalid` | Golden tests; `missing_inputs` in responses |
 
