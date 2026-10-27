@@ -1,0 +1,19 @@
+# ASSUMPTIONS & OPEN QUESTIONS
+
+Status: **verified** / **unverified** / **wrong**. Clear the unverified list before anything ships to customers.
+
+| # | Assumption or question | Status | Evidence / next step |
+| - | ---------------------- | ------ | -------------------- |
+| 1 | Most stored filings lack interest/dividend figures, so most will screen `insufficient-data` under the new engine | **unverified** | PR-B dry run on a copy of production data |
+| 2 | Stored `filing_evaluations` rows hold old, possibly false-`compliant` verdicts | verified (code) | `jobs/backfill_evaluations.py` skips rows with ratios; no recompute tool exists |
+| 3 | The receivables 67% / liquid-assets 49% market-cap gates match AAOIFI | **wrong** | SS21 text supports 30/30/5 only; kept as configured, flagged |
+| 4 | Total debt / all cash are acceptable stand-ins for interest-bearing debt / deposits | **unverified** | Direction of error is not one-sided (cash may omit interest-bearing deposits) |
+| 5 | `non_halal_income` is a clean base for prohibited income | **wrong** | Regex also matches "interest income"; vendor maps "Other, Net"; overrides declare no contract |
+| 6 | The Pages site (`hamzaaziz.dev/HalalLens`) reaches a working API | **unverified** | `nextjs.yml` sets no `NEXT_PUBLIC_HALAL_API_BASE_URL` |
+| 7 | No external automation deploys the API from `main` | **unverified** | Only repository workflows were inspected |
+| 8 | Production host, ingress (Caddy) and backups exist as documented | **unverified** | Not observable from the repo |
+| 9 | Old credentials were rotated and no misuse occurred | **unverified** | Maintainer confirmed rotation; Razorpay activity not reviewed here |
+| 10 | Anyone who cloned before the history purge no longer matters | **unverified** | GitHub caches / `refs/pull/*` may still serve old objects; contact GitHub Support |
+| 11 | `halallens.ai` is the product site | **wrong** | No response (HTTP 000) at the time of checking; link removed from the repo metadata |
+| 12 | Narrator labels "AAOIFI screens" are acceptable wording | open | Maintainer's call; the screen is AAOIFI-inspired, not verified AAOIFI |
+| 13 | Codex re-check of PR #87's last three fixes | open | Its usage limit hit; resets 2026-10-28 00:17 |

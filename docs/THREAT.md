@@ -1,0 +1,17 @@
+# THREAT
+
+Who could behave badly, what they can reach, and what stops them. **Known gaps are listed honestly.**
+
+| Actor / entry point | Worst realistic abuse | Mitigation today | Gap |
+| ------------------- | --------------------- | ---------------- | --- |
+| Anonymous visitor -> `/halal-score` | Free compute, scrape, send odd numbers (booleans, NaN, `"1e-400"`) to force a false `compliant` | Per-IP rate limit; Pydantic `extra="forbid"`; booleans and unusable strings rejected; engine rejects non-finite, negative, out-of-range | Limiter is per process; numeric JSON literals that underflow before validation |
+| Anonymous -> `/auth/*`, `/billing/plans` | Credential stuffing, trial farming | Per-IP login/register limits; PBKDF2 600k; hashed opaque tokens | Counters reset on restart |
+| Logged-in free user | Reach paid routes, other users' watchlists | Tier checks on every route; watchlists keyed off the session, `user_id` in the path ignored | `/alerts/check` takes the verdict from the caller and iterates all users' entries |
+| Paid user | Spend vendor quota via `/market-data` | Requires a session; per-user metered limit | Cost monitoring absent |
+| Razorpay webhook sender | Forge or replay a payment event | HMAC signature check; idempotent on `(provider, event_id)` | Live-key separation and secret rotation are the operator's job |
+| Admin / insider | Edit governance overrides that rewrite every user's verdict; read feedback | Admin-only routes; reviewer identity from the session; overrides stored and surfaced | No four-eyes review on overrides |
+| Malicious or malformed filing (PDF/XBRL) | Parser crash, mis-scaled values, injected numbers | Parsers run in the ETL, values pass `coerce_amount` and engine validation | `_detect_scale` uses substring checks; the extraction regex for prohibited income also matches "interest income" |
+| Vendor API (Indian Stock API) | Wrong or hostile numbers; outage | Values validated; Bhavcopy fallback; failures recorded | "Other, Net" mapped as prohibited income; payload cache never expires |
+| Compromised dependency | Supply-chain code execution | Lockfile hashes, Dependabot, gitleaks, SHA-pinned Actions, 47 runtime packages (was 103) | No SBOM/signing; Python bumps are manual |
+| Leaked secret (public repo) | Account or key misuse | History was purged and keys were rotated by the maintainer; gitleaks runs on every PR | Anyone who cloned before the purge still holds old history; GitHub caches and `refs/pull/*` may keep it |
+| LLM prompt injection | Poisoned filing text steers narration | LLM narration is bypassed | Returns if LLM prose is re-enabled |
