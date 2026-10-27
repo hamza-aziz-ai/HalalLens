@@ -1,0 +1,26 @@
+version: 2
+updates:
+  # Actions are pinned by SHA; Dependabot rewrites the SHA and the version comment.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        update-types: [minor, patch]
+
+  - package-ecosystem: npm
+    directory: /ui
+    schedule:
+      interval: weekly
+    groups:
+      ui-dev:
+        dependency-type: development
+        update-types: [minor, patch]
+
+  # Python is never auto-merged (ratio/ETL/billing libraries: review by hand).
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
