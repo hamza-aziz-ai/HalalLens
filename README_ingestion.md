@@ -7,13 +7,13 @@ This document explains how to run the HalalLens ingestion stack locally: applyin
 Ensure your Postgres instance is running (e.g., `postgresql-x64-17` on Windows). Then apply the schema:
 
 ```bash
-psql -h 192.168.1.9 -U $POSTGRES_USER -d Halal-Lens -f database/schema.sql
+psql -h <db-host> -U $POSTGRES_USER -d <db> -f database/schema.sql   # fresh DB; or run scripts/run_migrations.sh
 ```
 
 Confirm tables exist:
 
 ```bash
-psql -h 192.168.1.9 -U $POSTGRES_USER -d Halal-Lens -c "\dt"
+psql -h <db-host> -U $POSTGRES_USER -d <db> -c "\dt"
 ```
 
 ## 2. Ingestion job
