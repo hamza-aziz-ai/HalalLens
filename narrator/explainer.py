@@ -73,7 +73,7 @@ class RuleBasedNarrator:
 
 
 class NarrationEngine:
-    """Narration entry point. Deterministic only; see build() for why the LLM is bypassed."""
+    """Narration entry point: rule-based by default, optional LLM with a best-effort guard."""
 
     def __init__(
         self,
@@ -86,8 +86,7 @@ class NarrationEngine:
         self.config = config or NarratorConfig.default()
         self.rule_based = RuleBasedNarrator()
         self.llm_engine: Optional[LLMNarrationEngine] = None
-        self.failure_callback = failure_callback  # unused while LLM is bypassed
-        self._llm_bypass_logged = False
+        self.failure_callback = failure_callback
 
         self.logger = logging.getLogger("narrator")
 
@@ -97,23 +96,72 @@ class NarrationEngine:
             if llm_client is not None:
                 self.llm_engine = LLMNarrationEngine(llm_client, self.config)
 
-    def build(self, evaluation: RatioEvaluation) -> NarrationResult:
-        """Narrate a screening result deterministically.
+    # Best-effort consistency guard for LLM prose (maintainer decision, 2026-10-27).
+    # It is NOT a guarantee: a model can pick a paraphrase none of these words
+    # catch ("debt is too high" under a compliant label). Only the rule-based
+    # narrator is guaranteed consistent. ponytail: substring lists, ceiling is
+    # paraphrase; replace with a structured per-claim check if it ever matters.
+    _FAIL_WORDS = (
+        "non-compliant", "non compliant", "noncompliant", "not compliant",
+        "haram", "impermissible", "prohibited", "exceed", "breach", "violat",
+        "fail", "above the", "over the cap", "over the limit", "too high",
+    )
+    _PASS_ALL_WORDS = (
+        "fully compliant", "satisf", "all ratios", "every screen", "every financial",
+        "all screens", "no concerns", "passes all", "passed all",
+    )
 
-        LLM prose cannot be validated against the engine verdict: a model can
-        echo the right status while its text says the opposite, and no keyword
-        filter closes that. Until a structured, per-claim check exists, every
-        screening path uses the rule-based narrator. The LLM classes stay in
-        narrator/llm.py for that later work and are not called from here.
+    def _llm_rejection(self, result: NarrationResult, evaluation: RatioEvaluation) -> Optional[str]:
+        """Why this LLM text cannot be shown, or None if it passes the guard."""
+
+        if result.metadata.get("claimed_verdict") != evaluation.verdict:
+            return "claimed verdict differs from the engine's"
+        text = " ".join([result.summary, result.verdict, *result.bullets]).lower()
+        says_fail = any(word in text for word in self._FAIL_WORDS)
+        if evaluation.verdict == COMPLIANT:
+            return "text mentions a failure" if says_fail else None
+        if not says_fail:
+            return "text never mentions a failure"
+        if any(word in text for word in self._PASS_ALL_WORDS):
+            return "text claims everything passes"
+        return None
+
+    def build(self, evaluation: RatioEvaluation) -> NarrationResult:
+        """Narrate a screening result.
+
+        Unknown results (insufficient-data, needs-review) are always narrated by
+        the rule-based narrator: the model is not asked about them. For
+        conclusive verdicts the LLM text is used only if it passes the
+        best-effort guard above; the label shown is always the engine's. Any
+        doubt or LLM error falls back to the rule-based narration.
         """
 
-        if self.config.mode == "llm" and not self._llm_bypass_logged:
-            self.logger.warning(
-                "NARRATOR_MODE=llm is configured but LLM narration is disabled: "
-                "its prose is not validated against the engine verdict. "
-                "Using rule-based narration."
-            )
-            self._llm_bypass_logged = True
+        if self.llm_engine and evaluation.is_compliant is not None:
+            try:
+                result = self.llm_engine.build(evaluation)
+            except LLMNarrationError as exc:
+                self.logger.warning(
+                    "LLM narration failed for %s, falling back to rule-based",
+                    evaluation.symbol,
+                    exc_info=True,
+                )
+                if self.failure_callback:
+                    try:
+                        self.failure_callback(evaluation, exc)
+                    except Exception:  # pragma: no cover - diagnostics only
+                        self.logger.exception("LLM failure callback crashed")
+            else:
+                reason = self._llm_rejection(result, evaluation)
+                if reason is None:
+                    result.verdict = self.rule_based.verdict_text[evaluation.verdict]
+                    result.metadata["screen_verdict"] = evaluation.verdict
+                    result.metadata.pop("claimed_verdict", None)
+                    return result
+                self.logger.warning(
+                    "LLM narration for %s rejected (%s), using rule-based",
+                    evaluation.symbol,
+                    reason,
+                )
         return self.rule_based.build(evaluation)
 
 
