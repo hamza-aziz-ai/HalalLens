@@ -29,10 +29,14 @@ export type RatioComputation = {
   provider?: string | null;
 };
 
+export type ScreenVerdict = "compliant" | "non-compliant" | "insufficient-data";
+
 export type HalalScoreResponse = {
   symbol: string;
   filing_date: string;
-  is_compliant: boolean;
+  // null means insufficient data: it is NOT the same as non-compliant.
+  is_compliant: boolean | null;
+  screen_verdict: ScreenVerdict;
   ratios: Record<string, RatioComputation>;
   missing_inputs: Record<string, string>;
   market_cap_used?: Numeric;
@@ -43,7 +47,8 @@ export type HalalScoreResponse = {
 export type NarrationResponse = {
   symbol: string;
   filing_date: string;
-  is_compliant: boolean;
+  is_compliant: boolean | null;
+  screen_verdict: ScreenVerdict;
   summary: string;
   verdict: string;
   bullets: string[];

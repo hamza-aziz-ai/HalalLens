@@ -15,7 +15,8 @@ from market_data import (
     fetch_indian_financial_snapshot,
     indian_api_enabled,
 )
-from ratio_engine import FinancialSnapshotInput, MarketDataInput, RatioEngine
+from ratio_engine import FinancialSnapshotInput, MarketDataInput, RatioEngine, build_summary
+from ratio_engine.amounts import coerce_amount
 from config.logging_config import configure_logging
 from config import INDIAN_API_OVERRIDE_TOLERANCE
 
@@ -42,14 +43,7 @@ def _needs_override(current: Optional[float], candidate: Optional[float]) -> boo
 
 
 def _coerce_float(value) -> Optional[float]:
-    if value is None:
-        return None
-    if isinstance(value, (int, float)):
-        return float(value)
-    try:
-        return float(str(value).replace(",", ""))
-    except ValueError:
-        return None
+    return coerce_amount(value)
 
 
 def _snapshot_from_record(record: Dict) -> Optional[FinancialSnapshotInput]:
@@ -313,10 +307,8 @@ def main(limit: int = 500) -> None:
             ratios_payload = {
                 name: asdict(comp) for name, comp in evaluation.ratios.items()
             }
-            verdict = (
-                "compliant" if evaluation.is_compliant else "non-compliant"
-            ) if any(comp.passed is not None for comp in evaluation.ratios.values()) else "insufficient-data"
-            summary = "All computed AAOIFI ratios are within thresholds." if evaluation.is_compliant else "At least one ratio exceeds AAOIFI limits."
+            verdict = evaluation.verdict
+            summary = build_summary(evaluation)
 
             db.upsert_filing_evaluation(
                 symbol=snapshot.symbol,

@@ -9,6 +9,7 @@ from typing import Any, Dict
 
 import pytest
 from fastapi import HTTPException
+from pydantic import ValidationError
 
 from alerts import AlertEngine, WatchlistStorage
 
@@ -33,6 +34,25 @@ def _sample_request() -> HalalScoreRequest:
             cash_equiv=10_000_000,
             revenue=200_000_000,
             non_permissible_income=5_000_000,
+            interest_income=1_000_000,
+            dividend_income=0,
+            accounts_receivable=20_000_000,
+            liquid_assets=40_000_000,
+        ),
+        market_data=MarketDataPayload(market_cap=400_000_000),
+    )
+
+
+def _partial_request() -> HalalScoreRequest:
+    """Only debt/cash/revenue/market cap: must screen as insufficient, not pass."""
+
+    return HalalScoreRequest(
+        snapshot=FinancialSnapshotPayload(
+            symbol="TCS",
+            filing_date=datetime(2024, 6, 30),
+            total_debt=25_000_000,
+            cash_equiv=10_000_000,
+            revenue=200_000_000,
         ),
         market_data=MarketDataPayload(market_cap=400_000_000),
     )
@@ -81,7 +101,23 @@ def test_halal_score_handler_returns_expected_ratios():
     response = _run(api_module.halal_score(_sample_request()))
     assert response.symbol == "TCS"
     assert response.is_compliant is True
+    assert response.screen_verdict == "compliant"
     assert "debt_to_market_cap" in response.ratios
+
+
+def test_halal_score_partial_data_is_insufficient_not_a_500():
+    response = _run(api_module.halal_score(_partial_request()))
+    assert response.is_compliant is None
+    assert response.screen_verdict == "insufficient-data"
+    assert response.missing_inputs["non_permissible_income"] == "missing"
+
+
+def test_narrate_partial_data_is_not_called_non_compliant(paid_access):
+    response = _run(api_module.narrate(_partial_request()))
+    assert response.is_compliant is None
+    assert response.screen_verdict == "insufficient-data"
+    assert "NOT compliant" not in response.verdict
+    assert "insufficient" in response.verdict.lower()
 
 
 def test_narrate_handler_produces_summary(paid_access):
@@ -1171,3 +1207,124 @@ def test_ops_metrics_endpoint(monkeypatch, tmp_path, admin_access):
     assert response["ingestion"]["available"] is True
     assert response["market_data"]["recent_alerts"]
     assert response["llm"]["failure_count"] == 1
+
+
+@pytest.mark.parametrize(
+    "overrides, quality_issues, stored_issues, verdict, is_compliant",
+    [
+        ({}, [], [], "compliant", True),
+        ({"interest_income": None}, [], [], "insufficient-data", None),
+        ({}, ["anomaly"], [], "needs-review", None),
+        # Nothing new detected, but an issue from another source is still open.
+        ({}, [], ["Unresolved source-quality review"], "needs-review", None),
+        ({"total_debt": 400_000_000}, [], [], "non-compliant", False),
+    ],
+    ids=["compliant", "insufficient", "needs-review", "stored-issue-only", "non-compliant"],
+)
+def test_persisted_and_returned_verdict_pair_match(
+    monkeypatch, overrides, quality_issues, stored_issues, verdict, is_compliant
+):
+    stored = {}
+
+    class DB:
+        def record_quality_issue(self, *args, **kwargs):
+            return None
+
+        def resolve_quality_issues(self, *args, **kwargs):
+            return 0
+
+        def get_quality_issues(self, *args, **kwargs):
+            return list(stored_issues)
+
+        def upsert_filing_evaluation(self, **kwargs):
+            stored.update(kwargs)
+
+    monkeypatch.setattr(api_module, "_get_db", lambda: DB())
+    monkeypatch.setattr(api_module, "_maybe_enrich_record_with_indian_api", lambda record: None)
+    monkeypatch.setattr(
+        api_module, "_detect_quality_issues", lambda snapshot, evaluation: quality_issues
+    )
+    record = {
+        "symbol": "TCS",
+        "filing_date": datetime(2024, 6, 30),
+        "total_debt": 25_000_000,
+        "cash_equiv": 10_000_000,
+        "revenue": 200_000_000,
+        "non_halal_income": 5_000_000,
+        "interest_income": 1_000_000,
+        "dividend_income": 0,
+        "accounts_receivable": 20_000_000,
+        "liquid_assets": 40_000_000,
+        "market_cap_used": 400_000_000,
+        "ratios": None,
+    }
+    record.update(overrides)
+
+    api_module._ensure_filing_evaluation(record, allow_market_fetch=False)
+
+    assert (stored["verdict"], stored["is_compliant"]) == (verdict, is_compliant)
+    assert (record["verdict"], record["is_compliant"]) == (verdict, is_compliant)
+
+
+@pytest.mark.parametrize("field", ["total_debt", "interest_income", "non_halal_income"])
+def test_snapshot_payload_rejects_booleans(field):
+    """JSON false must not become a verified 0.0 (it used to count as zero income)."""
+
+    with pytest.raises(ValidationError):
+        FinancialSnapshotPayload(
+            symbol="TCS", filing_date=datetime(2024, 6, 30), **{field: False}
+        )
+
+
+def test_market_data_payload_rejects_booleans():
+    with pytest.raises(ValidationError):
+        MarketDataPayload(market_cap=False, trailing_market_cap=400_000_000)
+
+
+def test_narration_cache_key_changes_with_verdict():
+    from dataclasses import replace
+
+    from ratio_engine import FinancialSnapshotInput, MarketDataInput, RatioEngine
+
+    evaluation = RatioEngine().evaluate(
+        FinancialSnapshotInput(**_sample_request().snapshot.model_dump()),
+        MarketDataInput(market_cap=400_000_000),
+    )
+    other = replace(evaluation, verdict="insufficient-data")
+
+    assert evaluation.verdict == "compliant"
+    assert api_module._narration_cache_key(evaluation) != api_module._narration_cache_key(
+        other
+    )
+
+
+def test_transient_record_keeps_its_existing_blocking_issue(monkeypatch):
+    """Nothing is stored for a transient record, but issues it carries still block."""
+
+    def no_db():
+        raise AssertionError("a transient record must not touch the database")
+
+    monkeypatch.setattr(api_module, "_get_db", no_db)
+    monkeypatch.setattr(api_module, "_maybe_enrich_record_with_indian_api", lambda record: None)
+    monkeypatch.setattr(api_module, "_detect_quality_issues", lambda snapshot, evaluation: [])
+    record = {
+        "symbol": "TCS",
+        "filing_date": datetime(2024, 6, 30),
+        "total_debt": 25_000_000,
+        "cash_equiv": 10_000_000,
+        "revenue": 200_000_000,
+        "non_halal_income": 5_000_000,
+        "interest_income": 1_000_000,
+        "dividend_income": 0,
+        "accounts_receivable": 20_000_000,
+        "liquid_assets": 40_000_000,
+        "market_cap_used": 400_000_000,
+        "ratios": None,
+        "_transient": True,
+        "quality_issues": ["Unresolved source-quality review"],
+    }
+
+    api_module._ensure_filing_evaluation(record, allow_market_fetch=False)
+
+    assert (record["verdict"], record["is_compliant"]) == ("needs-review", None)
+    assert record["quality_issues"] == ["Unresolved source-quality review"]

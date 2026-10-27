@@ -15,6 +15,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
+from ratio_engine.amounts import coerce_amount
+
 from ratio_engine import (
     FinancialSnapshotInput,
     MarketDataInput,
@@ -93,16 +95,20 @@ def to_snapshot(entry: Dict) -> Optional[FinancialSnapshotInput]:
         revenue=_safe_get_float(extracted, "revenue"),
         interest_income=_safe_get_float(extracted, "interest_income"),
         dividend_income=_safe_get_float(extracted, "dividend_income"),
-        non_permissible_income=_safe_get_float(extracted, "non_permissible_income"),
+        # Same fallback the jobs use: the extractor stores the base as non_halal_income.
+        non_permissible_income=_safe_get_float(
+            extracted,
+            "non_permissible_income"
+            if extracted.get("non_permissible_income") is not None
+            else "non_halal_income",
+        ),
+        accounts_receivable=_safe_get_float(extracted, "accounts_receivable"),
+        liquid_assets=_safe_get_float(extracted, "liquid_assets"),
     )
 
 
 def _safe_get_float(payload: Dict, key: str) -> Optional[float]:
-    value = payload.get(key)
-    try:
-        return float(value) if value is not None else None
-    except (TypeError, ValueError):
-        return None
+    return coerce_amount(payload.get(key))
 
 
 def build_market_data(
@@ -133,6 +139,7 @@ def evaluate_snapshots(
             {
                 "symbol": result.symbol,
                 "filing_date": result.filing_date.isoformat(),
+                "verdict": result.verdict,
                 "is_compliant": result.is_compliant,
                 "ratios": {
                     name: {

@@ -12,7 +12,7 @@
 | Category                  | Highlights                                                                                         |
 | ------------------------- | -------------------------------------------------------------------------------------------------- |
 | **AAOIFI Screening**      | Ratio engine enforces 30% debt/cash caps and 5% non-permissible income thresholds per filing.      |
-| **Explain-Why Narration** | Rule-based fallback plus optional LLM-backed narrator (vLLM/OpenAI style) with JSON outputs.      |
+| **Explain-Why Narration** | Deterministic, rule-based narration. An LLM-backed narrator (vLLM/OpenAI style) exists in `narrator/llm.py` but is **temporarily bypassed** on screening paths: its prose cannot be validated against the engine verdict. |
 | **Watchlists & Alerts**   | File-backed watchlists plus compliance-flip alert engine (future: Celery + SES delivery).          |
 | **Filings Ingestion**     | Production-style BSE/NSE crawlers, PDF capture via MinIO, Camelot tables **and** XBRL/JSON parsing for AAOIFI metrics. |
 | **REST API**              | FastAPI service exposes `/halal-score`, `/narrate`, `/watchlist`, and `/alerts/check` endpoints.   |
@@ -62,7 +62,7 @@ export LLM_MAX_TOKENS=400
 export LLM_TIMEOUT=30
 ```
 
-If `NARRATOR_MODE=llm` but endpoint/model are missing, the service automatically falls back to the deterministic narrator. Set `LLM_MAX_TOKENS=0` and/or `LLM_TIMEOUT=0` if you want the model/server to decide token counts and timeouts (useful for reasoning-heavy Ollama models like DeepSeek-R1).
+**Currently ignored for screening results:** the service logs a warning and always uses the deterministic narrator, even with `NARRATOR_MODE=llm` configured (`tools/preflight.py` still checks the endpoint in that mode, so leave `NARRATOR_MODE=rule_based` in production). If `NARRATOR_MODE=llm` but endpoint/model are missing, the service automatically falls back to the deterministic narrator. Set `LLM_MAX_TOKENS=0` and/or `LLM_TIMEOUT=0` if you want the model/server to decide token counts and timeouts (useful for reasoning-heavy Ollama models like DeepSeek-R1).
 
 ### Database schema
 

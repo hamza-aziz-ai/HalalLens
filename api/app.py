@@ -26,7 +26,7 @@ from urllib.parse import urlencode, urlsplit, urlunsplit
 from fastapi import FastAPI, HTTPException, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from alerts import AlertEngine, AlertEvent, WatchEntry, WatchlistStorage, EmailNotifier
 from config import (
@@ -94,7 +94,9 @@ from ratio_engine import (
     FinancialSnapshotInput,
     MarketDataInput,
     RatioEngine,
+    build_summary,
 )
+from ratio_engine.amounts import coerce_amount
 from database import BSEDatabaseManager
 from market_data import (
     fetch_indian_financial_snapshot,
@@ -109,10 +111,36 @@ from monitoring.notifier import OpsNotifier
 from monitoring.metrics import summarize_ingestion_metrics
 
 
+def _reject_unsupported_amount(value):
+    """Reject amounts that Pydantic's float coercion would turn into a verified
+    number: JSON true/false (1.0/0.0) and strings such as "1e-400" that flush to
+    0.0. Only the original string is visible here; a numeric JSON literal may
+    already have underflowed while decoding."""
+
+    if isinstance(value, bool):
+        raise ValueError("a boolean is not a valid number")
+    if isinstance(value, str) and coerce_amount(value) is None:
+        raise ValueError("not a usable amount")
+    return value
+
+
 class FinancialSnapshotPayload(BaseModel):
     """Request payload for financial snapshot metrics."""
 
     model_config = ConfigDict(extra="forbid")
+
+    no_bool = field_validator(
+        "total_debt",
+        "cash_equiv",
+        "revenue",
+        "interest_income",
+        "dividend_income",
+        "non_permissible_income",
+        "accounts_receivable",
+        "liquid_assets",
+        "non_halal_income",
+        mode="before",
+    )(_reject_unsupported_amount)
 
     symbol: str
     filing_date: datetime
@@ -131,6 +159,10 @@ class MarketDataPayload(BaseModel):
     """Request payload for market data metrics."""
 
     model_config = ConfigDict(extra="forbid")
+
+    no_bool = field_validator(
+        "market_cap", "trailing_market_cap", "share_price", mode="before"
+    )(_reject_unsupported_amount)
 
     market_cap: Optional[float] = None
     trailing_market_cap: Optional[float] = None
@@ -162,7 +194,10 @@ class HalalScoreResponse(BaseModel):
 
     symbol: str
     filing_date: datetime
-    is_compliant: bool
+    is_compliant: Optional[bool]
+    # Engine verdict: compliant | non-compliant | insufficient-data. is_compliant
+    # is None for insufficient-data, so clients must not treat it as "false".
+    screen_verdict: str
     ratios: Dict[str, RatioComputationPayload]
     missing_inputs: Dict[str, str]
     market_cap_used: Optional[float] = None
@@ -1577,6 +1612,7 @@ def _narration_cache_key(evaluation) -> str:
     payload = {
         "symbol": evaluation.symbol,
         "filing_date": evaluation.filing_date.isoformat(),
+        "verdict": evaluation.verdict,
         "ratios": ratios_payload,
     }
     raw = json.dumps(payload, sort_keys=True, default=str)
@@ -1773,15 +1809,13 @@ def _persist_indian_history_entry(snapshot: IndianAPISnapshot) -> bool:
     )
 
     ratios_payload = {name: asdict(comp) for name, comp in evaluation.ratios.items()}
-    verdict = _derive_verdict(evaluation)
-    summary = _build_summary(evaluation)
+    verdict = evaluation.verdict
+    summary = build_summary(evaluation)
 
     db.upsert_filing_evaluation(
         symbol=snapshot.symbol,
         filing_date=filing_dt,
-        is_compliant=evaluation.is_compliant
-        if verdict != "insufficient-data"
-        else None,
+        is_compliant=evaluation.is_compliant,
         ratios=ratios_payload,
         summary=summary,
         verdict=verdict,
@@ -1886,7 +1920,8 @@ class NarrationResponse(BaseModel):
 
     symbol: str
     filing_date: datetime
-    is_compliant: bool
+    is_compliant: Optional[bool]
+    screen_verdict: str
     summary: str
     verdict: str
     bullets: List[str]
@@ -2017,16 +2052,7 @@ class FilingHistoryResponse(BaseModel):
 
 
 def _coerce_float(value: Any) -> Optional[float]:
-    if value is None:
-        return None
-    if isinstance(value, (int, float)):
-        return float(value)
-    if isinstance(value, Decimal):
-        return float(value)
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
+    return coerce_amount(value)
 
 
 def _snapshot_from_record(record: Dict[str, Any]) -> Optional[FinancialSnapshotInput]:
@@ -2192,42 +2218,12 @@ def _ratios_payload(raw: Optional[Dict[str, Any]]) -> Optional[Dict[str, RatioCo
     return ratios
 
 
-FRIENDLY_LABELS = {
-    "debt_to_market_cap": "Debt to market cap",
-    "cash_to_market_cap": "Cash to market cap",
-    "non_permissible_income_ratio": "Non-permissible income ratio",
-    "receivables_to_market_cap": "Receivables to market cap",
-    "liquid_assets_to_market_cap": "Liquid assets to market cap",
-}
 STRUCTURED_FIELDS = {
     "accounts_receivable": "accounts_receivable",
     "liquid_assets": "liquid_assets",
     "non_permissible_income": "non_halal_income",
     "non_halal_income": "non_halal_income",
 }
-
-
-def _build_summary(evaluation):
-    failing = [
-        FRIENDLY_LABELS.get(name, name)
-        for name, comp in evaluation.ratios.items()
-        if comp.passed is False
-    ]
-    if evaluation.is_compliant and not failing:
-        return "All computed AAOIFI ratios are within the prescribed thresholds."
-    if failing:
-        return f"{', '.join(failing)} exceeded AAOIFI thresholds for this filing."
-    if evaluation.missing_inputs:
-        missing = ", ".join(sorted(evaluation.missing_inputs.keys()))
-        return f"Insufficient data to compute all ratios (missing: {missing})."
-    return "Ratios could not be computed for this filing."
-
-
-def _derive_verdict(evaluation):
-    has_ratios = any(comp.passed is not None for comp in evaluation.ratios.values())
-    if not has_ratios:
-        return "insufficient-data"
-    return "compliant" if evaluation.is_compliant else "non-compliant"
 
 
 def _needs_structured_override(current: Optional[float], candidate: Optional[float]) -> bool:
@@ -2272,14 +2268,7 @@ def _persist_structured_override(
 
 
 def _coerce_metric_value(value: Optional[Any]) -> Optional[float]:
-    if value is None:
-        return None
-    if isinstance(value, Decimal):
-        return float(value)
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
+    return coerce_amount(value)
 
 
 def _build_governance_metric_set(
@@ -2425,6 +2414,7 @@ async def halal_score(
         symbol=evaluation.symbol,
         filing_date=evaluation.filing_date,
         is_compliant=evaluation.is_compliant,
+        screen_verdict=evaluation.verdict,
         ratios=ratios,
         missing_inputs=evaluation.missing_inputs,
         market_cap_used=payload.market_data.market_cap,
@@ -2448,6 +2438,7 @@ async def narrate(
         symbol=evaluation.symbol,
         filing_date=evaluation.filing_date,
         is_compliant=evaluation.is_compliant,
+        screen_verdict=evaluation.verdict,
         summary=narration.summary,
         verdict=narration.verdict,
         bullets=narration.bullets,
@@ -3194,20 +3185,21 @@ def _ensure_filing_evaluation(
         ),
     )
 
-    verdict = _derive_verdict(evaluation)
-    summary = _build_summary(evaluation)
+    verdict = evaluation.verdict
+    summary = build_summary(evaluation)
     ratios_dict = {name: asdict(comp) for name, comp in evaluation.ratios.items()}
 
-    quality_issues = _detect_quality_issues(snapshot, evaluation)
-    if quality_issues:
-        verdict = "needs-review"
-        summary = "Flagged for manual review due to anomalous ratios."
-        record["is_compliant"] = None
-
+    detected = _detect_quality_issues(snapshot, evaluation)
+    quality_issues = detected
+    if transient and not detected:
+        # Nothing is stored for a transient record, but issues it already carries
+        # (e.g. loaded with the filing) still block a conclusive verdict.
+        quality_issues = list(record.get("quality_issues") or [])
+    db = None
     if not transient:
         db = _get_db()
-        if quality_issues:
-            for issue in quality_issues:
+        if detected:
+            for issue in detected:
                 db.record_quality_issue(
                     snapshot.symbol, snapshot.filing_date, "ratio_anomaly", issue
                 )
@@ -3215,14 +3207,26 @@ def _ensure_filing_evaluation(
             db.resolve_quality_issues(
                 snapshot.symbol, snapshot.filing_date, issue_types=["ratio_anomaly"]
             )
+            # Issues from other sources can stay open after the anomaly clears.
             quality_issues = _load_quality_issues(snapshot.symbol, snapshot.filing_date)
 
+    # One final status/Boolean pair, computed after every blocking issue (new or
+    # still-open) is known, and stored and returned identically: a needs-review
+    # filing is never published as compliant or non-compliant.
+    if quality_issues:
+        verdict = "needs-review"
+        summary = (
+            "Flagged for manual review due to anomalous ratios."
+            if detected
+            else "Flagged for manual review: unresolved quality issues remain."
+        )
+    final_is_compliant = None if quality_issues else evaluation.is_compliant
+
+    if db is not None:
         db.upsert_filing_evaluation(
             symbol=snapshot.symbol,
             filing_date=snapshot.filing_date,
-            is_compliant=evaluation.is_compliant
-            if verdict != "insufficient-data"
-            else None,
+            is_compliant=final_is_compliant,
             ratios=ratios_dict,
             summary=summary,
             verdict=verdict,
@@ -3234,9 +3238,7 @@ def _ensure_filing_evaluation(
     else:
         record["quality_issues"] = quality_issues
 
-    record["is_compliant"] = (
-        None if quality_issues else evaluation.is_compliant
-    )
+    record["is_compliant"] = final_is_compliant
     record["verdict"] = verdict
     record["summary"] = summary
     record["narration_source"] = "api"

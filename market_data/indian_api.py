@@ -13,6 +13,7 @@ from typing import Any, Dict, Iterable, Optional, Tuple, List
 import requests
 
 from config import INDIAN_API_BASE_URL, INDIAN_API_KEY
+from ratio_engine.amounts import coerce_amount
 
 LOGGER = logging.getLogger("market_data")
 SESSION = requests.Session()
@@ -312,20 +313,9 @@ def _normalize_bse_code(value: Optional[object]) -> Optional[str]:
 
 
 def _to_float(value: Optional[object]) -> Optional[float]:
-    if value is None:
-        return None
-    if isinstance(value, (int, float)):
-        return float(value)
     if isinstance(value, str):
-        cleaned = value.replace(",", "").strip()
-        if not cleaned:
-            return None
-        cleaned = cleaned.replace("%", "")
-        try:
-            return float(cleaned)
-        except ValueError:
-            return None
-    return None
+        value = value.replace("%", "")
+    return coerce_amount(value)
 
 
 def _scale_currency(value: Optional[float]) -> Optional[float]:

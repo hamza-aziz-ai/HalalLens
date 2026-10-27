@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List
+from typing import List, Optional
 
 from alerts.storage import WatchEntry, WatchlistStorage
 
@@ -25,8 +25,18 @@ class AlertEngine:
     def __init__(self, storage: WatchlistStorage):
         self.storage = storage
 
-    def process_verdict(self, symbol: str, is_compliant: bool) -> List[AlertEvent]:
-        """Check every watch entry for the symbol and fire alerts on flip."""
+    def process_verdict(
+        self, symbol: str, is_compliant: Optional[bool]
+    ) -> List[AlertEvent]:
+        """Check every watch entry for the symbol and fire alerts on flip.
+
+        None (insufficient data / under review) is not a verdict: it neither
+        alerts nor moves the stored baseline, so True -> None -> False still
+        flips exactly once.
+        """
+
+        if is_compliant is None:
+            return []
 
         events: List[AlertEvent] = []
         for entry in self.storage.list():

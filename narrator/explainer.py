@@ -8,7 +8,7 @@ from typing import Callable, Dict, List, Optional
 
 from narrator.llm import LLMClient, LLMNarrationEngine, LLMNarrationError
 from narrator.models import NarrationResult, NarratorConfig
-from ratio_engine import RatioEvaluation
+from ratio_engine import COMPLIANT, NON_COMPLIANT, RatioEvaluation
 
 
 class RuleBasedNarrator:
@@ -20,16 +20,22 @@ class RuleBasedNarrator:
         "non_permissible_income_ratio": "Non-permissible income ratio",
     }
 
+    verdict_text: Dict[str, str] = {
+        COMPLIANT: "compliant with AAOIFI screens",
+        NON_COMPLIANT: "NOT compliant with AAOIFI screens",
+    }
+    insufficient_text = "insufficient data to screen against AAOIFI"
+
     def build(self, evaluation: RatioEvaluation) -> NarrationResult:
-        verdict = (
-            "compliant with AAOIFI screens"
-            if evaluation.is_compliant
-            else "NOT compliant with AAOIFI screens"
-        )
-        summary = (
-            f"{evaluation.symbol} is {verdict.lower()} for the filing dated "
-            f"{evaluation.filing_date.date().isoformat()}."
-        )
+        filing = evaluation.filing_date.date().isoformat()
+        verdict = self.verdict_text.get(evaluation.verdict, self.insufficient_text)
+        if evaluation.verdict in self.verdict_text:
+            summary = f"{evaluation.symbol} is {verdict.lower()} for the filing dated {filing}."
+        else:
+            # Unknown is not a failure: say so instead of "NOT compliant".
+            summary = (
+                f"{evaluation.symbol} has {verdict} for the filing dated {filing}."
+            )
 
         bullets: List[str] = []
         citations: List[str] = []
@@ -62,12 +68,12 @@ class RuleBasedNarrator:
             verdict=verdict,
             bullets=bullets,
             citations=citations or [summary],
-            metadata={"source": "rule_based"},
+            metadata={"source": "rule_based", "screen_verdict": evaluation.verdict},
         )
 
 
 class NarrationEngine:
-    """Hybrid narrator that can delegate to an LLM or rule-based engine."""
+    """Narration entry point. Deterministic only; see build() for why the LLM is bypassed."""
 
     def __init__(
         self,
@@ -80,7 +86,8 @@ class NarrationEngine:
         self.config = config or NarratorConfig.default()
         self.rule_based = RuleBasedNarrator()
         self.llm_engine: Optional[LLMNarrationEngine] = None
-        self.failure_callback = failure_callback
+        self.failure_callback = failure_callback  # unused while LLM is bypassed
+        self._llm_bypass_logged = False
 
         self.logger = logging.getLogger("narrator")
 
@@ -91,22 +98,22 @@ class NarrationEngine:
                 self.llm_engine = LLMNarrationEngine(llm_client, self.config)
 
     def build(self, evaluation: RatioEvaluation) -> NarrationResult:
-        """Produce a narration, preferring LLM output with safe fallback."""
+        """Narrate a screening result deterministically.
 
-        if self.llm_engine:
-            try:
-                return self.llm_engine.build(evaluation)
-            except LLMNarrationError as exc:
-                self.logger.warning(
-                    "LLM narration failed for %s, falling back to rule-based",
-                    evaluation.symbol,
-                    exc_info=True,
-                )
-                if self.failure_callback:
-                    try:
-                        self.failure_callback(evaluation, exc)
-                    except Exception:  # pragma: no cover - diagnostics only
-                        self.logger.exception("LLM failure callback crashed")
+        LLM prose cannot be validated against the engine verdict: a model can
+        echo the right status while its text says the opposite, and no keyword
+        filter closes that. Until a structured, per-claim check exists, every
+        screening path uses the rule-based narrator. The LLM classes stay in
+        narrator/llm.py for that later work and are not called from here.
+        """
+
+        if self.config.mode == "llm" and not self._llm_bypass_logged:
+            self.logger.warning(
+                "NARRATOR_MODE=llm is configured but LLM narration is disabled: "
+                "its prose is not validated against the engine verdict. "
+                "Using rule-based narration."
+            )
+            self._llm_bypass_logged = True
         return self.rule_based.build(evaluation)
 
 

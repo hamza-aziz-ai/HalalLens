@@ -20,6 +20,7 @@ import requests
 from pdfminer.high_level import extract_text
 from lxml import etree
 
+from ratio_engine.amounts import coerce_amount
 from etl.minio_client import BSEPDFStorage
 from database.database_manager import BSEDatabaseManager
 
@@ -892,18 +893,7 @@ class FinancialDataProcessor:
 
     @staticmethod
     def _coerce_numeric(value: Any) -> Optional[float]:
-        if value is None:
-            return None
-        if isinstance(value, (int, float)):
-            return float(value)
-        text = str(value).strip()
-        if not text:
-            return None
-        normalized = text.replace(",", "")
-        try:
-            return float(normalized)
-        except ValueError:
-            return None
+        return coerce_amount(value)
 
     @staticmethod
     def _apply_structured_scale(value: float, scale_hint: float) -> float:

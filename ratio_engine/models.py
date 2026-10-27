@@ -63,12 +63,33 @@ class RatioComputation:
     provider: Optional[str] = None
 
 
+# Engine verdicts. The spelling is what filing_evaluations.verdict stores.
+# "needs-review" is not an engine verdict: the API sets it on anomalous ratios.
+COMPLIANT = "compliant"
+NON_COMPLIANT = "non-compliant"
+INSUFFICIENT_DATA = "insufficient-data"
+
+
 @dataclass
 class RatioEvaluation:
     """Final evaluation object returned by the engine."""
 
     symbol: str
     filing_date: datetime
-    is_compliant: bool
+    verdict: str
     ratios: Dict[str, RatioComputation] = field(default_factory=dict)
     missing_inputs: Dict[str, str] = field(default_factory=dict)
+
+    @property
+    def is_compliant(self) -> Optional[bool]:
+        """True/False for a conclusive verdict, None when data is insufficient.
+
+        Not a dataclass field, so dataclasses.asdict() omits it: serialise
+        `verdict` and `is_compliant` explicitly.
+        """
+
+        if self.verdict == COMPLIANT:
+            return True
+        if self.verdict == NON_COMPLIANT:
+            return False
+        return None

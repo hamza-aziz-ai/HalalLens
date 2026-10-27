@@ -124,7 +124,8 @@ class LLMNarrationEngine:
 
     SYSTEM_PROMPT = (
         "You are an Islamic finance compliance analyst. "
-        "Given ratio facts you must explain whether the filing is compliant. "
+        "Given ratio facts and the screening verdict you must explain the result; "
+        "never contradict the verdict. "
         "Respond strictly as JSON with keys summary, verdict, bullets, citations."
     )
 
@@ -168,6 +169,7 @@ class LLMNarrationEngine:
         return (
             f"Symbol: {evaluation.symbol}\n"
             f"{citation}\n"
+            f"Screening verdict (authoritative): {evaluation.verdict}\n"
             "Facts:\n- " + "\n- ".join(facts) + "\n"
             "Return JSON with keys summary, verdict, bullets, citations "
             "where bullets reference the numeric facts and citations mention the filing date."
