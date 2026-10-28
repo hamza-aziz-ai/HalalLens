@@ -128,6 +128,10 @@ celerybeat.pid
 
 # Environments
 .env
+# Per-environment files hold secrets too (e.g. .env.production); only the
+# template is tracked.
+.env.*
+!.env.example
 .venv
 env/
 venv/
