@@ -63,7 +63,7 @@ pipenv run python -m jobs.ingest_bse --from-date 20251009 --to-date 20251009 --s
 
 `--save-cache` stores raw JSON in `cache/` for audits; clean it when finished.
 
-**Evaluations.** `jobs.backfill_evaluations` has no date flags: it takes the most recent filings (default 500) and only fills in rows that have **no ratios yet**. It does **not** recompute stored evaluations, so it cannot repair verdicts produced by older ratio logic. Recompute/dry-run tooling is not written yet; until it exists, treat stored verdicts from before the engine change as stale (see `docs/ROLLBACK.md`).
+**Evaluations.** `jobs.backfill_evaluations` (no flags) takes the most recent filings (default `--limit 500`) and only fills in rows that have **no evaluation yet**. To repair evaluations computed by older ratio logic, use the recompute mode: `python -m jobs.backfill_evaluations --recompute --report before_after.csv` (dry run), then add `--write`. It re-evaluates rows that already have an evaluation from the stored snapshot (governance overrides applied) and the stored market caps, never calls the vendor or Bhavcopy, keeps `needs-review` for open quality issues, and skips rows with no stored market cap. `--write` requires `--report`, and the CSV is written before any database write. See `docs/ROLLBACK.md` before running it against a database people use.
 
 ## 4. Logs & monitoring
 

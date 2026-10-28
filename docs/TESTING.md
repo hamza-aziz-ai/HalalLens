@@ -11,6 +11,8 @@ docker build -f api.Dockerfile -t halal-lens-api:check .     # when Pipfile, Doc
 docker run --rm -v "$PWD:/repo:ro" ghcr.io/gitleaks/gitleaks:latest git /repo --no-banner --redact   # secrets over history
 ```
 
+Recompute dry run (needs a database): `pipenv run python -m jobs.backfill_evaluations --recompute --report before_after.csv`; nothing is written without `--write`.
+
 **Pass looks like:** `pytest` ends with `N passed` and no failures (503 at the time of PR #87); jest `Test Suites: 7 passed`; lint `No ESLint warnings or errors`; `next build` finishes; gitleaks `no leaks found`.
 
 ## CI (required on every PR)

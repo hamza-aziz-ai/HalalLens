@@ -11,16 +11,15 @@ Read first: [ARCHITECTURE.md](ARCHITECTURE.md), [CONSTRAINTS.md](CONSTRAINTS.md)
 - Maintainer decisions: Docker deployment is the canonical UI (D-011); no production data yet, so the dry run waits (D-012); leaked secrets were sandbox-only and rotated; Codex re-check of #87 skipped for now.
 
 **In progress**
-- PR-B: recompute + dry-run tooling for stored evaluations.
+- Recompute tooling (`jobs.backfill_evaluations --recompute`) in its own PR, stacked on #90. Also fixes `scripts/run_backfill_2025.sh`, which passed date flags the job never read.
 
 **Broken or risky**
 - Stored evaluations computed by the old engine stay possibly false-`compliant` until recomputed (development data only for now).
 - `/alerts/check` still trusts the caller's verdict and iterates every user's entries.
 
 **Next**
-1. PR-B (recompute + dry-run tooling).
-2. Security PR for `/alerts/check`.
-3. Decide whether to keep `nextjs.yml` (Pages is not the canonical UI).
+1. Security PR for `/alerts/check`.
+2. Decide whether to keep `nextjs.yml` (Pages is not the canonical UI).
 
 **Do not touch**
 - Production deploys outside the controlled cutover (`docs/ROLLBACK.md`). Force-pushes to `main`.

@@ -38,7 +38,7 @@ docker compose up --build                  # API + UI + ingestion against an ext
 - **Razorpay webhooks are idempotent** via the unique `(provider, event_id)` index on `payment_events`; keep it that way.
 - **Rate limiter is per-process memory.** Fine for the pilot; don't claim multi-worker correctness without moving it to Redis.
 - **New env vars go in `.env.example`.** Never commit secrets, keys or CSVs of keys (a `rzp-key.csv` was already removed once).
-- Changing ratio logic? Add/adjust a row in the golden table in `tests/test_ratio_engine.py`. Verdicts come ONLY from `RatioEngine` (`RatioEvaluation.verdict`: `compliant` / `non-compliant` / `insufficient-data`; `is_compliant` is True/False/None); never re-derive them in API, jobs or UI. `needs-review` is an API-level overlay. `jobs.backfill_evaluations` does NOT recompute stored evaluations (it skips rows that already have ratios, takes the latest 500 and re-enriches from the vendor); historical repair needs the recompute tooling (not yet written).
+- Changing ratio logic? Add/adjust a row in the golden table in `tests/test_ratio_engine.py`. Verdicts come ONLY from `RatioEngine` (`RatioEvaluation.verdict`: `compliant` / `non-compliant` / `insufficient-data`; `is_compliant` is True/False/None); never re-derive them in API, jobs or UI. `needs-review` is an API-level overlay. `jobs.backfill_evaluations` does NOT recompute stored evaluations (it skips rows that already have ratios, takes the latest 500 and re-enriches from the vendor); historical repair uses `--recompute` (frozen stored inputs, dry run by default, `--write` requires `--report`).
 - Tests must not need live Postgres/MinIO/LLM/vendor APIs; `tests/conftest.py` resets the rate limiter between tests.
 
 ## Pull requests and releases

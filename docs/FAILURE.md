@@ -15,7 +15,7 @@ For each dependency: what if it is slow, down, wrong or empty? First limit expec
 | The verdict engine                 | Bad input                                         | Unknown, never a pass; non-finite quotients are `invalid`                                                                 | Golden tests; `missing_inputs` in responses                         |
 
 ## Limits we expect to hit first
-1. **`insufficient-data` volume.** Interest and dividend figures are rarely extracted, so many filings will be unknown. Measure with the PR-B dry run.
+1. **`insufficient-data` volume.** Interest and dividend figures are rarely extracted, so many filings will be unknown. Measure with the `--recompute` dry-run report once real data exists.
 2. **Per-process rate limiter** once `uvicorn --workers N` > 1 or after restarts.
 3. **Single Postgres / single host** for the pilot.
 
