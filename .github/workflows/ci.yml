@@ -79,7 +79,19 @@ jobs:
   # context) and smoke-tests them without a database. Nothing is pushed and no
   # registry credentials are used here.
   docker:
-    runs-on: ubuntu-latest
+    # Same build and smoke tests on amd64 and on GitHub's native arm64 runner
+    # (Oracle Ampere hosts are arm64). The amd64 run keeps the check name
+    # `docker`; the arm64 run reports as `docker-arm64`.
+    name: ${{ matrix.check }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - check: docker
+            runner: ubuntu-latest
+          - check: docker-arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
