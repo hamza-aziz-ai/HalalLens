@@ -47,6 +47,7 @@ graph TD
         R1["Razorpay"] -- "[B]" --> R2["/webhooks/razorpay"]
         R2 --> R3["payment_events (idempotent)"]
         R3 --> R4["user_subscriptions"]
+        R3 --> R5["users.plan"]
     end
 ```
 
