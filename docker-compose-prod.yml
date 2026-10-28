@@ -149,18 +149,38 @@ services:
     environment:
       HALAL_APP_DOMAIN: ${HALAL_APP_DOMAIN:?set in .env}
       ACME_EMAIL: ${ACME_EMAIL:?set in .env}
+      # tls: Caddy serves the domain on 80/443 with Let's Encrypt.
+      # tunnel: Caddy serves plain HTTP (":80") to cloudflared only; see the
+      # cloudflared service below and the Caddyfile.
+      CADDY_MODE: ${CADDY_MODE:-tls}
+      CADDY_SITE_ADDRESS: ${CADDY_SITE_ADDRESS:-${HALAL_APP_DOMAIN}}
     depends_on:
       api:
         condition: service_healthy
       ui:
         condition: service_healthy
+    # Tunnel mode sets CADDY_BIND=127.0.0.1 so nothing outside the host can
+    # reach Caddy directly (and pick its own Cf-Connecting-Ip).
     ports:
-      - "80:80"
-      - "443:443"
+      - "${CADDY_BIND:-0.0.0.0}:80:80"
+      - "${CADDY_BIND:-0.0.0.0}:443:443"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
+    restart: unless-stopped
+
+  # Cloudflare Tunnel (tunnel mode only: COMPOSE_PROFILES=tunnel). Connects out
+  # to Cloudflare, so the host needs no open web ports and no certificates.
+  # In the Zero Trust dashboard, route the public hostname to http://caddy:80.
+  cloudflared:
+    image: cloudflare/cloudflared:2026.10.0
+    profiles: ["tunnel"]
+    command: ["tunnel", "--no-autoupdate", "run"]
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:-}
+    depends_on:
+      - caddy
     restart: unless-stopped
 
   ingestion:

@@ -33,15 +33,19 @@ docker run -d --name hl-proxy-ui --network "$NET" --network-alias ui "$UI_IMAGE"
 # ":80" makes Caddy serve plain HTTP for the test instead of requesting a cert.
 # The Caddyfile is copied in rather than bind-mounted: on some hosts a
 # single-file bind mount silently leaves the image's default config in place.
-docker create --name hl-proxy-caddy --network "$NET" -p "$PORT:80" \
-  -e HALAL_APP_DOMAIN=":80" -e ACME_EMAIL=smoke@example.invalid caddy:2 >/dev/null
-docker cp Caddyfile hl-proxy-caddy:/etc/caddy/Caddyfile
-docker start hl-proxy-caddy >/dev/null
-
-for _ in $(seq 1 90); do
-  curl -sf -o /dev/null "$BASE/api/health" && curl -sf -o /dev/null "$BASE/" && break
-  sleep 1
-done
+start_caddy() {  # mode
+  docker rm -f hl-proxy-caddy >/dev/null 2>&1 || true
+  docker create --name hl-proxy-caddy --network "$NET" -p "$PORT:80" \
+    -e CADDY_SITE_ADDRESS=":80" -e CADDY_MODE="$1" \
+    -e ACME_EMAIL=smoke@example.invalid caddy:2 >/dev/null
+  docker cp Caddyfile hl-proxy-caddy:/etc/caddy/Caddyfile
+  docker start hl-proxy-caddy >/dev/null
+  for _ in $(seq 1 90); do
+    curl -sf -o /dev/null "$BASE/api/health" && curl -sf -o /dev/null "$BASE/" && return 0
+    sleep 1
+  done
+}
+start_caddy tls
 
 fail() { echo "FAIL $*" >&2; docker logs hl-proxy-caddy 2>&1 | tail -20 >&2; exit 1; }
 status() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
@@ -81,5 +85,20 @@ for i in 1 2 3; do
     "$BASE/api/halal-score")"
 done
 check "forged X-Forwarded-For does not reset the rate limit" " 200 200 429" "$codes"
+
+# Tunnel mode: only cloudflared reaches Caddy, and the client address comes
+# from Cloudflare's Cf-Connecting-Ip. Each client must get its own bucket, and
+# a forged X-Forwarded-For must not change which bucket is used.
+echo "== tunnel mode"
+start_caddy tunnel
+score() {  # cf-connecting-ip forged-xff
+  status -H "Cf-Connecting-Ip: $1" -H "X-Forwarded-For: $2" -H 'Content-Type: application/json' \
+    -d '{"snapshot":{"symbol":"ABC","filing_date":"2026-01-01T00:00:00"},"market_data":{"market_cap":1000}}' \
+    "$BASE/api/halal-score"
+}
+codes=""
+for i in 1 2 3 4; do codes="$codes $(score 198.51.100.7 "203.0.113.$i")"; done
+check "one tunnel client is limited despite forged X-Forwarded-For" " 200 200 200 429" "$codes"
+check "another tunnel client has its own bucket" 200 "$(score 198.51.100.8 203.0.113.1)"
 
 echo "Proxy smoke test passed."
