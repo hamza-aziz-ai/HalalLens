@@ -12,10 +12,13 @@ permissions:
 jobs:
   release-please:
     runs-on: ubuntu-latest
+    # RELEASE_PLEASE_TOKEN lives in the `release` environment, which only `main`
+    # may use, so workflows run for pull requests can never read this personal
+    # token (its owner can bypass the ruleset). See docs/DEPENDENCIES.md.
+    environment: release
     env:
-      # Set when the repo secret exists; without it the job falls back to the
-      # default token: the release PR is opened but CI does not run on it, so it
-      # has to be merged by hand (owner bypass).
+      # Without the secret the job falls back to the default token: the release
+      # PR is opened but CI does not run on it, so it is merged by hand.
       HAS_RELEASE_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN != '' }}
     steps:
       # Opens/updates a release PR from Conventional Commit titles on main.
