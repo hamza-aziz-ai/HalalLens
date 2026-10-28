@@ -119,7 +119,7 @@ pipenv run python -m jobs.ingest_bse --from-date 20251009 --to-date 20251009 --s
 ## 7. Disaster recovery
 
 - **Postgres**: snapshot nightly (pg_dump or managed backup).  
-- **MinIO PDFs**: replicate the bucket externally (MinIO gateway or rclone).  
+- **Filing PDFs** (S3-compatible bucket, Cloudflare R2 in production): copy the bucket elsewhere with rclone; PDFs can also be re-downloaded from BSE by re-running ingestion.  
 - **Cache/downloads**: not critical—rebuildable by re-running ingestion.  
 - **.env** / secrets: store in a secure vault and version them with change history.
 - **Log retention**: rotate monthly via the existing folder structure. Prune anything >90 days unless compliance demands longer (`find logs -type f -mtime +90 -delete`). Archive `logs/metrics/*.jsonl` after importing into your dashboarding stack.

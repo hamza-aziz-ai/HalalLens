@@ -49,6 +49,12 @@ MINIO_HOST = os.getenv("MINIO_HOST", "localhost")
 MINIO_PORT = _as_int(os.getenv("MINIO_PORT"), 9000)
 MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY")
 MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY")
+# Any S3-compatible store works (self-hosted MinIO, Cloudflare R2, ...).
+# R2: MINIO_HOST=<account-id>.r2.cloudflarestorage.com, MINIO_PORT=443,
+# MINIO_SECURE=true, MINIO_REGION=auto.
+MINIO_SECURE = _as_bool(os.getenv("MINIO_SECURE"), False)
+MINIO_REGION = os.getenv("MINIO_REGION") or None
+MINIO_BUCKET = os.getenv("MINIO_BUCKET", "bse-pdfs")
 
 NARRATOR_MODE = os.getenv("NARRATOR_MODE", "rule_based")
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "vllm")

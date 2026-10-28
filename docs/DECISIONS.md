@@ -122,3 +122,15 @@ One entry per decision, newest last. Model for every entry below: Claude Sonnet 
 - **Revisit if:** an auto-merged change breaks the app, or a second contributor joins.
 - **Revised 2026-10-28 (maintainer, after a council with Codex):** activation is held until the test plan in docs/TESTING.md lands, because with CI as the only gate the tests must catch what a reviewer would. The scope is narrowed: sensitive paths (`.github/**`, `CODEOWNERS`, migrations, `schema.sql`, `api/app.py`, `api/security.py`, auth/billing modules, `ratio_engine/**`, tests and gate config) keep a deliberate owner merge, enforced by CODEOWNERS plus a code-owner-review ruleset and a `pull_request_target` policy job. The first `auto-merge.yml` ran on `pull_request` from the PR's own head and enabled auto-merge on the very PR that added it, so it was removed. Until then: Dependabot minor/patch for Actions and UI dev deps (D-006) and docs-only PRs (`docs-automerge.yml`) auto-merge.
 
+## D-016: Filing PDFs in Cloudflare R2; MinIO leaves the production stack
+- **Date:** 2026-10-28   Model: Claude Opus 5.5 (maintainer's choice)
+- **Context:** `docker-compose-prod.yml` pinned `minio/minio:RELEASE.2023-03-20T20-16-18Z`, which can no longer be pulled from Docker Hub or Quay: MinIO stopped publishing free images and the community edition is source-only. The production stack could not start on a fresh host. The target host is a free Oracle Ampere VM, where RAM is limited.
+- **Options:**
+  1. Cloudflare R2 (S3-compatible, external)
+  2. Another self-hosted S3 server (SeaweedFS, Garage)
+  3. Build MinIO from source or use a third-party repackage
+- **Chosen:** 1.
+- **Why:** Free for 10 GB with free egress, uses none of the VM's RAM or disk, and the existing MinIO Python SDK talks to any S3 endpoint, so the code change is configuration (HTTPS, region, bucket) and one shared client factory.
+- **Trade-off:** PDFs live with a third party (they are public BSE documents). A bucket-scoped R2 token cannot list or create buckets, so the maintainer creates the bucket and preflight checks only that bucket. Local development keeps a MinIO it already runs.
+- **Revisit if:** storage exceeds the free tier, or the product must keep all data on one host.
+

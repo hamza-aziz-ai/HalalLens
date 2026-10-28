@@ -11,12 +11,12 @@ from typing import Callable, List, Tuple
 
 import psycopg2
 import requests
-from minio import Minio
 from psycopg2 import OperationalError
 from urllib.parse import urlparse
 
 from config import (
     MINIO_ACCESS_KEY,
+    MINIO_BUCKET,
     MINIO_HOST,
     MINIO_PORT,
     MINIO_SECRET_KEY,
@@ -29,6 +29,7 @@ from config import (
     LLM_ENDPOINT,
     LLM_MODEL,
 )
+from etl.minio_client import make_storage_client
 from config.logging_config import configure_logging
 
 
@@ -72,14 +73,13 @@ def _check_minio() -> bool:
         logger.error("MinIO credentials missing; set MINIO_ACCESS_KEY/SECRET_KEY")
         return False
     try:
-        client = Minio(
-            endpoint=f"{MINIO_HOST}:{MINIO_PORT}",
-            access_key=MINIO_ACCESS_KEY,
-            secret_key=MINIO_SECRET_KEY,
-            secure=False,
-        )
-        client.list_buckets()
-        logger.info("MinIO reachable at %s:%s", MINIO_HOST, MINIO_PORT)
+        client = make_storage_client()
+        # Checks the one bucket the app uses: a bucket-scoped token (e.g. an R2
+        # "Object Read & Write" token) may not list all buckets.
+        if not client.bucket_exists(MINIO_BUCKET):
+            logger.error("Object store bucket '%s' not found at %s:%s", MINIO_BUCKET, MINIO_HOST, MINIO_PORT)
+            return False
+        logger.info("Object store reachable at %s:%s, bucket '%s'", MINIO_HOST, MINIO_PORT, MINIO_BUCKET)
         return True
     except Exception as exc:  # pragma: no cover - network failures
         logger.error("MinIO connection failed: %s", exc)
