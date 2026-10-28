@@ -173,7 +173,7 @@ Operations (logs, metrics, backups, secret rotation, troubleshooting): [`README_
 - **`main` is protected by a ruleset:** pull request required (squash merge), the three checks above must pass; the repository owner can bypass for hotfixes.
 - **Dependabot** opens weekly update PRs. Auto-merge is enabled only for minor/patch updates of GitHub Actions and UI dev dependencies; Python packages are reviewed by hand.
 - **Releases:** release-please opens a release PR from Conventional Commit titles on `main` (`feat:`, `fix:`, `ci:` ...). Merging it tags `vX.Y.Z`, updates `CHANGELOG.md` and publishes a GitHub Release. `build:`, `ci:` and `docs:` do not cut a release.
-- **Pages:** `nextjs.yml` publishes the static dashboard to GitHub Pages on every push to `main`; it does not set `NEXT_PUBLIC_HALAL_API_BASE_URL`, so the Pages build is not wired to an API.
+- **Pages:** `nextjs.yml` still publishes the static dashboard to GitHub Pages on every push to `main`, but it does not set `NEXT_PUBLIC_HALAL_API_BASE_URL`, so that build is not wired to an API. **The canonical UI is the Docker deployment** (`ui` service).
 - No container registry or API deployment workflow exists yet.
 
 ---

@@ -2,7 +2,30 @@
 
 Read first: [ARCHITECTURE.md](ARCHITECTURE.md), [CONSTRAINTS.md](CONSTRAINTS.md). Newest entry on top. Update last, every session.
 
-## Latest session: 2026-10-27 (model: Claude Sonnet 5.5, `claude-sonnet-5-5`; design reviewed with Codex, 3 rounds; LLM mode restored at the maintainer's request, D-010; AGENTS/CLAUDE/MEMORY synced)
+## Latest session: 2026-10-28 (model: Claude Opus 5.5, `claude-opus-5-5`; switched from Claude Sonnet 5.5 at the start of this session)
+
+**Done**
+- PR #87 (verdict engine) and PR #88 (docs, AGENTS.md, CLAUDE.md) merged by the maintainer. Release PR #89 (`0.1.1`) is open.
+- Maintainer reviewed the DEFENSE brief and agreed with it (draft banner removed). Their table alignment and wording edits are committed.
+- Codex session ID and the local field-guide path removed from the tracked files (they remain in earlier git history).
+- Maintainer decisions: Docker deployment is the canonical UI (D-011); no production data yet, so the dry run waits (D-012); leaked secrets were sandbox-only and rotated; Codex re-check of #87 skipped for now.
+
+**In progress**
+- PR-B: recompute + dry-run tooling for stored evaluations.
+
+**Broken or risky**
+- Stored evaluations computed by the old engine stay possibly false-`compliant` until recomputed (development data only for now).
+- `/alerts/check` still trusts the caller's verdict and iterates every user's entries.
+
+**Next**
+1. PR-B (recompute + dry-run tooling).
+2. Security PR for `/alerts/check`.
+3. Decide whether to keep `nextjs.yml` (Pages is not the canonical UI).
+
+**Do not touch**
+- Production deploys outside the controlled cutover (`docs/ROLLBACK.md`). Force-pushes to `main`.
+
+## Session: 2026-10-27 (model: Claude Sonnet 5.5, `claude-sonnet-5-5`; design reviewed with Codex, 3 rounds; LLM mode restored at the maintainer's request, D-010; AGENTS/CLAUDE/MEMORY synced)
 
 **Done**
 - CI rework merged (PR #74): `backend`, `ui`, `secrets` checks, SHA-pinned actions, torch/langchain/playwright/etc. removed from `Pipfile` (103 -> 47 packages), `python_full_version` pin removed (it broke image builds).
