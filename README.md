@@ -162,6 +162,8 @@ cp .env.example .env     # set POSTGRES_*, MINIO_*, INDIAN_API_*, NEXT_PUBLIC_HA
 docker compose up --build
 ```
 
+Published images: every release publishes `halallens-api` and `halallens-ui` for linux/amd64 and linux/arm64 to GHCR (`ghcr.io/hamza-aziz-ai/halallens-api`, `...-ui`) and, when configured, Docker Hub, tagged `vX.Y.Z` (and `latest` for the newest release). See `.github/workflows/publish-images.yml`.
+
 Operations (logs, metrics, backups, secret rotation, troubleshooting): [`README_ops.md`](README_ops.md). Ingestion CLI: [`README_ingestion.md`](README_ingestion.md).
 
 > **Before deploying a new verdict engine** to a database that already holds evaluations, read [`docs/ROLLBACK.md`](docs/ROLLBACK.md) and [`docs/HANDOVER.md`](docs/HANDOVER.md): stored evaluations keep their old verdicts until they are recomputed.

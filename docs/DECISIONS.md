@@ -145,3 +145,16 @@ One entry per decision, newest last. Model for every entry below: Claude Sonnet 
 - **Trade-off:** In tunnel mode the API trusts `Cf-Connecting-Ip` for client identity, so Caddy must be reachable only through the tunnel (`CADDY_BIND=127.0.0.1`, firewall closed to 80/443); if it were exposed, a client could pick its own rate-limit bucket. Traffic and TLS terminate at Cloudflare.
 - **Revisit if:** the host moves off Cloudflare DNS, or the product needs end-to-end TLS it controls.
 
+## D-018: Publish images to GHCR and Docker Hub, gated on CI
+- **Date:** 2026-10-28   Model: Claude Opus 5.5 (maintainer's choice: publish soon, to both registries; design agreed with Codex)
+- **Context:** CI built and smoke-tested the images on every PR but published nothing; deployment built images on the server. The maintainer wanted public images, visible on Docker Hub and in the repository's Packages panel.
+- **Options:**
+  1. Keep building on each server
+  2. GHCR only
+  3. Docker Hub only
+  4. Both
+- **Chosen:** 4, after the Node 24 and non-root Python image hardening, before the remaining hardening (digest-pinned bases, static non-root UI).
+- **Why:** GHCR needs no extra credentials and shows next to the code; Docker Hub is where people look for images. Publishing from CI means every server runs the exact image CI tested.
+- **Trade-off:** Public version tags are permanent, so a later hardening fix ships as a new version, never by rewriting an old tag. The UI image still runs as root until the static UI step. Per-architecture tags (`vX.Y.Z-amd64`, `-arm64`) are visible next to the joined tag.
+- **Revisit if:** the project goes private (make the packages and Docker Hub repositories private or move to a private registry), or a buyer wants another registry.
+

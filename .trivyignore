@@ -1,0 +1,4 @@
+# Reviewed Trivy exceptions for the published images (publish-images.yml).
+# One CVE ID per line, each with a comment giving the reason and an expiry date,
+# e.g.:  CVE-2026-12345  # unreachable: <why>; expires 2027-01-31
+# Empty means no exceptions.

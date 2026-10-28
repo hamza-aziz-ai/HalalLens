@@ -30,6 +30,9 @@ None. `ratio_engine/amounts.py` uses only the standard library (`decimal`, `math
 ## External services
 - Cloudflare R2: filing PDF storage in production (D-016), reached through the `minio` SDK's S3 API. Free tier 10 GB, free egress.
 
+- GitHub Container Registry and Docker Hub: published images (D-018). Docker Hub credentials are the `DOCKERHUB_TOKEN` secret in the `publish` environment.
+- Trivy (`aquasec/trivy:0.75.0` image, run in `publish-images.yml`): vulnerability scan before publishing; run as a container rather than a marketplace action to keep third-party code out of a job that holds registry credentials.
+
 ## CI actions (pinned by commit SHA)
 `actions/checkout`, `actions/setup-python`, `actions/setup-node`, `gitleaks/gitleaks-action`, `dependabot/fetch-metadata`, `googleapis/release-please-action`. Dependabot keeps the SHAs fresh.
 
