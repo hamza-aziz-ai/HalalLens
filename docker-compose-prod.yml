@@ -68,6 +68,10 @@ services:
       ]
     volumes:
       - logs_data:/app/logs
+      # cache/watchlists.json (user watchlists and alert baselines) and vendor
+      # caches must survive container recreation. Interim until watchlists move
+      # to Postgres; see docs/HANDOVER.md.
+      - api_cache:/app/cache
     restart: unless-stopped
     healthcheck:
       test:
@@ -229,6 +233,7 @@ services:
       retries: 3
 
 volumes:
+  api_cache:
   postgres_data:
   minio_data:
   logs_data:
