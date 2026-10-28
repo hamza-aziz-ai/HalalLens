@@ -75,6 +75,24 @@ jobs:
       - name: Build
         run: npm run build
 
+  # Builds the images from a clean checkout (only tracked files reach the build
+  # context) and smoke-tests them without a database. Nothing is pushed and no
+  # registry credentials are used here.
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Build images
+        run: |
+          docker build -f api.Dockerfile -t halallens-api:ci .
+          docker build -f ui.Dockerfile -t halallens-ui:ci .
+          docker build -f scheduler.Dockerfile -t halallens-scheduler:ci .
+
+      - name: Smoke-test images
+        run: bash scripts/docker_smoke.sh halallens-api:ci halallens-ui:ci halallens-scheduler:ci
+
   secrets:
     runs-on: ubuntu-latest
     permissions:
