@@ -1469,6 +1469,9 @@ class BSEDatabaseManager:
                     fe.market_cap_used,
                     fe.trailing_cap_used,
                     fe.market_data_provider,
+                    -- The jobs need "has a non-empty evaluation" without pulling the
+                    -- ratios JSON into the /filings/recent response (FilingResponse.ratios).
+                    (fe.ratios IS NOT NULL AND fe.ratios <> '{}'::jsonb) AS has_ratios,
                     fs.parsed_at AS snapshot_parsed_at,
                     (go.symbol IS NOT NULL) AS governance_override_applied,
                     go.source AS governance_override_source,
@@ -1490,7 +1493,7 @@ class BSEDatabaseManager:
                 LEFT JOIN governance_overrides go
                   ON a.symbol = go.symbol
                  AND a.filing_date = go.filing_date
-                ORDER BY (fe.ratios IS NOT NULL)::int DESC, a.filing_date DESC
+                ORDER BY (fe.ratios IS NOT NULL)::int DESC, a.filing_date DESC, a.symbol
                 LIMIT %(limit)s
                 """
                 cursor.execute(query, {"limit": limit})
