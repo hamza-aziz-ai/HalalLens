@@ -23,8 +23,10 @@ run_slice() {
   if ! pipenv run python -m jobs.ingest_bse --from-date "$(date -d "$from" +%Y%m%d)" --to-date "$(date -d "$to" +%Y%m%d)" --save-cache >>"$LOG_FILE" 2>&1; then
     log "ingest_bse failed for $from-$to"; return 1
   fi
-  log "Starting backfill_evaluations for $from to $to"
-  pipenv run python -m jobs.backfill_evaluations --from-date "$(date -d "$from" +%Y%m%d)" --to-date "$(date -d "$to" +%Y%m%d)" >>"$LOG_FILE" 2>&1
+  # backfill_evaluations has no date flags: it evaluates the most recent filings
+  # that have no evaluation yet (the ones this slice just ingested among them).
+  log "Starting backfill_evaluations after slice $from to $to"
+  pipenv run python -m jobs.backfill_evaluations >>"$LOG_FILE" 2>&1
   log "Completed slice $from-$to"
 }
 
