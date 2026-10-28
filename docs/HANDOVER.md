@@ -11,8 +11,8 @@ Read first: [ARCHITECTURE.md](ARCHITECTURE.md), [CONSTRAINTS.md](CONSTRAINTS.md)
 - Maintainer decisions: HalalLens is an open-source showcase now and will be privatized and monetized later, so it stays sale-ready (D-013, AGENTS.md "Project stance"); Docker deployment is the canonical UI (D-011); no production data yet, so the dry run waits (D-012); leaked secrets were sandbox-only and rotated; Codex re-check of #87 skipped for now.
 
 **In progress**
-- Fully automatic merge (D-015, PR #92, merged into #91's branch): `auto-merge.yml` replaces the Dependabot-only workflow. On hold: #91 (which now carries it) is not merged and the Dependabot backlog is not enabled until the test suite is strengthened (maintainer, 2026-10-28: CI is the only gate, so tests come first).
-- Fully automatic releases (D-014, PR #92): workflow ready; needs the maintainer to create the `RELEASE_PLEASE_TOKEN` secret.
+- Wider auto-merge (D-015) is held until the test plan in docs/TESTING.md lands (PR1 #93 merged, PR2 #94 open); sensitive paths will keep an owner merge. `auto-merge.yml` was removed from #91. Live now: Dependabot minor/patch auto-merge and docs-only auto-merge (#96; #97 merged itself).
+- Fully automatic releases (D-014): `release-please.yml` uses `RELEASE_PLEASE_TOKEN` from the `release` environment (only `main`); live once #91 merges.
 - Recompute tooling (`jobs.backfill_evaluations --recompute`) in PR #91, stacked on #90; reviewed with Codex. The review found that `get_recent_filings` never returned `ratios`, so the plain backfill overwrote evaluated filings and the recompute selected nothing; fixed with a `has_ratios` projection. Also points `scripts/run_backfill_2025.sh` at `jobs.precompute_evaluations`.
 
 **Broken or risky**

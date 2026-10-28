@@ -43,7 +43,7 @@ One entry per decision, newest last. Model for every entry below: Claude Sonnet 
 - **Why:** Repo rule: fix once in the shared function. A boolean became a verified zero income in four places.
 - **Trade-off:** Behavior changes for malformed inputs (now unknown). Numeric JSON literals already decoded to 0.0 are outside the guarantee.
 
-## D-006: `main` is protected by a ruleset; auto-merge is narrow  (auto-merge scope SUPERSEDED by D-015)
+## D-006: `main` is protected by a ruleset; auto-merge is narrow  (still in force; D-015 will widen it once its conditions are met)
 - **Chosen:** PR + `backend`/`ui`/`secrets` required, squash only, owner bypass. Auto-merge only for Dependabot minor/patch of GitHub Actions and UI dev deps.
 - **Why:** Python packages touch ETL scaling and verdict logic; tests do not yet prove dependency bumps safe there.
 - **Revisit if:** the verdict golden table and ETL fixtures cover those libraries.
@@ -109,7 +109,7 @@ One entry per decision, newest last. Model for every entry below: Claude Sonnet 
 - **Trade-off:** The token is tied to the maintainer's account and expires (at most one year), so it must be renewed; merges show as the maintainer. Every `feat:`/`fix:` on `main` now releases without a human step. A release is only a tag and notes; deployment stays manual (ROLLBACK.md).
 - **Revisit if:** the project gets a second maintainer or is sold (then a GitHub App, option 3), or releases need a human gate.
 
-## D-015: Every pull request merges automatically once CI passes
+## D-015: Pull requests merge automatically once CI passes (HELD; scope revised)
 - **Date:** 2026-10-28   Model: Claude Opus 5.5 (maintainer's decision: "fully automatic merge ... past, present, future")
 - **Context:** Auto-merge covered only Dependabot minor/patch updates of GitHub Actions and UI dev dependencies (D-006); everything else waited for a human.
 - **Options:**
@@ -119,4 +119,5 @@ One entry per decision, newest last. Model for every entry below: Claude Sonnet 
 - **Why:** The maintainer wants the repository to run without manual merges.
 - **Trade-off:** No human reads a diff before it reaches `main`. Major upgrades (Next, zod, eslint) and Python packages on the ETL/verdict paths merge if CI passes, and CI cannot catch everything. A merge is not a deployment: production changes still go through the cutover in ROLLBACK.md. Merges by Dependabot runs use `GITHUB_TOKEN` (Dependabot runs cannot read Actions secrets), so their push to `main` does not start other workflows unless `RELEASE_PLEASE_TOKEN` is also stored as a Dependabot secret.
 - **Revisit if:** an auto-merged change breaks the app, or a second contributor joins.
+- **Revised 2026-10-28 (maintainer, after a council with Codex):** activation is held until the test plan in docs/TESTING.md lands, because with CI as the only gate the tests must catch what a reviewer would. The scope is narrowed: sensitive paths (`.github/**`, `CODEOWNERS`, migrations, `schema.sql`, `api/app.py`, `api/security.py`, auth/billing modules, `ratio_engine/**`, tests and gate config) keep a deliberate owner merge, enforced by CODEOWNERS plus a code-owner-review ruleset and a `pull_request_target` policy job. The first `auto-merge.yml` ran on `pull_request` from the PR's own head and enabled auto-merge on the very PR that added it, so it was removed. Until then: Dependabot minor/patch for Actions and UI dev deps (D-006) and docs-only PRs (`docs-automerge.yml`) auto-merge.
 
