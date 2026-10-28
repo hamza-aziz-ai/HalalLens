@@ -172,6 +172,7 @@ Operations (logs, metrics, backups, secret rotation, troubleshooting): [`README_
 - **CI** (`.github/workflows/ci.yml`): `backend` (pytest), `ui` (lint, jest, build) and `secrets` (gitleaks over full history). Actions are pinned by SHA; the token is read-only.
 - **`main` is protected by a ruleset:** pull request required (squash merge), the three checks above must pass; the repository owner can bypass for hotfixes.
 - **Dependabot** opens weekly update PRs. Auto-merge is enabled only for minor/patch updates of GitHub Actions and UI dev dependencies; Python packages are reviewed by hand.
+- **Docs-only PRs auto-merge** (`docs-automerge.yml`): when every changed file is Markdown under `docs/` or `Documentations/`, a README or `CHANGELOG.md`, the PR squash-merges once `backend`, `ui` and `secrets` pass. `AGENTS.md` and `CLAUDE.md` stay manual. The rule runs from `main` (`pull_request_target`), so a PR cannot change the rule that judges it.
 - **Releases:** release-please opens a release PR from Conventional Commit titles on `main` (`feat:`, `fix:`, `ci:` ...). Merging it tags `vX.Y.Z`, updates `CHANGELOG.md` and publishes a GitHub Release. `build:`, `ci:` and `docs:` do not cut a release.
 - **Pages:** `nextjs.yml` still publishes the static dashboard to GitHub Pages on every push to `main`, but it does not set `NEXT_PUBLIC_HALAL_API_BASE_URL`, so that build is not wired to an API. **The canonical UI is the Docker deployment** (`ui` service).
 - No container registry or API deployment workflow exists yet.
