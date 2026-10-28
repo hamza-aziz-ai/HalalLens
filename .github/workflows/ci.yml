@@ -38,8 +38,13 @@ jobs:
           pip install pipenv
           pipenv install --dev --deploy
 
-      - name: Run tests
-        run: pipenv run pytest
+      # Fails if installed packages have conflicting requirements.
+      - name: Check dependency consistency
+        run: pipenv run pip check
+
+      # Coverage floor (fail_under) lives in .coveragerc.
+      - name: Run tests with coverage
+        run: pipenv run pytest --cov --cov-report=term
 
   ui:
     runs-on: ubuntu-latest
@@ -63,8 +68,9 @@ jobs:
       - name: Lint
         run: npm run lint
 
+      # Coverage thresholds live in jest.config.cjs.
       - name: Test
-        run: npm test
+        run: npm test -- --coverage
 
       - name: Build
         run: npm run build

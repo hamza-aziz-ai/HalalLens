@@ -1,0 +1,46 @@
+name: Docs auto-merge
+
+# A PR that changes only documentation merges by itself (squash) once the
+# required checks (backend, ui, secrets) pass.
+#
+# pull_request_target runs the copy of this file on main, never the PR's, so a
+# PR cannot loosen the rule that judges it. Safe here because the job never
+# checks out or runs PR code: it only reads the changed-file list through the
+# API. Fork PRs and drafts are skipped.
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize, ready_for_review]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  docs-only:
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      !github.event.pull_request.draft
+    runs-on: ubuntu-latest
+    steps:
+      - name: Enable auto-merge when every changed file is documentation
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          files=$(gh api --paginate "repos/$REPO/pulls/$PR/files" --jq '.[].filename')
+          if [ -z "$files" ]; then
+            echo "Could not read the changed files; leaving the PR alone." >&2
+            exit 1
+          fi
+          # Markdown under docs/ and Documentations/, the READMEs and the
+          # changelog. AGENTS.md and CLAUDE.md steer agents and stay manual.
+          docs='^(docs/.+\.md|Documentations/.+\.md|README(_[A-Za-z]+)?\.md|CHANGELOG\.md)$'
+          if printf '%s\n' "$files" | grep -qvE "$docs"; then
+            echo "Not docs-only:"; printf '%s\n' "$files" | grep -vE "$docs"
+            # A docs PR that later gains code loses auto-merge.
+            gh pr merge "$PR" --repo "$REPO" --disable-auto 2>/dev/null || true
+            exit 0
+          fi
+          gh pr merge "$PR" --repo "$REPO" --auto --squash
