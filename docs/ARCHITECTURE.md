@@ -17,12 +17,37 @@ One page. Trust boundaries are marked **[B]**. Deeper docs: [FLOW.md](FLOW.md), 
 
 ## Data flow
 
-```
-BSE announcements --[B]--> crawler --> ETL (PDF/XBRL parse) --> Postgres (+ PDFs in MinIO)
-Indian Stock API / Bhavcopy --[B]--> market_data --> market caps
-Postgres snapshot + market cap --> ratio_engine --> verdict --> filing_evaluations --> API --[B]--> browser UI
-Browser/API client --[B]--> /halal-score --> ratio_engine (no DB read)
-Razorpay --[B]--> /webhooks/razorpay --> payment_events (idempotent) --> user_subscriptions
+```mermaid
+graph TD
+    subgraph Data_Ingestion [" Data Ingestion & Storage "]
+        A1["BSE announcements"] -- "[B]" --> A2["crawler"]
+        A2 --> A3["ETL (PDF/XBRL parse)"]
+        A3 --> DB[("Postgres (+ PDFs in MinIO)")]
+
+        B1["Indian Stock API / Bhavcopy"] -- "[B]" --> B2["market_data"]
+        B2 --> B3["market caps"]
+    end
+
+    subgraph Evaluation_Pipeline [" Evaluation & Serving "]
+        DB --> RE["ratio_engine"]
+        B3 --> RE
+        RE --> V["verdict"]
+        V --> FE["filing_evaluations"]
+        FE --> API["API"]
+        API -- "[B]" --> UI["browser UI"]
+    end
+
+    subgraph Direct_Score [" Real-Time Scoring "]
+        Client["Browser/API client"] -- "[B]" --> Score["/halal-score"]
+        Score -- "no DB read, nothing stored" --> RE2["ratio_engine (same code)"]
+        RE2 -- "verdict JSON" --> Client
+    end
+
+    subgraph Payments [" Payments & Subscriptions "]
+        R1["Razorpay"] -- "[B]" --> R2["/webhooks/razorpay"]
+        R2 --> R3["payment_events (idempotent)"]
+        R3 --> R4["user_subscriptions"]
+    end
 ```
 
 ## Trust boundaries [B]
