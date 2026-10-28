@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.0](https://github.com/hamza-aziz-ai/HalalLens/compare/v0.1.1...v0.2.0) (2026-10-28)
+
+
+### Features
+
+* **jobs:** recompute stored evaluations from current stored inputs, dry run by default ([#91](https://github.com/hamza-aziz-ai/HalalLens/issues/91)) ([9d304ee](https://github.com/hamza-aziz-ai/HalalLens/commit/9d304eeec3b9dfc1764f6f02d2f78aade9a06069))
+
 ## [0.1.1](https://github.com/hamza-aziz-ai/HalalLens/compare/v0.1.0...v0.1.1) (2026-10-28)
 
 
