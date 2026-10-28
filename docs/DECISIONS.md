@@ -90,3 +90,10 @@ One entry per decision, newest last. Model for every entry below: Claude Sonnet 
 - **Chosen:** Build the recompute/dry-run tooling (PR-B) now; run the dry run when real data exists.
 - **Why:** The tooling is still needed for any database that holds evaluations computed by the old engine, including development ones.
 
+## D-013: Open-source showcase now, private and monetized later
+- **Date:** 2026-10-28   Model: Claude Opus 5.5 (maintainer's decision)
+- **Context:** The maintainer uses HalalLens as a public portfolio project but intends to privatize and monetize it later, with only minimal changes at that point.
+- **Chosen:** Keep the public MIT repo, and keep it sale-ready (configuration in env, billing complete in test mode, docs current, no secrets or personal identifiers, Docker as the canonical deployment). Rules are in AGENTS.md, "Project stance".
+- **Trade-off:** MIT cannot be revoked for versions already published; only future versions can be licensed differently. Outside contributions would complicate relicensing unless their copyright is settled first.
+- **Revisit if:** the maintainer starts accepting outside contributions, or decides to privatize (then: make the repo private, choose a licence for new versions, rotate any credentials, review the git history for anything a buyer should not receive).
+

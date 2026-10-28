@@ -2,6 +2,16 @@
 
 Read-only Shariah (AAOIFI-inspired) screening of BSE-listed Indian equities, explain-why narration and compliance-flip alerts (no GCC, mutual-fund or NSE coverage). Python FastAPI backend + Next.js 14 dashboard (static export). The Flutter app is a scaffold only (see Layout). Product/ops detail lives in `README.md`, `README_ops.md`, `README_ingestion.md`, `Documentations/`; the paper trail (handover, decisions, threat, failure, rollback) lives in `docs/`. Don't duplicate either here. **Current state and next steps live in `docs/HANDOVER.md`, not in this file.**
 
+## Project stance (maintainer, 2026-10-28)
+
+HalalLens is a public, MIT-licensed portfolio showcase for now; the maintainer plans to make it private and sell or monetize it later. Keep it sale-ready so that step needs only minimal changes:
+
+- Everything deployment-specific stays in configuration (`.env.example` lists every variable): no hardcoded domains, keys, emails, branding or vendor accounts in code.
+- Billing (Razorpay, plans, trials, entitlements) stays complete and tested, running against test credentials only.
+- Docs stay current (`docs/`, README, ops runbook) so a buyer or new maintainer can run, explain and defend it; the Docker deployment is the canonical way to run it.
+- No secrets, personal data or machine-specific identifiers in the repo or its history.
+- Licensing: MIT rights granted on already-published versions cannot be withdrawn; the maintainer, as sole copyright holder, can license future versions differently. Do not merge outside contributions without the maintainer deciding how their copyright is handled (keep sole authorship, a CLA or a DCO).
+
 ## Layout
 
 | Path                        | What                                                                                                                                                                                 |

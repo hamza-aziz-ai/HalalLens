@@ -8,7 +8,7 @@ Read first: [ARCHITECTURE.md](ARCHITECTURE.md), [CONSTRAINTS.md](CONSTRAINTS.md)
 - PR #87 (verdict engine) and PR #88 (docs, AGENTS.md, CLAUDE.md) merged by the maintainer. Release PR #89 (`0.1.1`) is open.
 - Maintainer reviewed the DEFENSE brief and agreed with it (draft banner removed). Their table alignment and wording edits are committed.
 - Codex session ID and the local field-guide path removed from the tracked files (they remain in earlier git history).
-- Maintainer decisions: Docker deployment is the canonical UI (D-011); no production data yet, so the dry run waits (D-012); leaked secrets were sandbox-only and rotated; Codex re-check of #87 skipped for now.
+- Maintainer decisions: HalalLens is an open-source showcase now and will be privatized and monetized later, so it stays sale-ready (D-013, AGENTS.md "Project stance"); Docker deployment is the canonical UI (D-011); no production data yet, so the dry run waits (D-012); leaked secrets were sandbox-only and rotated; Codex re-check of #87 skipped for now.
 
 **In progress**
 - Recompute tooling (`jobs.backfill_evaluations --recompute`) in PR #91, stacked on #90; reviewed with Codex. The review found that `get_recent_filings` never returned `ratios`, so the plain backfill overwrote evaluated filings and the recompute selected nothing; fixed with a `has_ratios` projection. Also points `scripts/run_backfill_2025.sh` at `jobs.precompute_evaluations`.
