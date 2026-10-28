@@ -13,14 +13,13 @@ Read first: [ARCHITECTURE.md](ARCHITECTURE.md), [CONSTRAINTS.md](CONSTRAINTS.md)
 
 **In progress**
 - First deployment on `halallens.in`: waiting for Oracle Ampere capacity (retry the stack's Apply). Then fill the server `.env` (from the local, git-ignored `.env.production`), install Docker, build from the `v0.5.0` tag and start the stack in tunnel mode.
-- Docker plan agreed with Codex: steps 1 and 2 done; next are hardening (non-root, one Python image, digest-pinned bases, `LICENSE` in images, Node 20 to the current LTS), a pull-only compose file with a runbook, then CI-gated publishing to Docker Hub (amd64 + arm64).
+- Docker plan agreed with Codex: steps 1 and 2 done; next are hardening (non-root, one Python image, digest-pinned bases, `LICENSE` in images; Node moved to 24 LTS), a pull-only compose file with a runbook, then CI-gated publishing to Docker Hub (amd64 + arm64).
 - Wider auto-merge (D-015) stays held until test-plan steps 3 to 8 land.
 
 **Broken or risky**
 - Stored evaluations from the old engine may still say `compliant` until recomputed (no production data yet).
 - Watchlists are a JSON file rewritten without a lock: the API must run one worker until they move to Postgres.
 - `_detect_scale` substring scaling, the process-lifetime `lru_cache` of Indian Stock API failures, the free-tier `callAnalysis` always calling the paid `/narrate`, and announcements fetched from page 1 only (AGENTS.md "Known defects").
-- Node 20 is end-of-life in the UI image and CI.
 - SSH to the Oracle VM is open to the internet by the maintainer's choice (key-only login; fail2ban and unattended upgrades planned on the VM).
 - Not yet seen live: a real R2 upload, the tunnel serving the site, Google sign-in and the Razorpay webhook on the `/api/` URLs. `docker` and `docker-arm64` are not required checks in the ruleset yet.
 
