@@ -5,7 +5,10 @@ One entry per decision, newest last. Model for every entry below: Claude Sonnet 
 ## D-001: The engine owns a three-state verdict
 - **Date:** 2026-10-27   Model: Claude Sonnet 5.5 + Codex review
 - **Context:** The engine returned a boolean and skipped missing ratios, so one computed passing ratio gave `is_compliant=True`. Five copies of "derive the verdict from the boolean" existed (API, two ingest jobs, backfill, precompute).
-- **Options:** 1) keep the boolean, patch each copy  2) add a fourth "borderline" state  3) engine returns `compliant` / `non-compliant` / `insufficient-data`, consumers read it.
+- **Options:**
+  1. keep the boolean, patch each copy
+  2. add a fourth "borderline" state
+  3. engine returns `compliant` / `non-compliant` / `insufficient-data`, consumers read it.
 - **Chosen:** 3.
 - **Why:** The DB already stores those strings; fixing it once removes the copies. Unknown is not a failure, so `is_compliant` is nullable.
 - **Trade-off:** Nullable `is_compliant` breaks Boolean-only clients; UI and API had to change together.
@@ -13,7 +16,10 @@ One entry per decision, newest last. Model for every entry below: Claude Sonnet 
 
 ## D-002: All five ratios and all three income parts are required
 - **Context:** Which inputs may be missing before a filing can be called compliant?
-- **Options:** 1) three canonical ratios required  2) all five required  3) any one computed ratio.
+- **Options:**
+  1. three canonical ratios required
+  2. all five required
+  3. any one computed ratio.
 - **Chosen:** 2, with prohibited income needing base + interest + dividend known (explicit zero counts).
 - **Why:** Never a false pass; narrowing the set is a methodology decision, not a bug fix. SS21 backs 30/30/5 but not the 67%/49% gates.
 - **Trade-off:** Many filings become `insufficient-data` until extraction improves. Unmeasured.
@@ -57,7 +63,10 @@ One entry per decision, newest last. Model for every entry below: Claude Sonnet 
 ## D-010: Restore the optional LLM mode with a best-effort guard
 - **Date:** 2026-10-27   Model: Claude Sonnet 5.5
 - **Context:** The maintainer reviewed D-004 and chose to keep the LLM mode, accepting weaker consistency. Codex had said this is acceptable only under an explicit, weaker contract.
-- **Options:** 1) keep it bypassed  2) restore with a guard, UI caveat and honest docs  3) LLM only for non-decisive commentary.
+- **Options:**
+  1. keep it bypassed
+  2. restore with a guard, UI caveat and honest docs
+  3. LLM only for non-decisive commentary.
 - **Chosen:** 2 (maintainer's decision).
 - **Why:** The mode is advertised and opt-in (`NARRATOR_MODE=llm`, default `rule_based`); the engine verdict and the badge stay authoritative.
 - **How:** The model is asked only about `compliant` / `non-compliant`; it must repeat the verdict in `screen_verdict`; summary/verdict/bullets pass a keyword check; the label shown is the engine's; any doubt or error falls back to rule-based; `insufficient-data` never reaches the model; the UI shows an AI-generated caveat.

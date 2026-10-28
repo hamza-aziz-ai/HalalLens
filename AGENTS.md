@@ -4,19 +4,19 @@ Read-only Shariah (AAOIFI-inspired) screening of BSE-listed Indian equities, exp
 
 ## Layout
 
-| Path                        | What                                                                                                                                                                     |
-|-----------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `api/app.py`                | The whole FastAPI app (~3.8k lines): routes, auth, billing, rate limiting wiring. `api/security.py` holds password/session-token hashing and `SlidingWindowRateLimiter`. |
+| Path                        | What                                                                                                                                                                                 |
+|-----------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `api/app.py`                | The whole FastAPI app (~3.8k lines): routes, auth, billing, rate limiting wiring. `api/security.py` holds password/session-token hashing and `SlidingWindowRateLimiter`.             |
 | `ratio_engine/`             | Five ratios + the ONLY verdict derivation (`engine.py`, exact Decimal), `summary.py`, `amounts.py` (`coerce_amount`). 30% debt/cash, 5% income per SS21; 67%/49% gates are not SS21. |
-| `narrator/`                 | Explain-why text: rule-based by default; optional LLM (`NARRATOR_MODE=llm`) only for conclusive verdicts behind a best-effort guard.                                    |
-| `alerts/`                   | Watchlist storage, compliance-flip engine, email notifier.                                                                                                               |
-| `crawler/`, `etl/`, `jobs/` | BSE announcement crawl → PDF/XBRL parse → Postgres/MinIO (`crawler/nse_ann.py` exists but nothing calls it); `jobs.*` are CLI entrypoints/schedulers.                    |
-| `market_data/`              | Indian Stock API + Bhavcopy price/market-cap resolution.                                                                                                                 |
-| `database/`                 | `schema.sql`, `database_manager.py`, dated SQL `migrations/`.                                                                                                            |
-| `ui/`                       | Next.js dashboard (`app/`, `components/`, `lib/`), Jest tests in `ui/__tests__/`.                                                                                        |
-| `halallens-mobile/`         | Flutter scaffold only: platform runners + pubspec + template test. **No `lib/` Dart source exists** (never in git history), so it cannot build.                            |
-| `tests/`                    | Pytest suite (API, security, ratio engine golden table, narrator, ETL, jobs, amounts, market data).                                                                      |
-| `docs/`                     | Field-guide paper trail: HANDOVER, DECISIONS, ALTERNATIVES, ARCHITECTURE, FLOW, CONSTRAINTS, THREAT, FAILURE, DATA, TESTING, ROLLBACK, ASSUMPTIONS, DEPENDENCIES, bugs/, defense/. |
+| `narrator/`                 | Explain-why text: rule-based by default; optional LLM (`NARRATOR_MODE=llm`) only for conclusive verdicts behind a best-effort guard.                                                 |
+| `alerts/`                   | Watchlist storage, compliance-flip engine, email notifier.                                                                                                                           |
+| `crawler/`, `etl/`, `jobs/` | BSE announcement crawl → PDF/XBRL parse → Postgres/MinIO (`crawler/nse_ann.py` exists but nothing calls it); `jobs.*` are CLI entrypoints/schedulers.                                |
+| `market_data/`              | Indian Stock API + Bhavcopy price/market-cap resolution.                                                                                                                             |
+| `database/`                 | `schema.sql`, `database_manager.py`, dated SQL `migrations/`.                                                                                                                        |
+| `ui/`                       | Next.js dashboard (`app/`, `components/`, `lib/`), Jest tests in `ui/__tests__/`.                                                                                                    |
+| `halallens-mobile/`         | Flutter scaffold only: platform runners + pubspec + template test. **No `lib/` Dart source exists** (never in git history), so it cannot build.                                      |
+| `tests/`                    | Pytest suite (API, security, ratio engine golden table, narrator, ETL, jobs, amounts, market data).                                                                                  |
+| `docs/`                     | Field-guide paper trail: HANDOVER, DECISIONS, ALTERNATIVES, ARCHITECTURE, FLOW, CONSTRAINTS, THREAT, FAILURE, DATA, TESTING, ROLLBACK, ASSUMPTIONS, DEPENDENCIES, bugs/, defense/.   |
 
 ## Commands
 
@@ -79,7 +79,12 @@ Follow `C:\Users\hamza\Downloads\Defend-What-You-Ship-AI-Field-Guide-v2.pdf`. Ha
 
 - `AGENTS.md` is the single source of truth for project guidance (shared with Codex). `CLAUDE.md` holds only `@AGENTS.md` plus Claude-only setup (skills, council, session ritual). The memory index (`memory/MEMORY.md` under `~/.claude/projects/<repo>/`) points to durable notes: user preferences, decisions the user made, external facts. It must not copy what the repo already records.
 - When a rule changes, change it in ONE place (`AGENTS.md` unless it is Claude-only) and fix the other two if they mention it. When a project fact changes (PR merged, defect fixed, doc moved), update `docs/HANDOVER.md` and any stale line here.
-- End-of-session check (part of the handoff): (1) `CLAUDE.md` still starts with `@AGENTS.md`; (2) no fact is stated differently in two files; (3) every file in `memory/` has exactly one `MEMORY.md` line and vice versa (`ls memory/*.md` vs the index); (4) stale memories are corrected or deleted; (5) known defects here match `docs/ASSUMPTIONS.md` and `docs/HANDOVER.md`.
+- End-of-session check (part of the handoff):
+  1. `CLAUDE.md` still starts with `@AGENTS.md`
+  2. no fact is stated differently in two files
+  3. every file in `memory/` has exactly one `MEMORY.md` line and vice versa (`ls memory/*.md` vs the index)
+  4. stale memories are corrected or deleted
+  5. known defects here match `docs/ASSUMPTIONS.md` and `docs/HANDOVER.md`
 
 ## graphify
 
