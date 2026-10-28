@@ -19,11 +19,27 @@ from config import (
     MINIO_HOST,
     MINIO_PORT,
     MINIO_ACCESS_KEY,
-    MINIO_SECRET_KEY
+    MINIO_SECRET_KEY,
+    MINIO_SECURE,
+    MINIO_REGION,
+    MINIO_BUCKET,
 )
 from utils.datetime_parser import parse_bse_datetime
 
 logger = logging.getLogger(__name__)
+
+
+def make_storage_client() -> Minio:
+    """S3 client from config; shared by the ETL and the preflight check."""
+
+    return Minio(
+        endpoint=f"{MINIO_HOST}:{MINIO_PORT}",
+        access_key=MINIO_ACCESS_KEY,
+        secret_key=MINIO_SECRET_KEY,
+        secure=MINIO_SECURE,
+        # A fixed region skips the bucket-location lookup (R2 uses "auto").
+        region=MINIO_REGION,
+    )
 
 
 class BSEPDFStorage:
@@ -33,15 +49,19 @@ class BSEPDFStorage:
                  endpoint: str | None = None,
                  access_key: str | None = None,
                  secret_key: str | None = None,
-                 secure: bool = False):
+                 secure: bool | None = None):
 
-        # Initialize MinIO client
-        self.client = Minio(
-            endpoint=endpoint or f"{MINIO_HOST}:{MINIO_PORT}",
-            access_key=access_key or MINIO_ACCESS_KEY,
-            secret_key=secret_key or MINIO_SECRET_KEY,
-            secure=secure
-        )
+        # Explicit arguments win (tests, one-off scripts); otherwise config.
+        if endpoint or access_key or secret_key or secure is not None:
+            self.client = Minio(
+                endpoint=endpoint or f"{MINIO_HOST}:{MINIO_PORT}",
+                access_key=access_key or MINIO_ACCESS_KEY,
+                secret_key=secret_key or MINIO_SECRET_KEY,
+                secure=MINIO_SECURE if secure is None else secure,
+                region=MINIO_REGION,
+            )
+        else:
+            self.client = make_storage_client()
 
         # Initialize HTTP session with anti-bot headers
         self.session = requests.Session()
@@ -59,7 +79,7 @@ class BSEPDFStorage:
             'Cache-Control': 'max-age=0'
         })
 
-        self.bucket_name = "bse-pdfs"
+        self.bucket_name = MINIO_BUCKET
         self.bse_base_url = "https://www.bseindia.com"
 
         # Rate limiting parameters
