@@ -20,5 +20,8 @@ omit =
 
 [report]
 fail_under = 46.4
+# coverage compares the ROUNDED total with fail_under: at precision 0, 46.46%
+# reads as 46 and fails a 46.4 floor.
+precision = 2
 skip_empty = True
 show_missing = False
