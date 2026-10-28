@@ -38,13 +38,14 @@ def _as_bool(value: str | None, default: bool) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
-POSTGRES_HOST = os.getenv("POSTGRES_HOST", "192.168.1.9")
+# Defaults are for a local run (matching .env.example); deployments set them.
+POSTGRES_HOST = os.getenv("POSTGRES_HOST", "localhost")
 POSTGRES_PORT = _as_int(os.getenv("POSTGRES_PORT"), 5432)
 POSTGRES_DB = os.getenv("POSTGRES_DB", "Halal-Lens")
 POSTGRES_USER = os.getenv("POSTGRES_USER")
 POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD")
 
-MINIO_HOST = os.getenv("MINIO_HOST", "192.168.1.9")
+MINIO_HOST = os.getenv("MINIO_HOST", "localhost")
 MINIO_PORT = _as_int(os.getenv("MINIO_PORT"), 9000)
 MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY")
 MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY")
@@ -79,8 +80,12 @@ GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
 GOOGLE_REDIRECT_URI = os.getenv("GOOGLE_REDIRECT_URI")
 OAUTH_STATE_SECRET = os.getenv("OAUTH_STATE_SECRET")
-FRONTEND_BASE_URL = os.getenv("FRONTEND_BASE_URL", "http://192.168.1.9:3001")
 HALAL_APP_DOMAIN = os.getenv("HALAL_APP_DOMAIN", "").strip()
+# The only origin Google sign-in may hand a token to. Without an explicit value
+# it is the app domain when one is configured, else the local dev UI.
+FRONTEND_BASE_URL = os.getenv("FRONTEND_BASE_URL") or (
+    f"https://{HALAL_APP_DOMAIN}" if HALAL_APP_DOMAIN else "http://localhost:3000"
+)
 ADMIN_EMAILS = _as_list(os.getenv("ADMIN_EMAILS"))
 TICKER_MAP_PATH = Path(__file__).resolve().parent / "ticker_map.json"
 TICKER_MAP: Dict[str, str] = {}
@@ -102,10 +107,9 @@ SUBSCRIPTION_PLAN_CODE = os.getenv("SUBSCRIPTION_PLAN_CODE", "starter")
 SUBSCRIPTION_PRICE_INR = _as_int(os.getenv("SUBSCRIPTION_PRICE_INR"), 50)
 SUBSCRIPTION_INTERVAL_DAYS = _as_int(os.getenv("SUBSCRIPTION_INTERVAL_DAYS"), 30)
 
-DEFAULT_ALLOWED_ORIGINS = [
-    "http://192.168.1.9:3000",
-    "http://192.168.1.9:3001",
-]
+# Local dev UI only; deployments add their app domain below or set
+# ALLOWED_ORIGINS explicitly.
+DEFAULT_ALLOWED_ORIGINS = ["http://localhost:3000"]
 if HALAL_APP_DOMAIN:
     DEFAULT_ALLOWED_ORIGINS.extend(
         [
@@ -120,7 +124,7 @@ ALLOWED_ORIGINS = [
 ]
 # Opt-in only. A default regex here would be applied in production too, and any
 # pattern loose enough to be a useful default (e.g. a bare LAN prefix) also
-# matches attacker-controlled origins such as http://192.168.1.9:3000.evil.com.
+# matches attacker-controlled origins such as http://10.0.0.5:3000.evil.com.
 ALLOWED_ORIGIN_REGEX = os.getenv("ALLOWED_ORIGIN_REGEX", "").strip()
 
 # ---------------------------------------------------------------------------
