@@ -17,7 +17,7 @@ docker run --rm -v "$PWD:/repo:ro" ghcr.io/gitleaks/gitleaks:latest git /repo --
 `backend` (pip check, pytest with coverage), `ui` (lint, jest with coverage, build), `secrets` (gitleaks, full history). `main` cannot be merged without all three.
 
 ## Coverage floors (a ratchet)
-- Backend: `.coveragerc` measures line and branch coverage over every application package, so modules no test imports count as 0%. `fail_under` is 43.5 (measured 43.58% on 2026-10-28, 512 tests).
+- Backend: `.coveragerc` measures line and branch coverage over every application package, so modules no test imports count as 0%. `fail_under` is 46.4 (43.58% at the first measurement; 46.47% with 667 tests after the HTTP contracts).
 - UI: `ui/jest.config.cjs` counts every file in `app/`, `components/`, `lib/` and `providers/`. Thresholds: statements 13, branches 13, functions 18, lines 14 (measured 13.35 / 13.84 / 18.82 / 14.04 on 2026-10-28; the earlier 82% counted only files a test imported).
 - Raise a floor in the PR that adds the tests. Lowering one, or excluding files, needs the maintainer's review.
 - Coverage shows what ran, not what was checked: a test weakened to `assert True` keeps its coverage. It is a guard against regression, not the definition of done.
@@ -25,7 +25,7 @@ docker run --rm -v "$PWD:/repo:ro" ghcr.io/gitleaks/gitleaks:latest git /repo --
 ## Road to CI as the only merge gate (agreed with Codex, 2026-10-28)
 Auto-merge stays held until these land, in order. "Complete enough" means every critical contract is tested across its real boundary, and representative regressions are shown to fail CI.
 1. Measurement: coverage floors above, `pip check`, unused `zod` removed.
-2. HTTP and security contracts: `TestClient(app)` with lifespan; route-tier matrix (anonymous / free / paid / admin, expired sessions, ownership, 401/403/422/429, CORS, nullable verdict JSON); a test that fails when a route has no tier; `/alerts/check` defects fixed.
+2. HTTP and security contracts (done except the `/alerts/check` fix, which gets its own PR): `TestClient(app)` with lifespan; route-tier matrix (anonymous / free / paid / admin, expired sessions, ownership, 401/403/422/429, CORS, nullable verdict JSON); a test that fails when a route has no tier; `/alerts/check` defects fixed.
 3. Billing contracts: real HMAC with dummy secrets; tampered or unsigned bodies; wrong owner, amount or currency; duplicate and concurrent settlement; webhook vs browser ordering; trial reuse.
 4. Real SQL and migrations: disposable Postgres 14 service in CI; bootstrap, seeded prior-schema upgrade, rerun, schema comparison; integration tests selected explicitly (ordinary tests stay offline).
 5. Input to verdict: PDF/XBRL/JSON/CSV fixtures through the real parsers into the engine (ingestion runs on the request path); `_detect_scale` fixed with a regression test; one success and one failure cycle per scheduler.
@@ -39,7 +39,8 @@ What CI cannot catch even then: behaviour no test asserts, vendor/Razorpay/Googl
 - `tests/test_ratio_engine.py`: golden verdict table (boundaries at exactly 30%/5%, each missing input, each invalid input), exact-decimal edge cases.
 - `tests/test_job_verdicts.py`: all four jobs persist the engine's verdict pair; real adapters reject booleans. **Stubs** patch market lookup (and the BSE mapper in the persistence test).
 - `tests/test_amounts.py`: every converter x unusable/known values; real ETL parser -> engine; API payload rejection; thresholds; market-cap handling.
-- `tests/test_api_endpoints.py`: handlers without HTTP (routing, auth dependencies, middleware and CORS are not exercised yet: step 2 above); final-pair parity for persistent and transient records.
+- `tests/test_api_endpoints.py`: handlers without HTTP; final-pair parity for persistent and transient records.
+- `tests/test_http_contracts.py`: every request through the ASGI stack with `TestClient`. A route table must match `app.routes` exactly, so a new route without a tier fails. Tier matrix: anonymous, free, paid and admin against all 34 routes, matched on the guard's status and message. Malformed, unknown and expired sessions; raw tokens never reach the database; three-state verdict JSON (`null` stays `null`); 422s for booleans, extra fields and bad dates; security headers; CORS allow and deny; 429 with `Retry-After`; watchlist scoped to the session. Outbound non-loopback sockets are blocked. Disabling the paid guard makes 6 of these tests fail (checked by hand on 2026-10-28).
 - They do **not** prove production data behaviour, the deployed UI, or the GitHub Actions environment.
 
 ## Manual path a customer would take (before activating a new engine)
