@@ -2,18 +2,18 @@
 
 Status: **verified** / **unverified** / **wrong**. Clear the unverified list before anything ships to customers.
 
-| # | Assumption or question | Status | Evidence / next step |
-| - | ---------------------- | ------ | -------------------- |
-| 1 | Most stored filings lack interest/dividend figures, so most will screen `insufficient-data` under the new engine | **unverified** | PR-B dry run on a copy of production data |
-| 2 | Stored `filing_evaluations` rows hold old, possibly false-`compliant` verdicts | verified (code) | `jobs/backfill_evaluations.py` skips rows with ratios; no recompute tool exists |
-| 3 | The receivables 67% / liquid-assets 49% market-cap gates match AAOIFI | **wrong** | SS21 text supports 30/30/5 only; kept as configured, flagged |
-| 4 | Total debt / all cash are acceptable stand-ins for interest-bearing debt / deposits | **unverified** | Direction of error is not one-sided (cash may omit interest-bearing deposits) |
-| 5 | `non_halal_income` is a clean base for prohibited income | **wrong** | Regex also matches "interest income"; vendor maps "Other, Net"; overrides declare no contract |
-| 6 | The Pages site (`hamzaaziz.dev/HalalLens`) reaches a working API | **unverified** | `nextjs.yml` sets no `NEXT_PUBLIC_HALAL_API_BASE_URL` |
-| 7 | No external automation deploys the API from `main` | **unverified** | Only repository workflows were inspected |
-| 8 | Production host, ingress (Caddy) and backups exist as documented | **unverified** | Not observable from the repo |
-| 9 | Old credentials were rotated and no misuse occurred | **unverified** | Maintainer confirmed rotation; Razorpay activity not reviewed here |
-| 10 | Anyone who cloned before the history purge no longer matters | **unverified** | GitHub caches / `refs/pull/*` may still serve old objects; contact GitHub Support |
-| 11 | `halallens.ai` is the product site | **wrong** | No response (HTTP 000) at the time of checking; link removed from the repo metadata |
-| 12 | LLM text that passes the keyword guard is consistent with the verdict | **wrong** (known ceiling) | Paraphrases the word lists miss can pass; accepted by the maintainer (D-010); UI shows an AI-generated caveat |
-| 13 | Codex re-check of PR #87's last three fixes | open | Its usage limit hit; resets 2026-10-28 00:17 |
+| #  | Assumption or question                                                                                           | Status                    | Evidence / next step                                                                                                                   |
+|----|------------------------------------------------------------------------------------------------------------------|---------------------------|----------------------------------------------------------------------------------------------------------------------------------------|
+| 1  | Most stored filings lack interest/dividend figures, so most will screen `insufficient-data` under the new engine | n/a for now               | No production data yet (project in its initial stage, maintainer 2026-10-28); measure with the recompute dry run once real data exists |
+| 2  | Stored `filing_evaluations` rows hold old, possibly false-`compliant` verdicts                                   | verified (code)           | `jobs/backfill_evaluations.py` skips rows with ratios; no recompute tool exists                                                        |
+| 3  | The receivables 67% / liquid-assets 49% market-cap gates match AAOIFI                                            | **wrong**                 | SS21 text supports 30/30/5 only; kept as configured, flagged                                                                           |
+| 4  | Total debt / all cash are acceptable stand-ins for interest-bearing debt / deposits                              | **unverified**            | Direction of error is not one-sided (cash may omit interest-bearing deposits)                                                          |
+| 5  | `non_halal_income` is a clean base for prohibited income                                                         | **wrong**                 | Regex also matches "interest income"; vendor maps "Other, Net"; overrides declare no contract                                          |
+| 6  | The Pages site (`hamzaaziz.dev/HalalLens`) reaches a working API                                                 | n/a                       | Docker deployment is the canonical UI (maintainer, 2026-10-28, D-011); the Pages build is not wired to an API                          |
+| 7  | No external automation deploys the API from `main`                                                               | **unverified**            | Only repository workflows were inspected                                                                                               |
+| 8  | Production host, ingress (Caddy) and backups exist as documented                                                 | **unverified**            | Not observable from the repo                                                                                                           |
+| 9  | Old credentials were rotated and no misuse occurred                                                              | verified (maintainer)     | Maintainer checked: the leaked secrets were sandbox credentials only, and they were rotated                                            |
+| 10 | Anyone who cloned before the history purge no longer matters                                                     | open (maintainer)         | Maintainer will contact GitHub Support later to purge cached views and `refs/pull/*`                                                   |
+| 11 | `halallens.ai` is the product site                                                                               | **wrong**                 | No response (HTTP 000) at the time of checking; link removed from the repo metadata                                                    |
+| 12 | LLM text that passes the keyword guard is consistent with the verdict                                            | **wrong** (known ceiling) | Paraphrases the word lists miss can pass; accepted by the maintainer (D-010); UI shows an AI-generated caveat                          |
+| 13 | Codex re-check of PR #87's last fixes and the LLM guard                                                          | deferred                  | Skipped for now by the maintainer (2026-10-28); PR #87 is merged                                                                       |

@@ -39,9 +39,9 @@ One entry per decision, newest last. Model for every entry below: Claude Sonnet 
 - **Why superseded:** the bypass removed an advertised feature without the maintainer deciding it. See D-010.
 
 ## D-005: One shared `coerce_amount` for untrusted numbers
-- **Chosen:** `ratio_engine/amounts.py`; bool, NaN/inf and underflowing strings become unknown, exact zeros stay zero. API, jobs, ETL, vendor mapper and cache runner delegate to it.
+- **Chosen:** `ratio_engine/amounts.py`; bool, NaN/inf and under-flowing strings become unknown, exact zeros stay zero. API, jobs, ETL, vendor mapper and cache runner delegate to it.
 - **Why:** Repo rule: fix once in the shared function. A boolean became a verified zero income in four places.
-- **Trade-off:** Behaviour changes for malformed inputs (now unknown). Numeric JSON literals already decoded to 0.0 are outside the guarantee.
+- **Trade-off:** Behavior changes for malformed inputs (now unknown). Numeric JSON literals already decoded to 0.0 are outside the guarantee.
 
 ## D-006: `main` is protected by a ruleset; auto-merge is narrow
 - **Chosen:** PR + `backend`/`ui`/`secrets` required, squash only, owner bypass. Auto-merge only for Dependabot minor/patch of GitHub Actions and UI dev deps.
@@ -72,3 +72,21 @@ One entry per decision, newest last. Model for every entry below: Claude Sonnet 
 - **How:** The model is asked only about `compliant` / `non-compliant`; it must repeat the verdict in `screen_verdict`; summary/verdict/bullets pass a keyword check; the label shown is the engine's; any doubt or error falls back to rule-based; `insufficient-data` never reaches the model; the UI shows an AI-generated caveat.
 - **Trade-off:** Not a guarantee. A paraphrase the word lists miss can still contradict the verdict (a test documents that ceiling).
 - **Revisit if:** a user is shown contradicting text, or a structured per-claim validation against the ratio facts is built (then the caveat can go).
+
+## D-011: The Docker deployment is the canonical UI
+- **Date:** 2026-10-28   Model: Claude Opus 5.5 (maintainer's decision)
+- **Context:** Two ways serve the dashboard: the `ui` container behind Caddy, and GitHub Pages from `nextjs.yml`. The Pages build sets no API URL.
+- **Options:**
+  1. GitHub Pages
+  2. Docker deployment
+- **Chosen:** 2.
+- **Why:** It is built with the real API URL and deploys together with the API, which the cutover in ROLLBACK.md needs.
+- **Trade-off:** The Pages site stays live but is not a working product; whether to keep `nextjs.yml` is still open.
+- **Revisit if:** a static demo with a public API becomes useful.
+
+## D-012: No production data yet; recompute tooling first, dry run later
+- **Date:** 2026-10-28   Model: Claude Opus 5.5 (maintainer's input)
+- **Context:** The project is in its initial stage and has no production data, so a production dry run is not possible.
+- **Chosen:** Build the recompute/dry-run tooling (PR-B) now; run the dry run when real data exists.
+- **Why:** The tooling is still needed for any database that holds evaluations computed by the old engine, including development ones.
+
