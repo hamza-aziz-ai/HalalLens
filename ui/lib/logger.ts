@@ -1,7 +1,7 @@
 type ClientLogLevel = "debug" | "info" | "warning" | "error";
 
 const API_BASE =
-  process.env.NEXT_PUBLIC_HALAL_API_BASE_URL || "http://192.168.1.9:8001";
+  process.env.NEXT_PUBLIC_HALAL_API_BASE_URL || "http://localhost:8001";
 
 export function logClientEvent(
   level: ClientLogLevel,

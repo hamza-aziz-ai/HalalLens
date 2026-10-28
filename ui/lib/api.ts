@@ -1,7 +1,7 @@
 import { AnalysisPayload, AnalysisResponse, HalalScoreResponse, NarrationResponse } from "./types";
 import { logClientEvent } from "./logger";
 
-const API_BASE = process.env.NEXT_PUBLIC_HALAL_API_BASE_URL || "http://192.168.1.9:8001";
+const API_BASE = process.env.NEXT_PUBLIC_HALAL_API_BASE_URL || "http://localhost:8001";
 
 export function getAuthToken(): string | null {
   if (typeof window === "undefined") return null;

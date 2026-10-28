@@ -25,7 +25,6 @@ Read first: [ARCHITECTURE.md](ARCHITECTURE.md), [CONSTRAINTS.md](CONSTRAINTS.md)
 1. Move watchlists to Postgres with a conditional update (then `API_WORKERS` can go above 1).
 2. Test plan steps 3 to 8 (billing contracts, Postgres and migrations, parser fixtures, UI and Playwright, Docker, merge policy).
 3. Next 15 and eslint upgrade together, after the Playwright smoke exists.
-4. Decide whether to keep `nextjs.yml` (Pages is not the canonical UI).
 
 **Do not touch**
 - Production deploys outside the controlled cutover (`docs/ROLLBACK.md`). Force-pushes to `main`.

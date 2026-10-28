@@ -66,4 +66,4 @@ graph TD
 
 ## Deployment
 
-Docker Compose (`api`, `ui`, `ingestion`, `evaluation`, `preflight`, optional Caddy) against external or bundled Postgres/MinIO. Repository workflows deploy GitHub Pages only; there is no API deployment workflow (external triggers unverified).
+Docker Compose (`api`, `ui`, `ingestion`, `evaluation`, `preflight`, optional Caddy) against external or bundled Postgres/MinIO. No repository workflow deploys anything (the GitHub Pages workflow was removed on 2026-10-28, D-011); there is no API deployment workflow (external triggers unverified).
