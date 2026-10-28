@@ -39,8 +39,13 @@ jobs:
           docs='^(docs/.+\.md|Documentations/.+\.md|README(_[A-Za-z]+)?\.md|CHANGELOG\.md)$'
           if printf '%s\n' "$files" | grep -qvE "$docs"; then
             echo "Not docs-only:"; printf '%s\n' "$files" | grep -vE "$docs"
-            # A docs PR that later gains code loses auto-merge.
-            gh pr merge "$PR" --repo "$REPO" --disable-auto 2>/dev/null || true
+            # A PR that is not docs-only must not keep auto-merge, whoever
+            # enabled it. If disabling fails, fail the job so it is visible.
+            auto=$(gh pr view "$PR" --repo "$REPO" --json autoMergeRequest --jq '.autoMergeRequest != null')
+            if [ "$auto" = "true" ]; then
+              gh pr merge "$PR" --repo "$REPO" --disable-auto
+              echo "Auto-merge disabled."
+            fi
             exit 0
           fi
           gh pr merge "$PR" --repo "$REPO" --auto --squash
