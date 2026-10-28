@@ -11,7 +11,7 @@ Read first: [ARCHITECTURE.md](ARCHITECTURE.md), [CONSTRAINTS.md](CONSTRAINTS.md)
 - Maintainer decisions: Docker deployment is the canonical UI (D-011); no production data yet, so the dry run waits (D-012); leaked secrets were sandbox-only and rotated; Codex re-check of #87 skipped for now.
 
 **In progress**
-- Recompute tooling (`jobs.backfill_evaluations --recompute`) in its own PR, stacked on #90. Also fixes `scripts/run_backfill_2025.sh`, which passed date flags the job never read.
+- Recompute tooling (`jobs.backfill_evaluations --recompute`) in PR #91, stacked on #90; reviewed with Codex. The review found that `get_recent_filings` never returned `ratios`, so the plain backfill overwrote evaluated filings and the recompute selected nothing; fixed with a `has_ratios` projection. Also points `scripts/run_backfill_2025.sh` at `jobs.precompute_evaluations`.
 
 **Broken or risky**
 - Stored evaluations computed by the old engine stay possibly false-`compliant` until recomputed (development data only for now).
@@ -46,7 +46,7 @@ Read first: [ARCHITECTURE.md](ARCHITECTURE.md), [CONSTRAINTS.md](CONSTRAINTS.md)
 
 **Next**
 1. Review and merge #87 (merge is not activation).
-2. PR-B: recompute + dry-run tooling (frozen stored inputs, before/after CSV, no vendor calls, dry-run by default, governance overrides preserved).
+2. PR-B: recompute + dry-run tooling (stored inputs, before/after CSV, no vendor calls, dry-run by default, governance overrides preserved).
 3. Dry run -> you review the distribution -> controlled cutover (see [ROLLBACK.md](ROLLBACK.md)).
 4. Separate security PR for `/alerts/check` before live alerts resume.
 

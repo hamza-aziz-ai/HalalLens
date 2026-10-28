@@ -182,7 +182,7 @@ Operations (logs, metrics, backups, secret rotation, troubleshooting): [`README_
 
 - **Methodology.** The receivables (67%) and liquid-assets (49%) market-cap gates are not backed by AAOIFI SS21 but are required for `compliant`. Debt and cash use total balances, not only interest-bearing ones.
 - **Income inputs are weak evidence.** The PDF extractor's prohibited-income regex also matches "interest income"; the vendor maps "Other, Net" to the base; vendor interest is net; governance overrides carry no declared contract. Interest and dividend figures are rarely extracted, so many filings screen as `insufficient-data`.
-- **Stored evaluations can be stale.** Evaluations computed by an older engine keep their verdicts until recomputed: run `python -m jobs.backfill_evaluations --recompute --report before_after.csv` (dry run), then add `--write` (frozen stored inputs, no vendor calls; `--write` requires the report).
+- **Stored evaluations can be stale.** Evaluations computed by an older engine keep their verdicts until recomputed: run `python -m jobs.backfill_evaluations --recompute --report dry_run.csv` (dry run), then `--recompute --report write_run.csv --write` (a new report name each run; an existing file is refused). It uses the current stored inputs and stored market caps, never calls the vendor, and `--write` requires the report.
 - `/alerts/check` takes `is_compliant` from the caller and iterates every user's watchlist entries; nothing in the scheduled jobs triggers flip detection.
 - `etl/financial_data_processor.py::_detect_scale` uses substring checks that can mis-scale values; `liquid_assets` is mapped from "current assets".
 - `market_data/indian_api.py::_get_stock_payload` is cached for the process lifetime, including failures.
