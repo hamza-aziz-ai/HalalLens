@@ -11,6 +11,7 @@ Read first: [ARCHITECTURE.md](ARCHITECTURE.md), [CONSTRAINTS.md](CONSTRAINTS.md)
 - Maintainer decisions: HalalLens is an open-source showcase now and will be privatized and monetized later, so it stays sale-ready (D-013, AGENTS.md "Project stance"); Docker deployment is the canonical UI (D-011); no production data yet, so the dry run waits (D-012); leaked secrets were sandbox-only and rotated; Codex re-check of #87 skipped for now.
 
 **In progress**
+- Fully automatic releases (D-014, PR #92): workflow ready; needs the maintainer to create the `RELEASE_PLEASE_TOKEN` secret.
 - Recompute tooling (`jobs.backfill_evaluations --recompute`) in PR #91, stacked on #90; reviewed with Codex. The review found that `get_recent_filings` never returned `ratios`, so the plain backfill overwrote evaluated filings and the recompute selected nothing; fixed with a `has_ratios` projection. Also points `scripts/run_backfill_2025.sh` at `jobs.precompute_evaluations`.
 
 **Broken or risky**
