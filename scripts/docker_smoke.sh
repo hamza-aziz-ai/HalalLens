@@ -3,6 +3,8 @@
 #
 #   scripts/docker_smoke.sh <api-image> <ui-image> <scheduler-image>
 #
+# The scheduler role runs from the API image; pass it twice.
+#
 # Proves the images start and serve, not that a deployment works: there is no
 # Postgres or MinIO here, so DB-backed routes are expected to return 503.
 # Used by the `docker` CI job and, later, before publishing a release.
@@ -38,6 +40,9 @@ expect() {  # label expected-status curl-args...
 }
 
 echo "== API ($API_IMAGE)"
+user=$(docker run --rm "$API_IMAGE" id -u)
+[ "$user" != "0" ] || { echo "FAIL the API image runs as root" >&2; exit 1; }
+echo "ok   runs as uid $user (not root)"
 # Unresolvable hosts: the API must start and degrade, not hang or crash.
 docker run -d --name hl-smoke-api -p "$API_PORT:8001" \
   -e POSTGRES_HOST=db.invalid -e MINIO_HOST=minio.invalid \

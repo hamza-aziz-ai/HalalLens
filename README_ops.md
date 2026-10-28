@@ -42,6 +42,10 @@ Store secrets in a `.env` file, Docker secrets, or whichever secret manager your
 - GHCR (`ghcr.io/<owner>/halallens-*`) needs no setup. New packages start private: make each one public once under the repository's Packages → Package settings.
 - Docker Hub needs the repository variable `DOCKERHUB_NAMESPACE` (account name) and the secret `DOCKERHUB_TOKEN` (an access token with Read & Write) in the `publish` environment, which only `main` and `v*` tags may use. Without them only GHCR is published.
 
+### Images and volume ownership
+
+One Python image (`api.Dockerfile`) runs every Python role: the API by default, and preflight, migrations and both schedulers through the commands in the compose files. It runs as the unprivileged user `10001:10001` and can write only to `cache/`, `downloads/`, `logs/`, `logs_runtime/` and `/tmp`. New named volumes mounted there take that ownership automatically. A volume created by an older image that ran as root keeps root ownership; fix it once with `docker run --rm --user 0 -v <volume>:/v halal-lens-api chown -R 10001:10001 /v`. The development compose file bind-mounts the working tree and runs these services as root on purpose.
+
 ### Exposing the site: Caddy TLS or Cloudflare Tunnel
 
 `docker-compose-prod.yml` serves the dashboard at `/` and the API under `/api/` on `HALAL_APP_DOMAIN`. Pick one way in:
