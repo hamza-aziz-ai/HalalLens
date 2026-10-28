@@ -44,7 +44,7 @@ updates:
         applies-to: security-updates
         patterns: ["*"]
     ignore:
-      # Types follow the Node runtime (20 in CI and ui.Dockerfile), not the
+      # Types follow the Node runtime (24 in CI and ui.Dockerfile), not the
       # newest Node. Raise together with the runtime.
       - dependency-name: "@types/node"
         update-types: ["version-update:semver-major"]
