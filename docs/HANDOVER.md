@@ -2,7 +2,23 @@
 
 Read first: [ARCHITECTURE.md](ARCHITECTURE.md), [CONSTRAINTS.md](CONSTRAINTS.md). Newest entry on top. Update last, every session.
 
-## Latest session: 2026-10-28 (model: Claude Opus 5.5, `claude-opus-5-5`; switched from Claude Sonnet 5.5 at the start of this session; Docker and `/alerts/check` designs reviewed with Codex)
+## Latest session: 2026-10-29 (model: Claude Opus 5.5, `claude-opus-5-5`): first production deployment
+
+**Done**
+- `https://halallens.in` is live: v0.5.2 runs on the Oracle A1 VM `halallens-prod` (Mumbai, 2 OCPU / 12 GB arm64, Ubuntu 24.04) behind the Cloudflare Tunnel. The VM was created by a CLI launch retry after "Out of host capacity" errors. Verified from the internet: `/`, `/login/`, `/api/health` and `/api/openapi.json` return 200. The VM's own address has no open app ports (80, 443, 5432 and 8001 closed); the host firewall allows only SSH. Preflight reached Postgres and the R2 bucket; the migrations applied; all services are healthy.
+- VM hardening: key-only SSH, no root login, fail2ban on sshd, unattended upgrades, Docker from Docker's apt repository. The app lives in `/opt/halallens` (a checkout of the release tag plus `.env`, mode 600).
+- Releases: v0.5.1 (Indian Stock API monthly cap and the key no longer in URLs, #145) and v0.5.2 (static UI image: Caddy serving the export, no Node.js or Next.js at runtime, non-root, about 25 MB, #147). The v0.5.1 image publish failed its Trivy gate on Next.js 14 CRITICAL advisories in the old UI image; v0.5.2 published both images, amd64 and arm64, to Docker Hub (`hamzaazizai/halallens-api`, `-ui`) and GHCR, which already allows anonymous pulls.
+
+**In progress / next**
+- **BSE blocks the server (blocker for data):** from the Oracle IP, BSE's announcements API answers 403 and the Bhavcopy page no longer has the form the client expects ("Missing hidden fields"), so ingestion stores nothing. The direct Bhavcopy CSV download still answers 200. Needs a maintainer decision on a permitted data source (BSE's official data products, the Indian Stock API within its quota, or another licensed feed); do not work around BSE's blocking.
+- Optional settings still empty in the server `.env`: Google sign-in, Razorpay (test keys), SMTP alerts. Then register the Google callback and the Razorpay webhook on the `/api/` URLs.
+- Pull-only compose and a runbook, so the VM pulls the published images instead of building; add `docker` and `docker-arm64` to the required checks.
+
+**Broken or risky**
+- No filings or evaluations in production until the BSE question is settled; the dashboard shows empty lists.
+- The UI still builds with Next.js 14.2.35 (only the build stage now); the UI-stack upgrade to 15 or 16 remains open.
+
+## Session: 2026-10-28 (model: Claude Opus 5.5, `claude-opus-5-5`; switched from Claude Sonnet 5.5 at the start of this session; Docker and `/alerts/check` designs reviewed with Codex)
 
 **Done**
 - Releases, all published by release-please with no human step after merge since v0.2.1: v0.1.1 (verdict engine #87), v0.2.0 (recompute tooling #91), v0.2.1 (`/alerts/check` takes the stored verdict, caller-scoped, fails closed, #115), v0.2.2 (GitHub Pages removed, no LAN-address API fallback, #123), v0.3.0 (Docker CI #126, one origin behind Caddy with the API under `/api/` #128, portable config defaults #127), v0.4.0 (arm64 CI #130, filing PDFs in Cloudflare R2 #131, D-016), v0.5.0 (Cloudflare Tunnel mode #134, D-017).
