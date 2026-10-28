@@ -73,8 +73,6 @@ services:
       dockerfile: ui.Dockerfile
       args:
         NEXT_PUBLIC_HALAL_API_BASE_URL: ${NEXT_PUBLIC_HALAL_API_BASE_URL:-http://api:8001}
-    environment:
-      NEXT_PUBLIC_HALAL_API_BASE_URL: ${NEXT_PUBLIC_HALAL_API_BASE_URL:-http://api:8001}
     depends_on:
       api:
         condition: service_healthy
@@ -82,11 +80,8 @@ services:
       - "3001:3000"
     restart: unless-stopped
     healthcheck:
-      test:
-        [
-          "CMD-SHELL",
-          "node -e \"fetch('http://127.0.0.1:3000',{method:'GET'}).then(r=>{if(!r.ok){process.exit(1);}process.exit(0);}).catch(()=>process.exit(1));\"",
-        ]
+      # The UI image is static files behind Caddy: no Node.js to run a probe.
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:3000/"]
       interval: 30s
       timeout: 5s
       retries: 3

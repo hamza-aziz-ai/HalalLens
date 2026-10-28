@@ -89,15 +89,10 @@ services:
         condition: service_healthy
     expose:
       - "3000"
-    volumes:
-      - logs_data:/app/logs
     restart: unless-stopped
     healthcheck:
-      test:
-        [
-          "CMD-SHELL",
-          "node -e \"fetch('http://127.0.0.1:3000',{method:'GET'}).then(r=>{if(!r.ok){process.exit(1);}process.exit(0);}).catch(()=>process.exit(1));\"",
-        ]
+      # The UI image is static files behind Caddy: no Node.js to run a probe.
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:3000/"]
       interval: 30s
       timeout: 5s
       retries: 3

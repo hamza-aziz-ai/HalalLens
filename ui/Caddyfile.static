@@ -1,0 +1,25 @@
+# Static file server for the dashboard image (ui.Dockerfile). TLS, routing and
+# /api live in the front Caddy (repository Caddyfile); this one only serves the
+# Next.js static export on plain HTTP inside the compose network.
+{
+  admin off
+  auto_https off
+}
+
+:3000 {
+  root * /srv
+  encode zstd gzip
+  # trailingSlash export: /login/ -> login/index.html; file_server redirects
+  # /login to /login/ and serves directory index files.
+  file_server
+
+  handle_errors {
+    rewrite * /404.html
+    file_server
+  }
+
+  log {
+    output stdout
+    format console
+  }
+}
