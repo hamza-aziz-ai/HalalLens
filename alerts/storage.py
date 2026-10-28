@@ -61,6 +61,9 @@ class WatchlistStorage:
         return items
 
     def update_state(self, entry: WatchEntry) -> None:
+        # ponytail: whole-file read-modify-write with no lock, safe only with one
+        # API worker (compose default). Concurrent writers can undo each other's
+        # entries; move watchlists to Postgres with a conditional update to scale.
         data = self._read()
         if entry.key() not in data:
             return

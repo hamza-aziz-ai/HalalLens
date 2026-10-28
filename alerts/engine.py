@@ -26,20 +26,26 @@ class AlertEngine:
         self.storage = storage
 
     def process_verdict(
-        self, symbol: str, is_compliant: Optional[bool]
+        self, symbol: str, is_compliant: Optional[bool], *, user_id: str
     ) -> List[AlertEvent]:
-        """Check every watch entry for the symbol and fire alerts on flip.
+        """Check one user's watch entries for the symbol and fire alerts on flip.
+
+        `user_id` is required and must be non-empty: WatchlistStorage.list()
+        treats a falsy id as "every user", and processing every user's entries
+        let one caller move everyone's baseline.
 
         None (insufficient data / under review) is not a verdict: it neither
         alerts nor moves the stored baseline, so True -> None -> False still
         flips exactly once.
         """
 
+        if not user_id or not user_id.strip():
+            raise ValueError("user_id is required")
         if is_compliant is None:
             return []
 
         events: List[AlertEvent] = []
-        for entry in self.storage.list():
+        for entry in self.storage.list(user_id=user_id):
             if entry.symbol != symbol or entry.trigger != "compliance_flip":
                 continue
 
