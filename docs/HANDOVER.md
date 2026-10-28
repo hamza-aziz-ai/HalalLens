@@ -5,23 +5,27 @@ Read first: [ARCHITECTURE.md](ARCHITECTURE.md), [CONSTRAINTS.md](CONSTRAINTS.md)
 ## Latest session: 2026-10-28 (model: Claude Opus 5.5, `claude-opus-5-5`; switched from Claude Sonnet 5.5 at the start of this session)
 
 **Done**
-- PR #87 (verdict engine) and PR #88 (docs, AGENTS.md, CLAUDE.md) merged by the maintainer. Release PR #89 (`0.1.1`) is open.
+- PR #87 (verdict engine) and PR #88 (docs, AGENTS.md, CLAUDE.md) merged; released as v0.1.1. Recompute tooling (#91) merged; released as v0.2.0 (#99), the first release PR opened with the maintainer's token from the `release` environment.
+- Test plan agreed with Codex (docs/TESTING.md, "Road to CI as the only merge gate"): PR1 coverage floors and `pip check` (#93) and PR2 HTTP contracts with the 34-route tier matrix (#94) merged; backend coverage floor 46.4%.
+- Automation: docs-only PRs auto-merge (#96, #97 merged itself); the rule now only undoes auto-merge it enabled, by label (#98). All 39 open Dependabot PRs were closed on the maintainer's request. `RELEASE_PLEASE_TOKEN` moved from a repository secret to the `release` environment (only `main`).
 - Maintainer reviewed the DEFENSE brief and agreed with it (draft banner removed). Their table alignment and wording edits are committed.
 - Codex session ID and the local field-guide path removed from the tracked files (they remain in earlier git history).
 - Maintainer decisions: HalalLens is an open-source showcase now and will be privatized and monetized later, so it stays sale-ready (D-013, AGENTS.md "Project stance"); Docker deployment is the canonical UI (D-011); no production data yet, so the dry run waits (D-012); leaked secrets were sandbox-only and rotated; Codex re-check of #87 skipped for now.
 
 **In progress**
-- Wider auto-merge (D-015) is held until the test plan in docs/TESTING.md lands (PR1 #93 merged, PR2 #94 open); sensitive paths will keep an owner merge. `auto-merge.yml` was removed from #91. Live now: Dependabot minor/patch auto-merge and docs-only auto-merge (#96; #97 merged itself).
-- Fully automatic releases (D-014): `release-please.yml` uses `RELEASE_PLEASE_TOKEN` from the `release` environment (only `main`); live once #91 merges.
-- Recompute tooling (`jobs.backfill_evaluations --recompute`) in PR #91, stacked on #90; reviewed with Codex. The review found that `get_recent_filings` never returned `ratios`, so the plain backfill overwrote evaluated filings and the recompute selected nothing; fixed with a `has_ratios` projection. Also points `scripts/run_backfill_2025.sh` at `jobs.precompute_evaluations`.
+- PR #100: grouped Dependabot updates (`actions`, `ui-dev`, `ui-runtime`, `python`), `build(deps)` titles, `@types/node` held at Node 20, manual trigger for release-please. After it merges, Dependabot runs and the grouped PRs are the live check of Dependabot auto-merge.
+- Wider auto-merge (D-015) is held until test-plan steps 3 to 8 land; sensitive paths will keep an owner merge.
+- Not yet seen live: a release PR merging itself with no human step (v0.2.0 needed one re-enable because of the docs-rule clash fixed in #98). The next `fix:` or `feat:` merge is the check.
 
 **Broken or risky**
 - Stored evaluations computed by the old engine stay possibly false-`compliant` until recomputed (development data only for now).
 - `/alerts/check` still trusts the caller's verdict and iterates every user's entries.
 
 **Next**
-1. Security PR for `/alerts/check`.
-2. Decide whether to keep `nextjs.yml` (Pages is not the canonical UI).
+1. Security PR for `/alerts/check` (council first).
+2. Test plan steps 3 to 8 (billing contracts, Postgres and migrations, parser fixtures, UI and Playwright, Docker, merge policy).
+3. Next 15 and eslint upgrade together, after the Playwright smoke exists.
+4. Decide whether to keep `nextjs.yml` (Pages is not the canonical UI).
 
 **Do not touch**
 - Production deploys outside the controlled cutover (`docs/ROLLBACK.md`). Force-pushes to `main`.
