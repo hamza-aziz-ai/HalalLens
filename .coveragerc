@@ -1,0 +1,24 @@
+# Backend coverage. CI runs `pipenv run pytest --cov` and fails below fail_under.
+# fail_under is a ratchet: raise it when tests land, never lower it without the
+# maintainer's review (docs/TESTING.md). `source` lists packages, so modules no
+# test imports still count as 0% instead of disappearing from the total.
+[run]
+branch = True
+source =
+    api
+    alerts
+    crawler
+    database
+    etl
+    jobs
+    market_data
+    narrator
+    ratio_engine
+omit =
+    # Demo script, not shipped behaviour.
+    ratio_engine/demo.py
+
+[report]
+fail_under = 43.5
+skip_empty = True
+show_missing = False
