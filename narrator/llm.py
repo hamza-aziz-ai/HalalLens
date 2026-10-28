@@ -124,8 +124,9 @@ class LLMNarrationEngine:
 
     SYSTEM_PROMPT = (
         "You are an Islamic finance compliance analyst. "
-        "Given ratio facts you must explain whether the filing is compliant. "
-        "Respond strictly as JSON with keys summary, verdict, bullets, citations."
+        "Given ratio facts and the screening verdict you must explain the result; "
+        "never contradict the verdict. "
+        "Respond strictly as JSON with keys summary, verdict, bullets, citations, screen_verdict."
     )
 
     def __init__(self, client: LLMClient, config: NarratorConfig):
@@ -168,9 +169,11 @@ class LLMNarrationEngine:
         return (
             f"Symbol: {evaluation.symbol}\n"
             f"{citation}\n"
+            f"Screening verdict (authoritative): {evaluation.verdict}\n"
             "Facts:\n- " + "\n- ".join(facts) + "\n"
-            "Return JSON with keys summary, verdict, bullets, citations "
-            "where bullets reference the numeric facts and citations mention the filing date."
+            "Return JSON with keys summary, verdict, bullets, citations, screen_verdict "
+            "where screen_verdict repeats the authoritative verdict above exactly, "
+            "bullets reference the numeric facts and citations mention the filing date."
         )
 
     def _parse_response(self, raw: str) -> NarrationResult:
@@ -203,7 +206,9 @@ class LLMNarrationEngine:
             verdict=verdict,
             bullets=[str(b) for b in bullets],
             citations=[str(c) for c in citations],
-            metadata={"source": "llm"},
+            # What the model says the verdict is; NarrationEngine compares it to the
+            # engine's before accepting the text.
+            metadata={"source": "llm", "claimed_verdict": str(parsed.get("screen_verdict") or "")},
         )
 
     @staticmethod

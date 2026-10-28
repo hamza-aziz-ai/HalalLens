@@ -12,7 +12,7 @@
 | Category                  | Highlights                                                                                         |
 | ------------------------- | -------------------------------------------------------------------------------------------------- |
 | **AAOIFI Screening**      | Ratio engine enforces 30% debt/cash caps and 5% non-permissible income thresholds per filing.      |
-| **Explain-Why Narration** | Rule-based fallback plus optional LLM-backed narrator (vLLM/OpenAI style) with JSON outputs.      |
+| **Explain-Why Narration** | Rule-based by default. An optional LLM-backed narrator (vLLM/OpenAI style, `NARRATOR_MODE=llm`) is used only for conclusive verdicts and only if its text passes a best-effort consistency check; the badge and ratio table always show the engine's verdict. Unknown results are always narrated by the rule-based narrator.      |
 | **Watchlists & Alerts**   | File-backed watchlists plus compliance-flip alert engine (future: Celery + SES delivery).          |
 | **Filings Ingestion**     | Production-style BSE/NSE crawlers, PDF capture via MinIO, Camelot tables **and** XBRL/JSON parsing for AAOIFI metrics. |
 | **REST API**              | FastAPI service exposes `/halal-score`, `/narrate`, `/watchlist`, and `/alerts/check` endpoints.   |
@@ -62,7 +62,7 @@ export LLM_MAX_TOKENS=400
 export LLM_TIMEOUT=30
 ```
 
-If `NARRATOR_MODE=llm` but endpoint/model are missing, the service automatically falls back to the deterministic narrator. Set `LLM_MAX_TOKENS=0` and/or `LLM_TIMEOUT=0` if you want the model/server to decide token counts and timeouts (useful for reasoning-heavy Ollama models like DeepSeek-R1).
+**LLM text is best-effort, not guaranteed.** For `compliant` / `non-compliant` results the model must repeat the engine's verdict and its text is checked for contradicting wording; any doubt, error or unknown result falls back to the rule-based narrator. A paraphrase the check does not know can still contradict the verdict, so the UI marks LLM text as AI-generated. If `NARRATOR_MODE=llm` but endpoint/model are missing, the service automatically falls back to the deterministic narrator. Set `LLM_MAX_TOKENS=0` and/or `LLM_TIMEOUT=0` if you want the model/server to decide token counts and timeouts (useful for reasoning-heavy Ollama models like DeepSeek-R1).
 
 ### Database schema
 

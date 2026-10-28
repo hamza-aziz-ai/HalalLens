@@ -32,7 +32,7 @@ def main():
 
     result = engine.evaluate(snapshot, market)
     print(f"Symbol: {result.symbol}")
-    print(f"Halal verdict: {result.is_compliant}")
+    print(f"Halal verdict: {result.verdict}")
     for key, comp in result.ratios.items():
         value = "n/a" if comp.value is None else f"{comp.value:.4f}"
         status = (

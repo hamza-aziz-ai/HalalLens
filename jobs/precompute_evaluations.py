@@ -19,7 +19,7 @@ from jobs.backfill_evaluations import (
     _snapshot_from_record,
     engine,
 )
-from ratio_engine import MarketDataInput
+from ratio_engine import MarketDataInput, build_summary
 
 logger = logging.getLogger("evaluation_precompute")
 
@@ -82,22 +82,13 @@ def run_precompute(*, limit: int = 200, lookback_days: int = 365) -> int:
             ratios_payload = {
                 name: asdict(comp) for name, comp in evaluation.ratios.items()
             }
-            has_any_ratio = any(
-                comp.passed is not None for comp in evaluation.ratios.values()
-            )
-            verdict = (
-                "compliant" if evaluation.is_compliant else "non-compliant"
-            ) if has_any_ratio else "insufficient-data"
-            summary = (
-                "All computed AAOIFI ratios are within thresholds."
-                if evaluation.is_compliant
-                else "At least one ratio exceeds AAOIFI limits."
-            )
+            verdict = evaluation.verdict
+            summary = build_summary(evaluation)
 
             db.upsert_filing_evaluation(
                 symbol=snapshot.symbol,
                 filing_date=filing_dt,
-                is_compliant=evaluation.is_compliant if has_any_ratio else None,
+                is_compliant=evaluation.is_compliant,
                 ratios=ratios_payload,
                 summary=summary,
                 verdict=verdict,

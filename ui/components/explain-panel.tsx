@@ -22,6 +22,15 @@ export function ExplainPanel({
         {narration.summary} Verdict:{" "}
         <span className="font-semibold text-cyan-300">{narration.verdict}</span>
       </p>
+      {narration.source === "llm" && (
+        <p
+          className="mt-3 rounded-lg border border-amber-400/30 bg-amber-400/10 px-3 py-2 text-xs text-amber-200"
+          data-testid="ai-caveat"
+        >
+          AI-generated explanation. It may be imperfect: the Compliant / Non-compliant
+          badge and the ratio table are the authoritative screening result.
+        </p>
+      )}
       <ul className="mt-4 space-y-2 text-sm text-slate-200">
         {narration.bullets.map((bullet, index) => (
           <li

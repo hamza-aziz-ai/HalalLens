@@ -8,7 +8,7 @@ from typing import Callable, Dict, List, Optional
 
 from narrator.llm import LLMClient, LLMNarrationEngine, LLMNarrationError
 from narrator.models import NarrationResult, NarratorConfig
-from ratio_engine import RatioEvaluation
+from ratio_engine import COMPLIANT, NON_COMPLIANT, RatioEvaluation
 
 
 class RuleBasedNarrator:
@@ -20,16 +20,22 @@ class RuleBasedNarrator:
         "non_permissible_income_ratio": "Non-permissible income ratio",
     }
 
+    verdict_text: Dict[str, str] = {
+        COMPLIANT: "compliant with AAOIFI screens",
+        NON_COMPLIANT: "NOT compliant with AAOIFI screens",
+    }
+    insufficient_text = "insufficient data to screen against AAOIFI"
+
     def build(self, evaluation: RatioEvaluation) -> NarrationResult:
-        verdict = (
-            "compliant with AAOIFI screens"
-            if evaluation.is_compliant
-            else "NOT compliant with AAOIFI screens"
-        )
-        summary = (
-            f"{evaluation.symbol} is {verdict.lower()} for the filing dated "
-            f"{evaluation.filing_date.date().isoformat()}."
-        )
+        filing = evaluation.filing_date.date().isoformat()
+        verdict = self.verdict_text.get(evaluation.verdict, self.insufficient_text)
+        if evaluation.verdict in self.verdict_text:
+            summary = f"{evaluation.symbol} is {verdict.lower()} for the filing dated {filing}."
+        else:
+            # Unknown is not a failure: say so instead of "NOT compliant".
+            summary = (
+                f"{evaluation.symbol} has {verdict} for the filing dated {filing}."
+            )
 
         bullets: List[str] = []
         citations: List[str] = []
@@ -62,12 +68,12 @@ class RuleBasedNarrator:
             verdict=verdict,
             bullets=bullets,
             citations=citations or [summary],
-            metadata={"source": "rule_based"},
+            metadata={"source": "rule_based", "screen_verdict": evaluation.verdict},
         )
 
 
 class NarrationEngine:
-    """Hybrid narrator that can delegate to an LLM or rule-based engine."""
+    """Narration entry point: rule-based by default, optional LLM with a best-effort guard."""
 
     def __init__(
         self,
@@ -90,12 +96,49 @@ class NarrationEngine:
             if llm_client is not None:
                 self.llm_engine = LLMNarrationEngine(llm_client, self.config)
 
-    def build(self, evaluation: RatioEvaluation) -> NarrationResult:
-        """Produce a narration, preferring LLM output with safe fallback."""
+    # Best-effort consistency guard for LLM prose (maintainer decision, 2026-10-27).
+    # It is NOT a guarantee: a model can pick a paraphrase none of these words
+    # catch ("debt is too high" under a compliant label). Only the rule-based
+    # narrator is guaranteed consistent. ponytail: substring lists, ceiling is
+    # paraphrase; replace with a structured per-claim check if it ever matters.
+    _FAIL_WORDS = (
+        "non-compliant", "non compliant", "noncompliant", "not compliant",
+        "haram", "impermissible", "prohibited", "exceed", "breach", "violat",
+        "fail", "above the", "over the cap", "over the limit", "too high",
+    )
+    _PASS_ALL_WORDS = (
+        "fully compliant", "satisf", "all ratios", "every screen", "every financial",
+        "all screens", "no concerns", "passes all", "passed all",
+    )
 
-        if self.llm_engine:
+    def _llm_rejection(self, result: NarrationResult, evaluation: RatioEvaluation) -> Optional[str]:
+        """Why this LLM text cannot be shown, or None if it passes the guard."""
+
+        if result.metadata.get("claimed_verdict") != evaluation.verdict:
+            return "claimed verdict differs from the engine's"
+        text = " ".join([result.summary, result.verdict, *result.bullets]).lower()
+        says_fail = any(word in text for word in self._FAIL_WORDS)
+        if evaluation.verdict == COMPLIANT:
+            return "text mentions a failure" if says_fail else None
+        if not says_fail:
+            return "text never mentions a failure"
+        if any(word in text for word in self._PASS_ALL_WORDS):
+            return "text claims everything passes"
+        return None
+
+    def build(self, evaluation: RatioEvaluation) -> NarrationResult:
+        """Narrate a screening result.
+
+        Unknown results (insufficient-data, needs-review) are always narrated by
+        the rule-based narrator: the model is not asked about them. For
+        conclusive verdicts the LLM text is used only if it passes the
+        best-effort guard above; the label shown is always the engine's. Any
+        doubt or LLM error falls back to the rule-based narration.
+        """
+
+        if self.llm_engine and evaluation.is_compliant is not None:
             try:
-                return self.llm_engine.build(evaluation)
+                result = self.llm_engine.build(evaluation)
             except LLMNarrationError as exc:
                 self.logger.warning(
                     "LLM narration failed for %s, falling back to rule-based",
@@ -107,6 +150,18 @@ class NarrationEngine:
                         self.failure_callback(evaluation, exc)
                     except Exception:  # pragma: no cover - diagnostics only
                         self.logger.exception("LLM failure callback crashed")
+            else:
+                reason = self._llm_rejection(result, evaluation)
+                if reason is None:
+                    result.verdict = self.rule_based.verdict_text[evaluation.verdict]
+                    result.metadata["screen_verdict"] = evaluation.verdict
+                    result.metadata.pop("claimed_verdict", None)
+                    return result
+                self.logger.warning(
+                    "LLM narration for %s rejected (%s), using rule-based",
+                    evaluation.symbol,
+                    reason,
+                )
         return self.rule_based.build(evaluation)
 
 

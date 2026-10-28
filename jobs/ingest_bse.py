@@ -20,7 +20,8 @@ from market_data import (
     fetch_indian_financial_snapshot,
     indian_api_enabled,
 )
-from ratio_engine import FinancialSnapshotInput, MarketDataInput, RatioEngine
+from ratio_engine import FinancialSnapshotInput, MarketDataInput, RatioEngine, build_summary
+from ratio_engine.amounts import coerce_amount
 from config.logging_config import configure_logging as setup_file_logging
 from config import INDIAN_API_OVERRIDE_TOLERANCE
 
@@ -127,15 +128,7 @@ def _persist_financial_snapshots(
 
 
 def _coerce_float(value) -> Optional[float]:
-    if value is None:
-        return None
-    if isinstance(value, (int, float)):
-        return float(value)
-    try:
-        cleaned = str(value).replace(",", "").strip()
-        return float(cleaned) if cleaned else None
-    except ValueError:
-        return None
+    return coerce_amount(value)
 
 
 def _snapshot_from_record(
@@ -364,38 +357,6 @@ def _lookup_market_data(
     return None, None, None
 
 
-def _derive_verdict(evaluation) -> str:
-    has_ratios = any(comp.passed is not None for comp in evaluation.ratios.values())
-    if not has_ratios:
-        return "insufficient-data"
-    return "compliant" if evaluation.is_compliant else "non-compliant"
-
-
-FRIENDLY_LABELS = {
-    "debt_to_market_cap": "Debt to market cap",
-    "cash_to_market_cap": "Cash to market cap",
-    "non_permissible_income_ratio": "Non-permissible income ratio",
-    "receivables_to_market_cap": "Receivables to market cap",
-    "liquid_assets_to_market_cap": "Liquid assets to market cap",
-}
-
-
-def _build_summary(evaluation) -> str:
-    failing = [
-        FRIENDLY_LABELS.get(name, name)
-        for name, comp in evaluation.ratios.items()
-        if comp.passed is False
-    ]
-    if evaluation.is_compliant and not failing:
-        return "All computed AAOIFI ratios are within the prescribed thresholds."
-    if failing:
-        return f"{', '.join(failing)} exceeded AAOIFI thresholds for this filing."
-    if evaluation.missing_inputs:
-        missing = ", ".join(sorted(evaluation.missing_inputs.keys()))
-        return f"Insufficient data to compute all ratios (missing: {missing})."
-    return "Ratios could not be computed for this filing."
-
-
 def _evaluate_and_store(
     db: BSEDatabaseManager,
     snapshots: List[dict],
@@ -431,8 +392,8 @@ def _evaluate_and_store(
         )
         evaluation = ratio_engine.evaluate(snapshot_input, market_input)
 
-        verdict = _derive_verdict(evaluation)
-        summary = _build_summary(evaluation)
+        verdict = evaluation.verdict
+        summary = build_summary(evaluation)
         ratios_payload = {
             name: asdict(comp) for name, comp in evaluation.ratios.items()
         }
@@ -440,9 +401,7 @@ def _evaluate_and_store(
         db.upsert_filing_evaluation(
             symbol=evaluation.symbol,
             filing_date=evaluation.filing_date,
-            is_compliant=evaluation.is_compliant
-            if verdict != "insufficient-data"
-            else None,
+            is_compliant=evaluation.is_compliant,
             ratios=ratios_payload,
             summary=summary,
             verdict=verdict,

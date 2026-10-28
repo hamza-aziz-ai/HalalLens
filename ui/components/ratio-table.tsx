@@ -34,14 +34,19 @@ export function RatioTable({
         <span
           className={clsx(
             "rounded-full px-3 py-1 text-xs font-semibold uppercase tracking-[0.2em]",
-            evaluation.is_compliant
-              ? "bg-emerald-400/20 text-emerald-300"
-              : "bg-rose-400/20 text-rose-300",
-            theme === "light" && evaluation.is_compliant && "text-emerald-600",
-            theme === "light" && !evaluation.is_compliant && "text-rose-600",
+            evaluation.is_compliant === true && "bg-emerald-400/20 text-emerald-300",
+            evaluation.is_compliant === false && "bg-rose-400/20 text-rose-300",
+            evaluation.is_compliant == null && "bg-amber-400/20 text-amber-300",
+            theme === "light" && evaluation.is_compliant === true && "text-emerald-600",
+            theme === "light" && evaluation.is_compliant === false && "text-rose-600",
+            theme === "light" && evaluation.is_compliant == null && "text-amber-600",
           )}
         >
-          {evaluation.is_compliant ? "Compliant" : "Non-compliant"}
+          {evaluation.is_compliant === true
+            ? "Compliant"
+            : evaluation.is_compliant === false
+              ? "Non-compliant"
+              : "Insufficient data"}
         </span>
       </header>
       <div className="overflow-x-auto">
