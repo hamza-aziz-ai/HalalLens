@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - main
+  # Manual run, e.g. after merges done by GITHUB_TOKEN automation, whose pushes
+  # do not start workflows.
+  workflow_dispatch:
 
 permissions:
   contents: write
