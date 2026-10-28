@@ -19,6 +19,6 @@ omit =
     ratio_engine/demo.py
 
 [report]
-fail_under = 43.5
+fail_under = 46.4
 skip_empty = True
 show_missing = False
