@@ -19,7 +19,9 @@ ENV NEXT_PUBLIC_HALAL_API_BASE_URL=${NEXT_PUBLIC_HALAL_API_BASE_URL}
 RUN npm run build && npm install --global serve
 
 COPY ui/docker-entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
+# A Windows checkout (core.autocrlf) gives the script CRLF endings, and the
+# kernel then reports "/entrypoint.sh: not found". Normalise in the image.
+RUN sed -i 's/\r$//' /entrypoint.sh && chmod +x /entrypoint.sh
 
 EXPOSE 3000
 
