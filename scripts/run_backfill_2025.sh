@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Runs jobs.ingest_bse + jobs.backfill_evaluations in 7-day slices
+# Runs jobs.ingest_bse + jobs.precompute_evaluations in 7-day slices
 # from 2025‑01‑01 up to “today”.  Logs land in logs/manual_backfill/.
 #
 
@@ -23,8 +23,11 @@ run_slice() {
   if ! pipenv run python -m jobs.ingest_bse --from-date "$(date -d "$from" +%Y%m%d)" --to-date "$(date -d "$to" +%Y%m%d)" --save-cache >>"$LOG_FILE" 2>&1; then
     log "ingest_bse failed for $from-$to"; return 1
   fi
-  log "Starting backfill_evaluations for $from to $to"
-  pipenv run python -m jobs.backfill_evaluations --from-date "$(date -d "$from" +%Y%m%d)" --to-date "$(date -d "$to" +%Y%m%d)" >>"$LOG_FILE" 2>&1
+  # Evaluate filings that have no evaluation yet. precompute_evaluations selects
+  # them directly (get_filings_needing_evaluation); backfill_evaluations reads a
+  # window of the newest filings with evaluated rows first, so it can miss them.
+  log "Starting precompute_evaluations after slice $from to $to"
+  pipenv run python -m jobs.precompute_evaluations >>"$LOG_FILE" 2>&1
   log "Completed slice $from-$to"
 }
 

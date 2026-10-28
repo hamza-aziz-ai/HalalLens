@@ -8,19 +8,20 @@ Read first: [ARCHITECTURE.md](ARCHITECTURE.md), [CONSTRAINTS.md](CONSTRAINTS.md)
 - PR #87 (verdict engine) and PR #88 (docs, AGENTS.md, CLAUDE.md) merged by the maintainer. Release PR #89 (`0.1.1`) is open.
 - Maintainer reviewed the DEFENSE brief and agreed with it (draft banner removed). Their table alignment and wording edits are committed.
 - Codex session ID and the local field-guide path removed from the tracked files (they remain in earlier git history).
-- Maintainer decisions: Docker deployment is the canonical UI (D-011); no production data yet, so the dry run waits (D-012); leaked secrets were sandbox-only and rotated; Codex re-check of #87 skipped for now.
+- Maintainer decisions: HalalLens is an open-source showcase now and will be privatized and monetized later, so it stays sale-ready (D-013, AGENTS.md "Project stance"); Docker deployment is the canonical UI (D-011); no production data yet, so the dry run waits (D-012); leaked secrets were sandbox-only and rotated; Codex re-check of #87 skipped for now.
 
 **In progress**
-- PR-B: recompute + dry-run tooling for stored evaluations.
+- Wider auto-merge (D-015) is held until the test plan in docs/TESTING.md lands (PR1 #93 merged, PR2 #94 open); sensitive paths will keep an owner merge. `auto-merge.yml` was removed from #91. Live now: Dependabot minor/patch auto-merge and docs-only auto-merge (#96; #97 merged itself).
+- Fully automatic releases (D-014): `release-please.yml` uses `RELEASE_PLEASE_TOKEN` from the `release` environment (only `main`); live once #91 merges.
+- Recompute tooling (`jobs.backfill_evaluations --recompute`) in PR #91, stacked on #90; reviewed with Codex. The review found that `get_recent_filings` never returned `ratios`, so the plain backfill overwrote evaluated filings and the recompute selected nothing; fixed with a `has_ratios` projection. Also points `scripts/run_backfill_2025.sh` at `jobs.precompute_evaluations`.
 
 **Broken or risky**
 - Stored evaluations computed by the old engine stay possibly false-`compliant` until recomputed (development data only for now).
 - `/alerts/check` still trusts the caller's verdict and iterates every user's entries.
 
 **Next**
-1. PR-B (recompute + dry-run tooling).
-2. Security PR for `/alerts/check`.
-3. Decide whether to keep `nextjs.yml` (Pages is not the canonical UI).
+1. Security PR for `/alerts/check`.
+2. Decide whether to keep `nextjs.yml` (Pages is not the canonical UI).
 
 **Do not touch**
 - Production deploys outside the controlled cutover (`docs/ROLLBACK.md`). Force-pushes to `main`.
@@ -47,7 +48,7 @@ Read first: [ARCHITECTURE.md](ARCHITECTURE.md), [CONSTRAINTS.md](CONSTRAINTS.md)
 
 **Next**
 1. Review and merge #87 (merge is not activation).
-2. PR-B: recompute + dry-run tooling (frozen stored inputs, before/after CSV, no vendor calls, dry-run by default, governance overrides preserved).
+2. PR-B: recompute + dry-run tooling (stored inputs, before/after CSV, no vendor calls, dry-run by default, governance overrides preserved).
 3. Dry run -> you review the distribution -> controlled cutover (see [ROLLBACK.md](ROLLBACK.md)).
 4. Separate security PR for `/alerts/check` before live alerts resume.
 

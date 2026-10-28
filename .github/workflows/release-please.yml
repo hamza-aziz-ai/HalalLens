@@ -12,10 +12,38 @@ permissions:
 jobs:
   release-please:
     runs-on: ubuntu-latest
+    # RELEASE_PLEASE_TOKEN lives in the `release` environment, which only `main`
+    # may use, so workflows run for pull requests can never read this personal
+    # token (its owner can bypass the ruleset). See docs/DEPENDENCIES.md.
+    environment: release
+    env:
+      # Without the secret the job falls back to the default token: the release
+      # PR is opened but CI does not run on it, so it is merged by hand.
+      HAS_RELEASE_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN != '' }}
     steps:
       # Opens/updates a release PR from Conventional Commit titles on main.
       # Merging that PR tags vX.Y.Z and publishes the GitHub Release + CHANGELOG.
-      - uses: googleapis/release-please-action@5c625bfb5d1ff62eadeeb3772007f7f66fdcf071 # v4.4.1
+      # RELEASE_PLEASE_TOKEN (fine-grained, this repo only: Contents + Pull
+      # requests read/write) makes the release PR trigger CI. GITHUB_TOKEN events
+      # never start other workflows.
+      - id: release
+        uses: googleapis/release-please-action@5c625bfb5d1ff62eadeeb3772007f7f66fdcf071 # v4.4.1
         with:
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+
+      # Auto-merge the release PR once the required checks (backend, ui,
+      # secrets) pass. Enabled with the same token on purpose: a merge done under
+      # GITHUB_TOKEN would not trigger this workflow again, so no tag or Release
+      # would be created.
+      - name: Enable auto-merge on the release PR
+        if: steps.release.outputs.prs_created == 'true' && env.HAS_RELEASE_TOKEN == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+        run: |
+          pr=$(gh pr list --repo "$GITHUB_REPOSITORY" --head release-please--branches--main \
+            --state open --json number --jq '.[0].number')
+          if [ -n "$pr" ]; then
+            gh pr merge "$pr" --repo "$GITHUB_REPOSITORY" --auto --squash
+          fi

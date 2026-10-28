@@ -10,14 +10,14 @@ How to undo a change. The risky ones first.
 **Code:** revert the squash commit on `main` (`git revert <sha>`, via a PR), rebuild images, redeploy. There is no schema change in #87, so no down-migration.
 
 **Data (the real risk):** the new engine does not rewrite stored evaluations by itself, but new evaluations (ingestion, `/filings/{symbol}`) use the new logic. After PR-B's recompute runs, rows are overwritten in place (`filing_evaluations` is keyed by `(symbol, filing_date)`).
-1. Before any recompute: export `filing_evaluations` (and the inputs used) to CSV / `pg_dump --table`; PR-B writes a before/after CSV in dry-run.
+1. Before any recompute: export `filing_evaluations` with `pg_dump --table` (the CSV is evidence, not a backup) and run the dry run `python -m jobs.backfill_evaluations --recompute --report dry_run.csv`. The CSV holds the old and new verdicts, missing inputs, row status and the inputs and caps used.
 2. To go back after a recompute: restore the table from that export.
 3. Re-check afterwards: `GET /filings/{symbol}` for a few symbols, the dashboard badges, `/ops/metrics`.
 
 ## Controlled cutover (activation) and its rollback
 1. Caddy returns 503 on screening routes (keep the Razorpay webhook reachable); pause `ingestion` and `evaluation` schedulers; keep `/alerts/check` off; set `NARRATOR_MODE=rule_based`.
 2. Deploy API and UI together (UI before or with the API; the old UI renders `null` as "Non-compliant").
-3. Run the reviewed recompute from the dry-run export; verify coverage and that `verdict` and `is_compliant` agree on every row.
+3. Run the reviewed recompute with a new report name (`--recompute --report write_run.csv --write`; an existing file is refused). It re-reads the current stored inputs rather than replaying the dry run, so compare the two CSVs; verify that `verdict` and `is_compliant` agree on every row. Each write commits on its own: after a failure, restore from the `pg_dump` or rerun.
 4. Clear the in-process narration cache (restart the API); lift maintenance only after verification.
 **Rollback:** keep maintenance on, redeploy the previous images, restore the exported table, then lift maintenance.
 
