@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.2](https://github.com/hamza-aziz-ai/HalalLens/compare/v0.5.1...v0.5.2) (2026-10-28)
+
+
+### Bug Fixes
+
+* **ui:** serve the dashboard image as static files, without Next.js or Node.js at runtime ([#147](https://github.com/hamza-aziz-ai/HalalLens/issues/147)) ([fe2c29b](https://github.com/hamza-aziz-ai/HalalLens/commit/fe2c29b3b871cdbdd32f3f4f647975d57e427f12))
+
 ## [0.5.1](https://github.com/hamza-aziz-ai/HalalLens/compare/v0.5.0...v0.5.1) (2026-10-28)
 
 
