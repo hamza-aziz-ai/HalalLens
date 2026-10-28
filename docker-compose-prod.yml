@@ -53,6 +53,11 @@ services:
       INGESTION_INTERVAL_MINUTES: ${INGESTION_INTERVAL_MINUTES:-60}
       # One worker until watchlists leave the JSON file store (.env.example).
       API_WORKERS: ${API_WORKERS:-1}
+      # Caddy serves the UI and the API (under /api) on one origin.
+      FRONTEND_BASE_URL: ${FRONTEND_BASE_URL:-https://${HALAL_APP_DOMAIN}}
+      # Caddy replaces client-supplied X-Forwarded-For, so the first hop is the
+      # real client. Safe only because the API port is not published (expose).
+      TRUST_PROXY_HEADERS: "true"
     depends_on:
       preflight:
         condition: service_completed_successfully
@@ -64,7 +69,7 @@ services:
       [
         "sh",
         "-c",
-        "uvicorn api.app:app --host 0.0.0.0 --port 8001 --workers ${API_WORKERS:-1} --proxy-headers"
+        "uvicorn api.app:app --host 0.0.0.0 --port 8001 --workers ${API_WORKERS:-1} --proxy-headers --forwarded-allow-ips='*' --root-path /api"
       ]
     volumes:
       - logs_data:/app/logs
@@ -84,10 +89,9 @@ services:
     build:
       context: .
       dockerfile: ui.Dockerfile
+      # Same origin: Caddy routes /api/* to the API (see Caddyfile).
       args:
-        NEXT_PUBLIC_HALAL_API_BASE_URL: ${NEXT_PUBLIC_HALAL_API_BASE_URL:?set in .env}
-    environment:
-      NEXT_PUBLIC_HALAL_API_BASE_URL: ${NEXT_PUBLIC_HALAL_API_BASE_URL:?set in .env}
+        NEXT_PUBLIC_HALAL_API_BASE_URL: /api
     depends_on:
       api:
         condition: service_healthy
@@ -153,7 +157,6 @@ services:
     image: caddy:2
     environment:
       HALAL_APP_DOMAIN: ${HALAL_APP_DOMAIN:?set in .env}
-      HALAL_API_DOMAIN: ${HALAL_API_DOMAIN:?set in .env}
       ACME_EMAIL: ${ACME_EMAIL:?set in .env}
     depends_on:
       api:

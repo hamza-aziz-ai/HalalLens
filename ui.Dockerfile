@@ -13,7 +13,8 @@ RUN npm ci
 
 COPY ui/ ./
 
-ARG NEXT_PUBLIC_HALAL_API_BASE_URL=http://api:8001
+# Default: same origin behind Caddy (/api/* -> API). Override for other setups.
+ARG NEXT_PUBLIC_HALAL_API_BASE_URL=/api
 ENV NEXT_PUBLIC_HALAL_API_BASE_URL=${NEXT_PUBLIC_HALAL_API_BASE_URL}
 
 RUN npm run build && npm install --global serve
