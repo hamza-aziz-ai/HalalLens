@@ -13,6 +13,11 @@ updates:
     groups:
       actions:
         update-types: [minor, patch]
+      actions-majors:
+        update-types: [major]
+      actions-security:
+        applies-to: security-updates
+        patterns: ["*"]
 
   - package-ecosystem: npm
     directory: /ui
@@ -21,8 +26,9 @@ updates:
     commit-message:
       prefix: build
       include: scope
-    # One PR per group per week instead of one per package. Only ui-dev is
-    # auto-merged (dependabot-automerge.yml); ui-runtime waits for a human.
+    # One PR per group per month instead of one per package. Auto-merged by
+    # dependabot-automerge.yml: ui-dev, and patch-level ui-security. ui-runtime
+    # and ui-majors wait for a human.
     groups:
       ui-dev:
         dependency-type: development
@@ -30,6 +36,13 @@ updates:
       ui-runtime:
         dependency-type: production
         update-types: [minor, patch]
+      ui-majors:
+        update-types: [major]
+      # Security updates are a separate Dependabot mechanism: without a group
+      # with applies-to, each advisory opens its own PR.
+      ui-security:
+        applies-to: security-updates
+        patterns: ["*"]
     ignore:
       # Types follow the Node runtime (20 in CI and ui.Dockerfile), not the
       # newest Node. Raise together with the runtime.
@@ -61,6 +74,8 @@ updates:
         update-types: ["version-update:semver-major"]
       - dependency-name: "tailwindcss"
         update-types: ["version-update:semver-major"]
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
 
   # Python is never auto-merged (ratio/ETL/billing libraries: review by hand).
   - package-ecosystem: pip
@@ -74,3 +89,8 @@ updates:
     groups:
       python:
         update-types: [minor, patch]
+      python-majors:
+        update-types: [major]
+      python-security:
+        applies-to: security-updates
+        patterns: ["*"]
