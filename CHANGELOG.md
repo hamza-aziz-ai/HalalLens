@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/hamza-aziz-ai/HalalLens/compare/v0.2.0...v0.2.1) (2026-10-28)
+
+
+### Bug Fixes
+
+* **api:** take /alerts/check verdicts from stored evaluations and scope them to the caller ([#115](https://github.com/hamza-aziz-ai/HalalLens/issues/115)) ([6bee561](https://github.com/hamza-aziz-ai/HalalLens/commit/6bee561782d420f402a9529bbe6ecd8229a33d82))
+
 ## [0.2.0](https://github.com/hamza-aziz-ai/HalalLens/compare/v0.1.1...v0.2.0) (2026-10-28)
 
 
