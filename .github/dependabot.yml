@@ -35,6 +35,32 @@ updates:
       # newest Node. Raise together with the runtime.
       - dependency-name: "@types/node"
         update-types: ["version-update:semver-major"]
+      # Majors of the framework stack move together in one deliberate upgrade
+      # (after the Playwright smoke test exists, docs/TESTING.md step 6):
+      # Next 14 requires React 18, eslint-config-next pins eslint, and the test
+      # tooling tracks React. Single bumps fail CI or break peers.
+      - dependency-name: "next"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "eslint-config-next"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "react"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "react-dom"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "@types/react"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "@types/react-dom"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "eslint"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "jest"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "jest-environment-jsdom"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "@testing-library/*"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "tailwindcss"
+        update-types: ["version-update:semver-major"]
 
   # Python is never auto-merged (ratio/ETL/billing libraries: review by hand).
   - package-ecosystem: pip
