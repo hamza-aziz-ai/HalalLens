@@ -25,6 +25,7 @@ fastapi = "*"
 [dev-packages]
 pytest = "*"
 pandas-stubs = "*"
+pytest-cov = "*"
 
 # Minor version only: pinning a patch release (python_full_version) makes
 # `pipenv install --deploy` abort as soon as python:3.14-slim moves on.
