@@ -110,7 +110,7 @@ Tests must not need live Postgres, MinIO, an LLM or vendor APIs.
 
 ### Google SSO (optional)
 
-Create a Google "Web application" OAuth client, then set `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URI` (`<api>/auth/google/callback`) and `FRONTEND_BASE_URL`. The token is returned in the URL **fragment** (`/login#token=...`), never the query string, and the redirect must match `FRONTEND_BASE_URL` or the `halallens://` scheme.
+Create a Google "Web application" OAuth client, then set `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URI` (`<api>/auth/google/callback`; behind Caddy in production `https://<domain>/api/auth/google/callback`) and `FRONTEND_BASE_URL`. The token is returned in the URL **fragment** (`/login#token=...`), never the query string, and the redirect must match `FRONTEND_BASE_URL` or the `halallens://` scheme.
 
 ---
 
@@ -155,7 +155,7 @@ ALLOWED_ORIGIN_REGEX=                # opt-in; matched with fullmatch, not a pre
 
 ## Docker pilot
 
-`docker-compose.yml` runs `preflight`, `api` (port 8001), `ui` (port 3001), and the `ingestion` and `evaluation` schedulers against an **external** Postgres and MinIO. `docker-compose-prod.yml` adds Caddy for TLS and bundled Postgres/MinIO.
+`docker-compose.yml` runs `preflight`, `api` (port 8001), `ui` (port 3001), and the `ingestion` and `evaluation` schedulers against an **external** Postgres and MinIO. `docker-compose-prod.yml` adds Caddy for TLS and bundled Postgres/MinIO, and serves everything on one domain (`HALAL_APP_DOMAIN`): the dashboard at `/` and the API under `/api/` (Swagger at `/api/docs`). In production, register `https://<domain>/api/auth/google/callback` with Google and `https://<domain>/api/webhooks/razorpay` with Razorpay.
 
 ```bash
 cp .env.example .env     # set POSTGRES_*, MINIO_*, INDIAN_API_*, NEXT_PUBLIC_HALAL_API_BASE_URL, ...

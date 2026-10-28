@@ -93,6 +93,10 @@ jobs:
       - name: Smoke-test images
         run: bash scripts/docker_smoke.sh halallens-api:ci halallens-ui:ci halallens-scheduler:ci
 
+      # Production routing through Caddy: UI at /, API under /api/ on one origin.
+      - name: Test the Caddy routing
+        run: bash scripts/proxy_smoke.sh halallens-api:ci halallens-ui:ci
+
   secrets:
     runs-on: ubuntu-latest
     permissions:

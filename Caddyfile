@@ -3,16 +3,25 @@
   email {$ACME_EMAIL}
 }
 
-{$HALAL_API_DOMAIN} {
-  reverse_proxy api:8001
-  encode zstd gzip
-}
-
+# One origin for the dashboard and the API: the UI calls /api/..., so there is
+# no CORS between them and one UI image works on any domain.
 {$HALAL_APP_DOMAIN} {
-  @policy_no_slash {
-    path /terms /privacy /refund-policy /shipping-policy /contact
-  }
-  redir @policy_no_slash {path}/ 308
-  reverse_proxy ui:3000
   encode zstd gzip
+
+  redir /api /api/ 308
+
+  # The prefix is stripped here; uvicorn runs with --root-path /api so the API's
+  # own links (Swagger at /api/docs -> /api/openapi.json) keep it. Everything
+  # under /api/ stays with the API, including its JSON 404s.
+  handle_path /api/* {
+    reverse_proxy api:8001
+  }
+
+  handle {
+    @policy_no_slash {
+      path /terms /privacy /refund-policy /shipping-policy /contact
+    }
+    redir @policy_no_slash {path}/ 308
+    reverse_proxy ui:3000
+  }
 }
