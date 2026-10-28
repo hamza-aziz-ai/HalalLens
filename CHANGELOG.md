@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.1](https://github.com/hamza-aziz-ai/HalalLens/compare/v0.5.0...v0.5.1) (2026-10-28)
+
+
+### Bug Fixes
+
+* **market-data:** cap Indian Stock API calls per month and stop sending the key in URLs ([#145](https://github.com/hamza-aziz-ai/HalalLens/issues/145)) ([0b36511](https://github.com/hamza-aziz-ai/HalalLens/commit/0b3651104dee02c56d17f96812c488d87821231e))
+
 ## [0.5.0](https://github.com/hamza-aziz-ai/HalalLens/compare/v0.4.0...v0.5.0) (2026-10-28)
 
 
