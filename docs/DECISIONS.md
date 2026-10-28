@@ -81,7 +81,8 @@ One entry per decision, newest last. Model for every entry below: Claude Sonnet 
   2. Docker deployment
 - **Chosen:** 2.
 - **Why:** It is built with the real API URL and deploys together with the API, which the cutover in ROLLBACK.md needs.
-- **Trade-off:** The Pages site stays live but is not a working product; whether to keep `nextjs.yml` is still open.
+- **Trade-off:** The Pages site stayed live but was not a working product.
+- **Update 2026-10-28 (maintainer):** `nextjs.yml` removed and GitHub Pages turned off: the public build called a private LAN address and every API call failed. The UI's fallback API URL is now `http://localhost:8001` instead of that LAN address.
 - **Revisit if:** a static demo with a public API becomes useful.
 
 ## D-012: No production data yet; recompute tooling first, dry run later
