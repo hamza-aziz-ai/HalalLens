@@ -17,7 +17,7 @@ Every dependency, why it is here, and who maintains it. New entries need a reaso
 | cloudscraper       | session handling for the NSE fetcher               | `crawler/nse_ann.py` only                                                        | that crawler is not called anywhere: candidate for removal               |
 | fake-useragent     | rotating User-Agent                                | `crawler/nse_ann.py` only                                                        | same unused NSE fetcher: candidate for removal with cloudscraper         |
 
-Dev: `pytest`, `pandas-stubs`, `pytest-cov` (added 2026-10-28 for the CI coverage floor; brings `coverage`).
+Dev: `pytest`, `pandas-stubs`, `pytest-cov` (added 2026-10-28 for the CI coverage floor; brings `coverage`), `httpx2` 2.16.0 (added 2026-10-28 for `fastapi.testclient`; starlette 1.10 deprecates `httpx` there and imports `httpx2` first; published from `github.com/pydantic/httpx2` by the httpx author).
 
 UI: `zod` removed on 2026-10-28 (no file imported it).
 

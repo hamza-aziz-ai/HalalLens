@@ -120,7 +120,7 @@ Create a Google "Web application" OAuth client, then set `GOOGLE_CLIENT_ID`, `GO
 
 | Tier              | Who                                    | Routes                                                                                                                                            |
 |-------------------|----------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------|
-| **Public**        | anyone (rate limited per IP)           | `/health`, `/halal-score`, `/filings/recent`, `POST /feedback`, `GET /feedback/status/{token}`, `/billing/plans`, `/auth/*`, `/webhooks/razorpay` |
+| **Public**        | anyone (rate limited per IP)           | `/health`, `/halal-score`, `/filings/recent`, `POST /feedback`, `GET /feedback/status/{token}`, `/billing/plans`, `/auth/*`, `/webhooks/razorpay`, `/client-logs`, cached `/filings/{symbol}` |
 | **Authenticated** | any signed-in user                     | `/auth/me`, `/auth/logout`, `/market-data/{symbol}`, `/billing/trial`, `/billing/razorpay/*`, `/billing/cancel`                                   |
 | **Paid**          | active or trialing subscription        | `/narrate`, `/watchlist*`, `/alerts/check`, `/filings/{symbol}/history`, `/filings/{symbol}?refresh=true`                                         |
 | **Admin**         | `is_admin`, seeded from `ADMIN_EMAILS` | `GET/PATCH /feedback`, `/feedback/{id}/events`, `/governance/*`, `/ingestion/stats`, `/ops/metrics`                                               |
