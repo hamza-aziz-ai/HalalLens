@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import argparse
+import csv
 import logging
 from dataclasses import asdict
 from datetime import datetime
@@ -329,5 +331,161 @@ def main(limit: int = 500) -> None:
         db.close()
 
 
+# --- Recompute stored evaluations (repair after a ratio-logic change) --------
+# The plain backfill above only fills filings that were never evaluated. This
+# mode re-evaluates rows that already HAVE an evaluation, from frozen inputs:
+# the stored snapshot (with governance overrides, as the query applies them) and
+# the stored market caps. It never calls the vendor or Bhavcopy, so a recompute
+# only reflects the logic change, not new market data. Dry run by default.
+
+REPORT_FIELDS = (
+    "symbol",
+    "filing_date",
+    "status",
+    "old_verdict",
+    "old_is_compliant",
+    "new_verdict",
+    "new_is_compliant",
+    "changed",
+    "missing_inputs",
+    "market_cap_used",
+    "trailing_cap_used",
+)
+
+
+def _recompute_one(record: Dict, db: BSEDatabaseManager) -> Tuple[Dict, Optional[Dict]]:
+    """Return (report row, upsert kwargs or None) for one stored evaluation."""
+
+    row = {
+        "symbol": record.get("symbol"),
+        "filing_date": record.get("filing_date"),
+        "old_verdict": record.get("verdict"),
+        "old_is_compliant": record.get("is_compliant"),
+        "market_cap_used": record.get("market_cap_used"),
+        "trailing_cap_used": record.get("trailing_cap_used"),
+    }
+    snapshot = _snapshot_from_record(record)
+    if not snapshot:
+        row["status"] = "skipped: no snapshot"
+        return row, None
+    filing_dt = snapshot.filing_date
+    if isinstance(filing_dt, str):
+        try:
+            filing_dt = db.parse_iso_datetime(filing_dt)
+        except Exception:
+            filing_dt = datetime.fromisoformat(filing_dt)
+
+    market_cap = coerce_amount(record.get("market_cap_used"))
+    trailing_cap = coerce_amount(record.get("trailing_cap_used"))
+    if market_cap is None and trailing_cap is None:
+        # Fetching a cap now would mix new market data into the comparison.
+        row["status"] = "skipped: no stored market cap"
+        return row, None
+
+    provider = record.get("market_data_provider")
+    evaluation = engine.evaluate(
+        snapshot,
+        MarketDataInput(
+            market_cap=market_cap,
+            trailing_market_cap=trailing_cap,
+            provider=provider or "manual",
+        ),
+    )
+    verdict = evaluation.verdict
+    is_compliant = evaluation.is_compliant
+    summary = build_summary(evaluation)
+    # Same overlay as the API: an open data-quality issue blocks a conclusive verdict.
+    if db.get_quality_issues(snapshot.symbol, filing_dt):
+        verdict, is_compliant = "needs-review", None
+        summary = "Flagged for manual review: unresolved quality issues remain."
+
+    row.update(
+        status="ok",
+        new_verdict=verdict,
+        new_is_compliant=is_compliant,
+        changed=(verdict, is_compliant) != (row["old_verdict"], row["old_is_compliant"]),
+        missing_inputs=";".join(
+            f"{name}={reason}" for name, reason in sorted(evaluation.missing_inputs.items())
+        ),
+    )
+    upsert = dict(
+        symbol=snapshot.symbol,
+        filing_date=filing_dt,
+        is_compliant=is_compliant,
+        ratios={name: asdict(comp) for name, comp in evaluation.ratios.items()},
+        summary=summary,
+        verdict=verdict,
+        narration_source="recompute",
+        market_cap_used=market_cap,
+        trailing_cap_used=trailing_cap,
+        market_data_provider=provider,
+    )
+    return row, upsert
+
+
+def recompute(limit: int = 500, write: bool = False, report: Optional[str] = None) -> List[Dict]:
+    """Re-evaluate the most recent `limit` stored evaluations.
+
+    Dry run unless `write`; `write` requires `report`, and the report is written
+    BEFORE any database write, so the before/after evidence always exists.
+    """
+
+    if write and not report:
+        raise ValueError("--write needs --report: the before/after CSV must exist first")
+
+    db = BSEDatabaseManager()
+    try:
+        results = [
+            _recompute_one(record, db)
+            for record in db.get_recent_filings(limit=limit)
+            if record.get("ratios")  # never evaluated: that is the plain backfill's job
+        ]
+        rows = [row for row, _ in results]
+        if report:
+            with open(report, "w", newline="", encoding="utf-8") as handle:
+                writer = csv.DictWriter(handle, fieldnames=REPORT_FIELDS, extrasaction="ignore")
+                writer.writeheader()
+                writer.writerows(rows)
+        if write:
+            for _, upsert in results:
+                if upsert is not None:
+                    db.upsert_filing_evaluation(**upsert)
+        transitions: Dict[str, int] = defaultdict(int)
+        for row in rows:
+            transitions[f"{row.get('old_verdict')} -> {row.get('new_verdict', row['status'])}"] += 1
+        logger.info(
+            "Recompute %s: %d rows; %s",
+            "written" if write else "dry run (nothing written)",
+            len(rows),
+            dict(transitions),
+        )
+        return rows
+    finally:
+        db.close()
+
+
+def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--limit", type=int, default=500, help="Most recent filings to consider (default 500).")
+    parser.add_argument(
+        "--recompute",
+        action="store_true",
+        help="Re-evaluate filings that already have an evaluation, from stored inputs only.",
+    )
+    parser.add_argument("--write", action="store_true", help="With --recompute: write the new verdicts.")
+    parser.add_argument("--report", help="With --recompute: before/after CSV path.")
+    args = parser.parse_args(argv)
+    if (args.write or args.report) and not args.recompute:
+        parser.error("--write and --report only apply with --recompute")
+    if args.write and not args.report:
+        parser.error("--write needs --report: the before/after CSV must exist first")
+    return args
+
+
 if __name__ == "__main__":
-    main()
+    _args = _parse_args()
+    if _args.recompute:
+        configure_logging("backfill")
+        recompute(limit=_args.limit, write=_args.write, report=_args.report)
+    else:
+        main(limit=_args.limit)
