@@ -43,7 +43,7 @@ One entry per decision, newest last. Model for every entry below: Claude Sonnet 
 - **Why:** Repo rule: fix once in the shared function. A boolean became a verified zero income in four places.
 - **Trade-off:** Behavior changes for malformed inputs (now unknown). Numeric JSON literals already decoded to 0.0 are outside the guarantee.
 
-## D-006: `main` is protected by a ruleset; auto-merge is narrow
+## D-006: `main` is protected by a ruleset; auto-merge is narrow  (auto-merge scope SUPERSEDED by D-015)
 - **Chosen:** PR + `backend`/`ui`/`secrets` required, squash only, owner bypass. Auto-merge only for Dependabot minor/patch of GitHub Actions and UI dev deps.
 - **Why:** Python packages touch ETL scaling and verdict logic; tests do not yet prove dependency bumps safe there.
 - **Revisit if:** the verdict golden table and ETL fixtures cover those libraries.
@@ -108,4 +108,15 @@ One entry per decision, newest last. Model for every entry below: Claude Sonnet 
 - **Why:** Simplest for a solo maintainer. A token-created PR triggers CI, and an auto-merge enabled with the same token makes its push trigger the release run (a `GITHUB_TOKEN` merge would not).
 - **Trade-off:** The token is tied to the maintainer's account and expires (at most one year), so it must be renewed; merges show as the maintainer. Every `feat:`/`fix:` on `main` now releases without a human step. A release is only a tag and notes; deployment stays manual (ROLLBACK.md).
 - **Revisit if:** the project gets a second maintainer or is sold (then a GitHub App, option 3), or releases need a human gate.
+
+## D-015: Every pull request merges automatically once CI passes
+- **Date:** 2026-10-28   Model: Claude Opus 5.5 (maintainer's decision: "fully automatic merge ... past, present, future")
+- **Context:** Auto-merge covered only Dependabot minor/patch updates of GitHub Actions and UI dev dependencies (D-006); everything else waited for a human.
+- **Options:**
+  1. Keep the narrow scope
+  2. Auto-merge every same-repo PR, gated only by the required checks
+- **Chosen:** 2, for open PRs (including the Dependabot backlog) and all future ones. Fork PRs are excluded.
+- **Why:** The maintainer wants the repository to run without manual merges.
+- **Trade-off:** No human reads a diff before it reaches `main`. Major upgrades (Next, zod, eslint) and Python packages on the ETL/verdict paths merge if CI passes, and CI cannot catch everything. A merge is not a deployment: production changes still go through the cutover in ROLLBACK.md. Merges by Dependabot runs use `GITHUB_TOKEN` (Dependabot runs cannot read Actions secrets), so their push to `main` does not start other workflows unless `RELEASE_PLEASE_TOKEN` is also stored as a Dependabot secret.
+- **Revisit if:** an auto-merged change breaks the app, or a second contributor joins.
 
