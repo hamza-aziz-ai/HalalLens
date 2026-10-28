@@ -16,16 +16,22 @@ jobs:
         id: meta
         uses: dependabot/fetch-metadata@21025c705c08248db411dc16f3619e6b5f9ea21a # v2.5.0
 
-      # Scope: GitHub Actions and UI dev dependencies, minor/patch only. Python
-      # packages and anything production-facing are reviewed by hand. This only
-      # *enables* auto-merge: GitHub merges after the required checks pass, and
-      # refuses to enable it when the branch has no required checks.
+      # Scope:
+      # - GitHub Actions and UI dev dependencies, minor/patch.
+      # - Security updates (the actions-security / ui-security groups), patch
+      #   level only: small, and they fix a published vulnerability.
+      # Python packages, UI runtime minors and every major are reviewed by hand.
+      # This only *enables* auto-merge: GitHub merges after the required checks
+      # pass, and refuses to enable it when the branch has no required checks.
       - name: Enable auto-merge
         if: >-
           steps.meta.outputs.update-type != 'version-update:semver-major' &&
           (steps.meta.outputs.package-ecosystem == 'github_actions' ||
           (steps.meta.outputs.package-ecosystem == 'npm_and_yarn' &&
-          steps.meta.outputs.dependency-type == 'direct:development'))
+          steps.meta.outputs.dependency-type == 'direct:development') ||
+          ((steps.meta.outputs.dependency-group == 'actions-security' ||
+          steps.meta.outputs.dependency-group == 'ui-security') &&
+          steps.meta.outputs.update-type == 'version-update:semver-patch'))
         run: gh pr merge --auto --squash "$PR_URL"
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
