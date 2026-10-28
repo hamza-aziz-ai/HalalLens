@@ -43,14 +43,14 @@ One entry per decision, newest last. Model for every entry below: Claude Sonnet 
 - **Why:** Repo rule: fix once in the shared function. A boolean became a verified zero income in four places.
 - **Trade-off:** Behavior changes for malformed inputs (now unknown). Numeric JSON literals already decoded to 0.0 are outside the guarantee.
 
-## D-006: `main` is protected by a ruleset; auto-merge is narrow
+## D-006: `main` is protected by a ruleset; auto-merge is narrow  (auto-merge scope SUPERSEDED by D-015)
 - **Chosen:** PR + `backend`/`ui`/`secrets` required, squash only, owner bypass. Auto-merge only for Dependabot minor/patch of GitHub Actions and UI dev deps.
 - **Why:** Python packages touch ETL scaling and verdict logic; tests do not yet prove dependency bumps safe there.
 - **Revisit if:** the verdict golden table and ETL fixtures cover those libraries.
 
 ## D-007: release-please with Conventional Commit PR titles
 - **Chosen:** Release PR from squash-merge titles; `build:`/`ci:`/`docs:` do not release; no `!` / `BREAKING CHANGE` footers while below 1.0 (they would bump the major).
-- **Trade-off:** Release PRs opened by the default token do not run CI.
+- **Trade-off:** Release PRs opened by the default token do not run CI (resolved by D-014).
 
 ## D-008: Pin the Python minor version only
 - **Context:** `python_full_version = "3.14.6"` made `pipenv install --deploy` abort when `python:3.14-slim` moved to 3.14.10, breaking image builds.
@@ -96,4 +96,27 @@ One entry per decision, newest last. Model for every entry below: Claude Sonnet 
 - **Chosen:** Keep the public MIT repo, and keep it sale-ready (configuration in env, billing complete in test mode, docs current, no secrets or personal identifiers, Docker as the canonical deployment). Rules are in AGENTS.md, "Project stance".
 - **Trade-off:** MIT cannot be revoked for versions already published; only future versions can be licensed differently. Outside contributions would complicate relicensing unless their copyright is settled first.
 - **Revisit if:** the maintainer starts accepting outside contributions, or decides to privatize (then: make the repo private, choose a licence for new versions, rotate any credentials, review the git history for anything a buyer should not receive).
+
+## D-014: Fully automatic releases with a repo-scoped token
+- **Date:** 2026-10-28   Model: Claude Opus 5.5 (maintainer asked for fully automatic releases)
+- **Context:** The release PR was opened with `GITHUB_TOKEN`, so CI never ran on it and the ruleset made every release need an owner-bypass merge (v0.1.1 was merged that way).
+- **Options:**
+  1. Keep a human merge for every release
+  2. A fine-grained personal token (`RELEASE_PLEASE_TOKEN`) for release-please and for enabling auto-merge
+  3. A GitHub App token
+- **Chosen:** 2.
+- **Why:** Simplest for a solo maintainer. A token-created PR triggers CI, and an auto-merge enabled with the same token makes its push trigger the release run (a `GITHUB_TOKEN` merge would not).
+- **Trade-off:** The token is tied to the maintainer's account and expires (at most one year), so it must be renewed; merges show as the maintainer. Every `feat:`/`fix:` on `main` now releases without a human step. A release is only a tag and notes; deployment stays manual (ROLLBACK.md).
+- **Revisit if:** the project gets a second maintainer or is sold (then a GitHub App, option 3), or releases need a human gate.
+
+## D-015: Every pull request merges automatically once CI passes
+- **Date:** 2026-10-28   Model: Claude Opus 5.5 (maintainer's decision: "fully automatic merge ... past, present, future")
+- **Context:** Auto-merge covered only Dependabot minor/patch updates of GitHub Actions and UI dev dependencies (D-006); everything else waited for a human.
+- **Options:**
+  1. Keep the narrow scope
+  2. Auto-merge every same-repo PR, gated only by the required checks
+- **Chosen:** 2, for open PRs (including the Dependabot backlog) and all future ones. Fork PRs are excluded.
+- **Why:** The maintainer wants the repository to run without manual merges.
+- **Trade-off:** No human reads a diff before it reaches `main`. Major upgrades (Next, zod, eslint) and Python packages on the ETL/verdict paths merge if CI passes, and CI cannot catch everything. A merge is not a deployment: production changes still go through the cutover in ROLLBACK.md. Merges by Dependabot runs use `GITHUB_TOKEN` (Dependabot runs cannot read Actions secrets), so their push to `main` does not start other workflows unless `RELEASE_PLEASE_TOKEN` is also stored as a Dependabot secret.
+- **Revisit if:** an auto-merged change breaks the app, or a second contributor joins.
 
