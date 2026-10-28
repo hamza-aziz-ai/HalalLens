@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/hamza-aziz-ai/HalalLens/compare/v0.3.0...v0.4.0) (2026-10-28)
+
+
+### Features
+
+* **storage:** store filing PDFs in Cloudflare R2; drop the unavailable MinIO image ([#131](https://github.com/hamza-aziz-ai/HalalLens/issues/131)) ([e2a3a99](https://github.com/hamza-aziz-ai/HalalLens/commit/e2a3a99a0875e5b0fd6c8529b9fc54dcb5dd0347))
+
 ## [0.3.0](https://github.com/hamza-aziz-ai/HalalLens/compare/v0.2.2...v0.3.0) (2026-10-28)
 
 
