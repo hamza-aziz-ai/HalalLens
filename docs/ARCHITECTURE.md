@@ -53,7 +53,7 @@ graph TD
 
 ## Trust boundaries [B]
 
-1. **Public HTTP** (`/halal-score`, `/filings/recent`, auth, feedback, webhook): anyone; validated by Pydantic models (`extra="forbid"`, no booleans or underflowing strings as amounts) and rate-limited per IP.
+1. **Public HTTP** (`/halal-score`, `/filings/recent`, auth, feedback, webhook): anyone; validated by Pydantic models (`extra="forbid"`, no booleans or under-flowing strings as amounts) and rate-limited per IP.
 2. **Authenticated/paid/admin HTTP**: opaque session token (SHA-256 digest stored), tier checked per route.
 3. **Razorpay webhook**: signature-verified, idempotent on `(provider, event_id)`.
 4. **Filings and PDFs from BSE**: untrusted documents parsed by Camelot/pdfminer/lxml.
