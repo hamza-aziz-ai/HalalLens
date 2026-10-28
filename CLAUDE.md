@@ -19,13 +19,13 @@ Activate once at session start (don't re-invoke every turn; levels persist):
 
 Complex = architecture changes, multi-file or risky edits, security/billing/verdict logic, hard debugging. Trivial edits skip it.
 
-- Use `/codex-claude-council:codex-claude-council` via `council_join`, continuing Codex session `01a0f3c4-b893-73b3-813d-a11d2dc8aa44` (`codex_session_id`), with `workspace` set to this repo's absolute path.
+- Use `/codex-claude-council:codex-claude-council` via `council_join`, continuing the maintainer's Codex session (ID kept outside the repo, in Claude Code's local memory note `council-for-complex-tasks`; pass it as `other_session_id`), with `workspace` set to this repo's absolute path.
 - If Codex hits its session limit, fall back to `/llm-council`.
 - Council is advisory: verify its claims against the code before acting.
 
 ## Session ritual (Claude Code)
 
-Start: read `docs/HANDOVER.md` and `docs/CONSTRAINTS.md` (they are on branch `docs/readme-accuracy` until PR #88 merges; the "Defend What You Ship" rules are in AGENTS.md); check `git status` and the open PRs before assuming state; activate the skills above.
+Start: read `docs/HANDOVER.md` and `docs/CONSTRAINTS.md` (the "Defend What You Ship" rules are in AGENTS.md); check `git status` and the open PRs before assuming state; activate the skills above.
 
 During: plan first for non-trivial work, small commits, show real command output, ask before removing or disabling anything the user did not ask to change.
 

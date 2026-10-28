@@ -65,7 +65,7 @@ docker compose up --build                  # API + UI + ingestion against an ext
 
 ## Defend What You Ship (user's standing instruction, 2026-10-27)
 
-Follow `C:\Users\hamza\Downloads\Defend-What-You-Ship-AI-Field-Guide-v2.pdf`. HalalLens is **Lane B** (customers, data, money): the maintainer must be able to explain and defend any shipped system at a whiteboard (how it works, why X over Y, how an actor abuses it, where it fails).
+Follow the "Defend What You Ship" AI field guide v2 (the maintainer's local copy; its path is kept outside the repo). HalalLens is **Lane B** (customers, data, money): the maintainer must be able to explain and defend any shipped system at a whiteboard (how it works, why X over Y, how an actor abuses it, where it fails).
 
 - `docs/` is the paper trail: read `docs/HANDOVER.md` and `docs/CONSTRAINTS.md` first, update `docs/HANDOVER.md` last (5-line handoff: done / left / risks; newest entry on top; model + date). Log decisions in `docs/DECISIONS.md` (context, options, choice, why, trade-off, revisit-if, model + date) and rejected options in `docs/ALTERNATIVES.md`.
 - Plan first: for non-trivial changes explain the plan, alternatives and what could go wrong before editing. Small requests, one logical change per commit, commit before risky steps.
