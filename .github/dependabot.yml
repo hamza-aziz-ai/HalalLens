@@ -4,7 +4,7 @@ updates:
   - package-ecosystem: github-actions
     directory: /
     schedule:
-      interval: weekly
+      interval: monthly
     # Conventional titles ("build(deps): ..."): squash merges keep them, and
     # release-please treats build: as no release.
     commit-message:
@@ -17,7 +17,7 @@ updates:
   - package-ecosystem: npm
     directory: /ui
     schedule:
-      interval: weekly
+      interval: monthly
     commit-message:
       prefix: build
       include: scope
@@ -66,7 +66,7 @@ updates:
   - package-ecosystem: pip
     directory: /
     schedule:
-      interval: weekly
+      interval: monthly
     open-pull-requests-limit: 3
     commit-message:
       prefix: build
