@@ -184,9 +184,11 @@ services:
     restart: unless-stopped
 
   ingestion:
+    # Same image as the api service; the entrypoint below picks the role.
+    image: halal-lens-api
     build:
       context: .
-      dockerfile: scheduler.Dockerfile
+      dockerfile: api.Dockerfile
     env_file:
       - .env
     environment:
@@ -217,9 +219,11 @@ services:
       retries: 3
 
   evaluation:
+    # Same image as the api service; the entrypoint below picks the role.
+    image: halal-lens-api
     build:
       context: .
-      dockerfile: scheduler.Dockerfile
+      dockerfile: api.Dockerfile
     env_file:
       - .env
     environment:
