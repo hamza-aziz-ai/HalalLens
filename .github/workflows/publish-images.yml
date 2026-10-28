@@ -1,0 +1,233 @@
+name: Publish images
+
+# Publishes halallens-api and halallens-ui for a release to GHCR and, when
+# configured, Docker Hub, for linux/amd64 and linux/arm64 (D-018).
+#
+# Order (agreed with Codex): wait for CI on the exact released commit, build
+# that commit natively per architecture, smoke-test and scan, push the
+# per-architecture tags, then the version tag, then `latest` last and only for
+# the newest release. An existing version tag is never overwritten.
+#
+# Docker Hub: repository variable DOCKERHUB_NAMESPACE (the account name) and
+# DOCKERHUB_TOKEN in the `publish` environment. Without them only GHCR is used.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to publish, e.g. v0.5.0 (retry)
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-images
+  cancel-in-progress: false
+
+env:
+  TRIVY_IMAGE: aquasec/trivy:0.75.0
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: read
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+      sha: ${{ steps.release.outputs.sha }}
+      latest: ${{ steps.release.outputs.latest }}
+    steps:
+      - name: Resolve the release
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.event.release.tag_name || inputs.tag }}
+        run: |
+          set -euo pipefail
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Not a release tag: $TAG" >&2; exit 1; }
+          sha=$(gh api "repos/$REPO/commits/$TAG" --jq .sha)
+          # The released commit must be on main (identical to it or behind it).
+          status=$(gh api "repos/$REPO/compare/$sha...main" --jq .status)
+          case "$status" in identical|ahead) ;; *) echo "$TAG ($sha) is not on main ($status)" >&2; exit 1;; esac
+          newest=$(gh release view --repo "$REPO" --json tagName --jq .tagName)
+          latest=false; [ "$newest" = "$TAG" ] && latest=true
+          echo "Publishing $TAG ($sha); newest release: $newest; move latest: $latest"
+          { echo "tag=$TAG"; echo "sha=$sha"; echo "latest=$latest"; } >> "$GITHUB_OUTPUT"
+
+      # The release run cannot depend on the CI workflow directly, so it reads
+      # the check runs of the released commit and fails closed on anything but
+      # success (missing, failed or still running after 45 minutes).
+      - name: Wait for CI on the released commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ steps.release.outputs.sha }}
+        run: |
+          set -euo pipefail
+          deadline=$((SECONDS + 2700))
+          while :; do
+            runs=$(gh api "repos/$REPO/commits/$SHA/check-runs?per_page=100")
+            pending=0
+            for name in backend ui secrets docker docker-arm64; do
+              state=$(jq -r --arg n "$name" \
+                '[.check_runs[] | select(.name == $n)] | sort_by(.started_at) | last
+                 | if . == null then "missing" else "\(.status) \(.conclusion)" end' <<<"$runs")
+              case "$state" in
+                "completed success") ;;
+                completed*) echo "CI check $name: $state" >&2; exit 1 ;;
+                *) pending=1 ;;
+              esac
+            done
+            [ "$pending" = 0 ] && { echo "CI passed on $SHA"; break; }
+            [ "$SECONDS" -lt "$deadline" ] || { echo "Timed out waiting for CI on $SHA" >&2; exit 1; }
+            sleep 30
+          done
+
+  build:
+    needs: gate
+    name: build (${{ matrix.arch }})
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    environment: publish
+    permissions:
+      contents: read
+      packages: write
+    env:
+      TAG: ${{ needs.gate.outputs.tag }}
+      SHA: ${{ needs.gate.outputs.sha }}
+      GHCR: ghcr.io/${{ github.repository_owner }}
+      DOCKERHUB_NAMESPACE: ${{ vars.DOCKERHUB_NAMESPACE }}
+    steps:
+      - name: Checkout the released commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+
+      - name: Build for this architecture
+        run: |
+          set -euo pipefail
+          docker buildx create --use --driver docker-container >/dev/null
+          for img in api ui; do
+            docker buildx build --platform "linux/${{ matrix.arch }}" -f "$img.Dockerfile" \
+              --label org.opencontainers.image.source="https://github.com/${{ github.repository }}" \
+              --label org.opencontainers.image.revision="$SHA" \
+              --label org.opencontainers.image.version="$TAG" \
+              --label org.opencontainers.image.licenses=MIT \
+              --load -t "halallens-$img:candidate" .
+          done
+
+      - name: Smoke-test
+        run: |
+          bash scripts/docker_smoke.sh halallens-api:candidate halallens-ui:candidate halallens-api:candidate
+          bash scripts/proxy_smoke.sh halallens-api:candidate halallens-ui:candidate
+
+      # Fails on CRITICAL vulnerabilities that have a fix; HIGH and unfixed
+      # CRITICAL are reported. Exceptions go in a reviewed .trivyignore with a
+      # reason and an expiry, never silently.
+      - name: Scan
+        run: |
+          set -euo pipefail
+          for img in api ui; do
+            echo "## halallens-$img (${{ matrix.arch }})" >> "$GITHUB_STEP_SUMMARY"
+            docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v "$PWD:/src:ro" "$TRIVY_IMAGE" \
+              image --quiet --severity HIGH,CRITICAL --format table --ignorefile /src/.trivyignore \
+              "halallens-$img:candidate" | tee -a "$GITHUB_STEP_SUMMARY"
+            docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v "$PWD:/src:ro" "$TRIVY_IMAGE" \
+              image --quiet --severity CRITICAL --ignore-unfixed --exit-code 1 --ignorefile /src/.trivyignore \
+              "halallens-$img:candidate"
+          done
+
+      - name: Log in to the registries
+        env:
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          echo "${{ github.token }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          if [ -n "$DOCKERHUB_NAMESPACE" ] && [ -n "$DOCKERHUB_TOKEN" ]; then
+            echo "$DOCKERHUB_TOKEN" | docker login docker.io -u "$DOCKERHUB_NAMESPACE" --password-stdin
+          else
+            echo "::notice::Docker Hub not configured (DOCKERHUB_NAMESPACE / DOCKERHUB_TOKEN); publishing to GHCR only."
+          fi
+
+      # Same build again (cached), now pushed with SBOM and provenance, under a
+      # per-architecture tag; the manifest job joins them into the version tag.
+      - name: Push the architecture tags
+        env:
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          for img in api ui; do
+            tags=(-t "$GHCR/halallens-$img:$TAG-${{ matrix.arch }}")
+            if [ -n "$DOCKERHUB_NAMESPACE" ] && [ -n "$DOCKERHUB_TOKEN" ]; then
+              tags+=(-t "docker.io/$DOCKERHUB_NAMESPACE/halallens-$img:$TAG-${{ matrix.arch }}")
+            fi
+            docker buildx build --platform "linux/${{ matrix.arch }}" -f "$img.Dockerfile" \
+              --label org.opencontainers.image.source="https://github.com/${{ github.repository }}" \
+              --label org.opencontainers.image.revision="$SHA" \
+              --label org.opencontainers.image.version="$TAG" \
+              --label org.opencontainers.image.licenses=MIT \
+              --provenance=mode=max --sbom=true --push "${tags[@]}" .
+          done
+
+  manifest:
+    needs: [gate, build]
+    runs-on: ubuntu-latest
+    environment: publish
+    permissions:
+      contents: read
+      packages: write
+    env:
+      TAG: ${{ needs.gate.outputs.tag }}
+      LATEST: ${{ needs.gate.outputs.latest }}
+      GHCR: ghcr.io/${{ github.repository_owner }}
+      DOCKERHUB_NAMESPACE: ${{ vars.DOCKERHUB_NAMESPACE }}
+    steps:
+      - name: Publish the version tag, then latest
+        env:
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          echo "${{ github.token }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          repos=("$GHCR")
+          if [ -n "$DOCKERHUB_NAMESPACE" ] && [ -n "$DOCKERHUB_TOKEN" ]; then
+            echo "$DOCKERHUB_TOKEN" | docker login docker.io -u "$DOCKERHUB_NAMESPACE" --password-stdin
+            repos+=("docker.io/$DOCKERHUB_NAMESPACE")
+          fi
+          for repo in "${repos[@]}"; do
+            for img in api ui; do
+              name="$repo/halallens-$img"
+              if docker buildx imagetools inspect "$name:$TAG" >/dev/null 2>&1; then
+                echo "::error::$name:$TAG already exists; a published version is never overwritten."
+                exit 1
+              fi
+            done
+          done
+          for repo in "${repos[@]}"; do
+            for img in api ui; do
+              name="$repo/halallens-$img"
+              docker buildx imagetools create -t "$name:$TAG" "$name:$TAG-amd64" "$name:$TAG-arm64"
+              echo "Published $name:$TAG"
+            done
+          done
+          if [ "$LATEST" = true ]; then
+            for repo in "${repos[@]}"; do
+              for img in api ui; do
+                name="$repo/halallens-$img"
+                docker buildx imagetools create -t "$name:latest" "$name:$TAG"
+                echo "Moved $name:latest to $TAG"
+              done
+            done
+          else
+            echo "$TAG is not the newest release; latest stays where it is."
+          fi
