@@ -37,10 +37,20 @@ jobs:
           # Markdown under docs/ and Documentations/, the READMEs and the
           # changelog. AGENTS.md and CLAUDE.md steer agents and stay manual.
           docs='^(docs/.+\.md|Documentations/.+\.md|README(_[A-Za-z]+)?\.md|CHANGELOG\.md)$'
+          # This rule only undoes its own work: it labels the PRs it enables and,
+          # when a labelled PR stops being docs-only, disables auto-merge again.
+          # Auto-merge set by release-please or Dependabot is left alone.
+          label=docs-only-automerge
+          labelled=$(gh pr view "$PR" --repo "$REPO" --json labels --jq "[.labels[].name] | index(\"$label\") != null")
           if printf '%s\n' "$files" | grep -qvE "$docs"; then
             echo "Not docs-only:"; printf '%s\n' "$files" | grep -vE "$docs"
-            # A docs PR that later gains code loses auto-merge.
-            gh pr merge "$PR" --repo "$REPO" --disable-auto 2>/dev/null || true
+            if [ "$labelled" = "true" ]; then
+              # Fails the job (visibly) if auto-merge cannot be disabled.
+              gh pr merge "$PR" --repo "$REPO" --disable-auto
+              gh pr edit "$PR" --repo "$REPO" --remove-label "$label"
+              echo "Auto-merge disabled: this PR is no longer docs-only."
+            fi
             exit 0
           fi
+          gh pr edit "$PR" --repo "$REPO" --add-label "$label"
           gh pr merge "$PR" --repo "$REPO" --auto --squash
