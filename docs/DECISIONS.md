@@ -134,3 +134,14 @@ One entry per decision, newest last. Model for every entry below: Claude Sonnet 
 - **Trade-off:** PDFs live with a third party (they are public BSE documents). A bucket-scoped R2 token cannot list or create buckets, so the maintainer creates the bucket and preflight checks only that bucket. Local development keeps a MinIO it already runs.
 - **Revisit if:** storage exceeds the free tier, or the product must keep all data on one host.
 
+## D-017: Cloudflare Tunnel as an alternative way in (production on `halallens.in`)
+- **Date:** 2026-10-28   Model: Claude Opus 5.5 (maintainer's choice of host and domain)
+- **Context:** The first host is a free Oracle Cloud Ampere VM; `halallens.in` (BigRock) moved its DNS to Cloudflare. Medical-ChatBot already runs behind a Cloudflare Tunnel with no open web ports.
+- **Options:**
+  1. Caddy with Let's Encrypt on ports 80/443 (the existing setup)
+  2. Cloudflare Tunnel in front of Caddy
+- **Chosen:** both, selected by `CADDY_MODE` (`tls` default, `tunnel`); production uses the tunnel.
+- **Why:** The tunnel needs no open web ports or certificates on the VM, and the same compose file still runs on any host with TLS mode, which a buyer may prefer.
+- **Trade-off:** In tunnel mode the API trusts `Cf-Connecting-Ip` for client identity, so Caddy must be reachable only through the tunnel (`CADDY_BIND=127.0.0.1`, firewall closed to 80/443); if it were exposed, a client could pick its own rate-limit bucket. Traffic and TLS terminate at Cloudflare.
+- **Revisit if:** the host moves off Cloudflare DNS, or the product needs end-to-end TLS it controls.
+

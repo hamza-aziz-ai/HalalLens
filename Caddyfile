@@ -3,9 +3,25 @@
   email {$ACME_EMAIL}
 }
 
+# How the client address reaches the API, per CADDY_MODE:
+#   tls    Caddy faces the internet itself (ports 80/443, Let's Encrypt). The
+#          TCP peer is the client, and Caddy writes X-Forwarded-For from it.
+#   tunnel Only cloudflared (Cloudflare Tunnel) reaches Caddy, so the peer is
+#          always cloudflared. Cloudflare's edge sets Cf-Connecting-Ip to the
+#          real client and overwrites any client-supplied value, so it is the
+#          one header to trust. Never use this mode with Caddy's ports exposed:
+#          a direct client could then choose its own address.
+(proxy_tls) {
+}
+(proxy_tunnel) {
+  header_up X-Forwarded-For {http.request.header.Cf-Connecting-Ip}
+}
+
 # One origin for the dashboard and the API: the UI calls /api/..., so there is
 # no CORS between them and one UI image works on any domain.
-{$HALAL_APP_DOMAIN} {
+# CADDY_SITE_ADDRESS is the domain in tls mode and ":80" (plain HTTP) in tunnel
+# mode; docker-compose-prod.yml derives it from HALAL_APP_DOMAIN by default.
+{$CADDY_SITE_ADDRESS} {
   encode zstd gzip
 
   redir /api /api/ 308
@@ -14,7 +30,9 @@
   # own links (Swagger at /api/docs -> /api/openapi.json) keep it. Everything
   # under /api/ stays with the API, including its JSON 404s.
   handle_path /api/* {
-    reverse_proxy api:8001
+    reverse_proxy api:8001 {
+      import proxy_{$CADDY_MODE:tls}
+    }
   }
 
   handle {

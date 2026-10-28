@@ -35,6 +35,18 @@ Store secrets in a `.env` file, Docker secrets, or whichever secret manager your
 
 5. Start the ingestion scheduler (systemd or `docker compose run --rm ingestion`). Watch `/ops/metrics` and the ingestion heartbeat for failures.
 
+### Exposing the site: Caddy TLS or Cloudflare Tunnel
+
+`docker-compose-prod.yml` serves the dashboard at `/` and the API under `/api/` on `HALAL_APP_DOMAIN`. Pick one way in:
+
+- **TLS (default, `CADDY_MODE=tls`):** point the domain's DNS at the host, open ports 80 and 443, set `ACME_EMAIL`. Caddy gets the certificates.
+- **Cloudflare Tunnel (`CADDY_MODE=tunnel`):** no open web ports and no certificates on the host; the domain's DNS must be on Cloudflare.
+  1. Cloudflare Zero Trust → Networks → Tunnels → create a `cloudflared` tunnel; copy its token.
+  2. Add a public hostname: the domain (e.g. `halallens.in`), service `http://caddy:80`.
+  3. In `.env`: `CADDY_MODE=tunnel`, `CADDY_SITE_ADDRESS=:80`, `CADDY_BIND=127.0.0.1`, `COMPOSE_PROFILES=tunnel`, `CLOUDFLARE_TUNNEL_TOKEN=<token>`.
+  4. `docker compose -f docker-compose-prod.yml up -d`; the tunnel shows as Healthy in the dashboard.
+  5. Keep the host's firewall (e.g. the OCI security list) closed to 80/443: the API trusts Cloudflare's `Cf-Connecting-Ip` in this mode, so Caddy must be reachable only through the tunnel.
+
 ## 2. Schema migrations
 
 1. Pull latest `main`.
