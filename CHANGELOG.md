@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.3.0](https://github.com/hamza-aziz-ai/HalalLens/compare/v0.2.2...v0.3.0) (2026-10-28)
+
+
+### Features
+
+* **deploy:** serve the dashboard and the API on one origin behind Caddy ([#128](https://github.com/hamza-aziz-ai/HalalLens/issues/128)) ([fda9a99](https://github.com/hamza-aziz-ai/HalalLens/commit/fda9a9986abe67ae6a8713984645d8d0b4f74342))
+
+
+### Bug Fixes
+
+* **config:** replace the developer LAN address defaults with portable ones ([#127](https://github.com/hamza-aziz-ai/HalalLens/issues/127)) ([1270ee9](https://github.com/hamza-aziz-ai/HalalLens/commit/1270ee9bac4f5fd706e69aeb7c5422ff73ccc234))
+
 ## [0.2.2](https://github.com/hamza-aziz-ai/HalalLens/compare/v0.2.1...v0.2.2) (2026-10-28)
 
 
