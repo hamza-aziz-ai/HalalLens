@@ -2,32 +2,36 @@
 
 Read first: [ARCHITECTURE.md](ARCHITECTURE.md), [CONSTRAINTS.md](CONSTRAINTS.md). Newest entry on top. Update last, every session.
 
-## Latest session: 2026-10-28 (model: Claude Opus 5.5, `claude-opus-5-5`; switched from Claude Sonnet 5.5 at the start of this session)
+## Latest session: 2026-10-28 (model: Claude Opus 5.5, `claude-opus-5-5`; switched from Claude Sonnet 5.5 at the start of this session; Docker and `/alerts/check` designs reviewed with Codex)
 
 **Done**
-- PR #87 (verdict engine) and PR #88 (docs, AGENTS.md, CLAUDE.md) merged; released as v0.1.1. Recompute tooling (#91) merged; released as v0.2.0 (#99), the first release PR opened with the maintainer's token from the `release` environment.
-- Test plan agreed with Codex (docs/TESTING.md, "Road to CI as the only merge gate"): PR1 coverage floors and `pip check` (#93) and PR2 HTTP contracts with the 34-route tier matrix (#94) merged; backend coverage floor 46.4%.
-- Automation: docs-only PRs auto-merge (#96, #97 merged itself); the rule now only undoes auto-merge it enabled, by label (#98). All 39 open Dependabot PRs were closed on the maintainer's request. `RELEASE_PLEASE_TOKEN` moved from a repository secret to the `release` environment (only `main`).
-- Maintainer reviewed the DEFENSE brief and agreed with it (draft banner removed). Their table alignment and wording edits are committed.
-- Codex session ID and the local field-guide path removed from the tracked files (they remain in earlier git history).
-- Maintainer decisions: HalalLens is an open-source showcase now and will be privatized and monetized later, so it stays sale-ready (D-013, AGENTS.md "Project stance"); Docker deployment is the canonical UI (D-011); no production data yet, so the dry run waits (D-012); leaked secrets were sandbox-only and rotated; Codex re-check of #87 skipped for now.
+- Releases, all published by release-please with no human step after merge since v0.2.1: v0.1.1 (verdict engine #87), v0.2.0 (recompute tooling #91), v0.2.1 (`/alerts/check` takes the stored verdict, caller-scoped, fails closed, #115), v0.2.2 (GitHub Pages removed, no LAN-address API fallback, #123), v0.3.0 (Docker CI #126, one origin behind Caddy with the API under `/api/` #128, portable config defaults #127), v0.4.0 (arm64 CI #130, filing PDFs in Cloudflare R2 #131, D-016), v0.5.0 (Cloudflare Tunnel mode #134, D-017).
+- Tests: coverage floors and `pip check` (#93), HTTP contracts with the 34-route tier matrix (#94); the `docker` and `docker-arm64` jobs build the images and run `scripts/docker_smoke.sh` and `scripts/proxy_smoke.sh` (both Caddy modes, per-client rate-limit buckets). Backend floor 47.2%.
+- Production compose: one API worker by default (#115), `api_cache` volume for watchlists (#118), no MinIO container (its free image is gone; R2 instead, #131), tunnel mode (#134); `.env.*` ignored by git (#133).
+- Automation: docs-only PRs auto-merge (#96, #98); Dependabot runs monthly with grouped minor/patch, majors and security updates, and patch-level security updates for Actions and the UI auto-merge (#100, #119, #138); UI-stack majors are ignored until the planned upgrade. `RELEASE_PLEASE_TOKEN` lives in the `release` environment (only `main`). Old Dependabot PRs closed; only the `main` branch remains, on GitHub and locally.
+- Infrastructure set up by the maintainer: `halallens.in` (BigRock registrar) moved its DNS to Cloudflare and is active, with stale records to a dead AWS address deleted; Cloudflare Tunnel `halallens` created; R2 bucket `bse-pdfs` with a bucket-scoped token; an Oracle Resource Manager stack `halallens-prod` (A1.Flex, 2 OCPU / 12 GB, Ubuntu 24.04 aarch64, new `halallens-vcn`) whose instance creation keeps failing with "Out of host capacity".
 
 **In progress**
-- PR #100: grouped Dependabot updates (`actions`, `ui-dev`, `ui-runtime`, `python`), `build(deps)` titles, `@types/node` held at Node 20, manual trigger for release-please. After it merges, Dependabot runs and the grouped PRs are the live check of Dependabot auto-merge.
-- Wider auto-merge (D-015) is held until test-plan steps 3 to 8 land; sensitive paths will keep an owner merge.
-- Not yet seen live: a release PR merging itself with no human step (v0.2.0 needed one re-enable because of the docs-rule clash fixed in #98). The next `fix:` or `feat:` merge is the check.
+- First deployment on `halallens.in`: waiting for Oracle Ampere capacity (retry the stack's Apply). Then fill the server `.env` (from the local, git-ignored `.env.production`), install Docker, build from the `v0.5.0` tag and start the stack in tunnel mode.
+- Docker plan agreed with Codex: steps 1 and 2 done; next are hardening (non-root, one Python image, digest-pinned bases, `LICENSE` in images, Node 20 to the current LTS), a pull-only compose file with a runbook, then CI-gated publishing to Docker Hub (amd64 + arm64).
+- Wider auto-merge (D-015) stays held until test-plan steps 3 to 8 land.
 
 **Broken or risky**
-- Stored evaluations computed by the old engine stay possibly false-`compliant` until recomputed (development data only for now).
-- `/alerts/check` fix (stored verdict, caller-scoped, fail-closed) is in its PR; the watchlist JSON store still has no lock, so the API must run one worker until watchlists move to Postgres.
+- Stored evaluations from the old engine may still say `compliant` until recomputed (no production data yet).
+- Watchlists are a JSON file rewritten without a lock: the API must run one worker until they move to Postgres.
+- `_detect_scale` substring scaling, the process-lifetime `lru_cache` of Indian Stock API failures, the free-tier `callAnalysis` always calling the paid `/narrate`, and announcements fetched from page 1 only (AGENTS.md "Known defects").
+- Node 20 is end-of-life in the UI image and CI.
+- SSH to the Oracle VM is open to the internet by the maintainer's choice (key-only login; fail2ban and unattended upgrades planned on the VM).
+- Not yet seen live: a real R2 upload, the tunnel serving the site, Google sign-in and the Razorpay webhook on the `/api/` URLs. `docker` and `docker-arm64` are not required checks in the ruleset yet.
 
 **Next**
-1. Move watchlists to Postgres with a conditional update (then `API_WORKERS` can go above 1).
-2. Test plan steps 3 to 8 (billing contracts, Postgres and migrations, parser fixtures, UI and Playwright, Docker, merge policy).
-3. Next 15 and eslint upgrade together, after the Playwright smoke exists.
+1. Deploy once the Oracle VM exists; register `https://halallens.in/api/auth/google/callback` with Google and `https://halallens.in/api/webhooks/razorpay` with Razorpay.
+2. Docker plan steps 3 to 5 (hardening, pull-only compose and runbook, publishing).
+3. Move watchlists to Postgres (then more than one API worker).
+4. Test plan steps 3 to 8 (billing, Postgres and migrations, parser fixtures, UI and Playwright, merge policy), then the Next/React/TypeScript upgrade.
 
 **Do not touch**
-- Production deploys outside the controlled cutover (`docs/ROLLBACK.md`). Force-pushes to `main`.
+- Medical-ChatBot's Oracle VM and `medical-chatbot-vcn`. Production deploys outside the controlled cutover (`docs/ROLLBACK.md`). Force-pushes to `main`.
 
 ## Session: 2026-10-27 (model: Claude Sonnet 5.5, `claude-sonnet-5-5`; design reviewed with Codex, 3 rounds; LLM mode restored at the maintainer's request, D-010; AGENTS/CLAUDE/MEMORY synced)
 
