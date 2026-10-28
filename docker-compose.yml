@@ -21,6 +21,9 @@ services:
     restart: "no"
 
   api:
+    # Dev only: the working tree is bind-mounted on /app, where the image's
+    # unprivileged user (10001) may not be allowed to write.
+    user: "0:0"
     image: halal-lens-api
     build:
       context: .
@@ -89,9 +92,14 @@ services:
       retries: 3
 
   ingestion:
+    # Dev only: the working tree is bind-mounted on /app, where the image's
+    # unprivileged user (10001) may not be allowed to write.
+    user: "0:0"
+    # Same image as the api service; the entrypoint below picks the role.
+    image: halal-lens-api
     build:
       context: .
-      dockerfile: scheduler.Dockerfile
+      dockerfile: api.Dockerfile
     env_file:
       - .env
     environment:
@@ -121,9 +129,14 @@ services:
       retries: 3
 
   evaluation:
+    # Dev only: the working tree is bind-mounted on /app, where the image's
+    # unprivileged user (10001) may not be allowed to write.
+    user: "0:0"
+    # Same image as the api service; the entrypoint below picks the role.
+    image: halal-lens-api
     build:
       context: .
-      dockerfile: scheduler.Dockerfile
+      dockerfile: api.Dockerfile
     env_file:
       - .env
     environment:

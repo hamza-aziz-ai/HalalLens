@@ -100,10 +100,10 @@ jobs:
         run: |
           docker build -f api.Dockerfile -t halallens-api:ci .
           docker build -f ui.Dockerfile -t halallens-ui:ci .
-          docker build -f scheduler.Dockerfile -t halallens-scheduler:ci .
 
       - name: Smoke-test images
-        run: bash scripts/docker_smoke.sh halallens-api:ci halallens-ui:ci halallens-scheduler:ci
+        # The API image also runs the schedulers (compose sets their commands).
+        run: bash scripts/docker_smoke.sh halallens-api:ci halallens-ui:ci halallens-api:ci
 
       # Production routing through Caddy: UI at /, API under /api/ on one origin.
       - name: Test the Caddy routing

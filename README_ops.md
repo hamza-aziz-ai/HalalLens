@@ -35,6 +35,10 @@ Store secrets in a `.env` file, Docker secrets, or whichever secret manager your
 
 5. Start the ingestion scheduler (systemd or `docker compose run --rm ingestion`). Watch `/ops/metrics` and the ingestion heartbeat for failures.
 
+### Images and volume ownership
+
+One Python image (`api.Dockerfile`) runs every Python role: the API by default, and preflight, migrations and both schedulers through the commands in the compose files. It runs as the unprivileged user `10001:10001` and can write only to `cache/`, `downloads/`, `logs/`, `logs_runtime/` and `/tmp`. New named volumes mounted there take that ownership automatically. A volume created by an older image that ran as root keeps root ownership; fix it once with `docker run --rm --user 0 -v <volume>:/v halal-lens-api chown -R 10001:10001 /v`. The development compose file bind-mounts the working tree and runs these services as root on purpose.
+
 ### Exposing the site: Caddy TLS or Cloudflare Tunnel
 
 `docker-compose-prod.yml` serves the dashboard at `/` and the API under `/api/` on `HALAL_APP_DOMAIN`. Pick one way in:
