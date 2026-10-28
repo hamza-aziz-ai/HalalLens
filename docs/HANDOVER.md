@@ -19,10 +19,10 @@ Read first: [ARCHITECTURE.md](ARCHITECTURE.md), [CONSTRAINTS.md](CONSTRAINTS.md)
 
 **Broken or risky**
 - Stored evaluations computed by the old engine stay possibly false-`compliant` until recomputed (development data only for now).
-- `/alerts/check` still trusts the caller's verdict and iterates every user's entries.
+- `/alerts/check` fix (stored verdict, caller-scoped, fail-closed) is in its PR; the watchlist JSON store still has no lock, so the API must run one worker until watchlists move to Postgres.
 
 **Next**
-1. Security PR for `/alerts/check` (council first).
+1. Move watchlists to Postgres with a conditional update (then `API_WORKERS` can go above 1).
 2. Test plan steps 3 to 8 (billing contracts, Postgres and migrations, parser fixtures, UI and Playwright, Docker, merge policy).
 3. Next 15 and eslint upgrade together, after the Playwright smoke exists.
 4. Decide whether to keep `nextjs.yml` (Pages is not the canonical UI).
