@@ -79,6 +79,10 @@ HISTORY_CACHE_TTL_SECONDS = _as_int(os.getenv("HISTORY_CACHE_TTL_SECONDS"), 60)
 RECENT_CACHE_TTL_SECONDS = _as_int(os.getenv("RECENT_CACHE_TTL_SECONDS"), 30)
 INDIAN_API_BASE_URL = os.getenv("INDIAN_API_BASE_URL")
 INDIAN_API_KEY = os.getenv("INDIAN_API_KEY")
+# Hard cap on vendor requests per calendar month (UTC), counted across
+# processes in INDIAN_API_QUOTA_FILE. 0 = no cap. The free plan allows 500.
+INDIAN_API_MONTHLY_LIMIT = _as_int(os.getenv("INDIAN_API_MONTHLY_LIMIT"), 0)
+INDIAN_API_QUOTA_FILE = os.getenv("INDIAN_API_QUOTA_FILE", "cache/indian_api_quota.json")
 INDIAN_API_OVERRIDE_TOLERANCE = _as_float(
     os.getenv("INDIAN_API_OVERRIDE_TOLERANCE"), 0.15
 )

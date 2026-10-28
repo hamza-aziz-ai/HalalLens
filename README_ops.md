@@ -35,6 +35,10 @@ Store secrets in a `.env` file, Docker secrets, or whichever secret manager your
 
 5. Start the ingestion scheduler (systemd or `docker compose run --rm ingestion`). Watch `/ops/metrics` and the ingestion heartbeat for failures.
 
+### Indian Stock API quota
+
+The vendor plan is small (the free plan allows 500 requests per month). Every vendor call goes through `market_data/indian_api.py::_request_json`, which enforces `INDIAN_API_MONTHLY_LIMIT` (production default 450) with a counter in `cache/indian_api_quota.json` in the persistent `api_cache` volume, so the cap survives restarts. At the cap the app logs `Indian API monthly limit reached` and falls back to stored data and the free Bhavcopy files. In production the ingestion and evaluation schedulers run with the vendor turned off, so the quota is spent only on users' on-demand lookups. The API key is sent only in the `X-API-Key` header, never in a URL.
+
 ### Published images
 
 `publish-images.yml` runs when release-please publishes a release, or by hand (Actions → Publish images → Run workflow, with an existing tag) to retry. It waits for CI to pass on the released commit, builds `halallens-api` and `halallens-ui` natively for amd64 and arm64, runs the container and Caddy smoke tests, scans with Trivy (fails on fixable CRITICAL findings; HIGH and unfixed CRITICAL are listed in the run summary; reviewed exceptions go in `.trivyignore` with a reason and expiry), then pushes `vX.Y.Z-amd64` and `vX.Y.Z-arm64`, joins them into `vX.Y.Z`, and moves `latest` only for the newest release. A version tag that already exists is never overwritten.

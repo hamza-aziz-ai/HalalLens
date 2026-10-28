@@ -32,6 +32,8 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       INDIAN_API_BASE_URL: ${INDIAN_API_BASE_URL:?set in .env}
       INDIAN_API_KEY: ${INDIAN_API_KEY:?set in .env}
+      # Hard monthly cap across restarts (counted in the api_cache volume).
+      INDIAN_API_MONTHLY_LIMIT: ${INDIAN_API_MONTHLY_LIMIT:-450}
       MINIO_HOST: ${MINIO_HOST:?set in .env}
       MINIO_PORT: ${MINIO_PORT:-443}
       MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:?set in .env}
@@ -196,8 +198,11 @@ services:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      INDIAN_API_BASE_URL: ${INDIAN_API_BASE_URL:?set in .env}
-      INDIAN_API_KEY: ${INDIAN_API_KEY:?set in .env}
+      # The vendor plan is small (500 requests/month): scheduled jobs use the
+      # free official Bhavcopy files for market data and keep the vendor quota
+      # for users' on-demand lookups in the api service.
+      INDIAN_API_BASE_URL: ""
+      INDIAN_API_KEY: ""
       MINIO_HOST: ${MINIO_HOST:?set in .env}
       MINIO_PORT: ${MINIO_PORT:-443}
       MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:?set in .env}
@@ -231,8 +236,11 @@ services:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      INDIAN_API_BASE_URL: ${INDIAN_API_BASE_URL:?set in .env}
-      INDIAN_API_KEY: ${INDIAN_API_KEY:?set in .env}
+      # The vendor plan is small (500 requests/month): scheduled jobs use the
+      # free official Bhavcopy files for market data and keep the vendor quota
+      # for users' on-demand lookups in the api service.
+      INDIAN_API_BASE_URL: ""
+      INDIAN_API_KEY: ""
       MINIO_HOST: ${MINIO_HOST:?set in .env}
       MINIO_PORT: ${MINIO_PORT:-443}
       MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:?set in .env}

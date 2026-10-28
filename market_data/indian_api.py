@@ -4,15 +4,22 @@
 from __future__ import annotations
 
 import functools
+import json
 import logging
 import math
+import os
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, Optional, Tuple, List
 
 import requests
 
-from config import INDIAN_API_BASE_URL, INDIAN_API_KEY
+from config import (
+    INDIAN_API_BASE_URL,
+    INDIAN_API_KEY,
+    INDIAN_API_MONTHLY_LIMIT,
+    INDIAN_API_QUOTA_FILE,
+)
 from ratio_engine.amounts import coerce_amount
 
 LOGGER = logging.getLogger("market_data")
@@ -136,18 +143,81 @@ def _get_stock_payload(symbol: str, *, timeout: float) -> Optional[Dict]:
     )
 
 
+_quota_warned_month: Optional[str] = None
+
+
+def _consume_quota(limit: Optional[int] = None, path: Optional[str] = None) -> bool:
+    """Count one vendor request against the monthly cap; False when it is used up.
+
+    The count lives in a small JSON file (in the persistent cache volume) so it
+    survives restarts and is shared by every process on the host; an exclusive
+    lock keeps concurrent processes from overspending.
+    """
+
+    global _quota_warned_month
+    limit = INDIAN_API_MONTHLY_LIMIT if limit is None else limit
+    if limit <= 0:
+        return True
+    path = path or INDIAN_API_QUOTA_FILE
+    month = datetime.now(timezone.utc).strftime("%Y-%m")
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    # ponytail: one host. A quota shared by several hosts needs a database counter.
+    with open(path, "a+", encoding="utf-8") as handle:
+        _lock(handle)
+        try:
+            handle.seek(0)
+            try:
+                counts = json.loads(handle.read() or "{}")
+            except ValueError:
+                counts = {}
+            used = int(counts.get(month, 0))
+            if used >= limit:
+                if _quota_warned_month != month:
+                    LOGGER.warning(
+                        "Indian API monthly limit reached (%s/%s for %s); skipping vendor calls",
+                        used, limit, month,
+                    )
+                    _quota_warned_month = month
+                return False
+            counts = {month: used + 1}  # only the current month is kept
+            handle.seek(0)
+            handle.truncate()
+            handle.write(json.dumps(counts))
+            handle.flush()
+            return True
+        finally:
+            _unlock(handle)
+
+
+try:  # POSIX hosts (the Docker images); development on Windows runs unlocked.
+    import fcntl
+
+    def _lock(handle) -> None:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+
+    def _unlock(handle) -> None:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+except ImportError:  # pragma: no cover - Windows
+
+    def _lock(handle) -> None:
+        return None
+
+    def _unlock(handle) -> None:
+        return None
+
+
 def _request_json(path: str, params: Dict[str, Any], *, timeout: float) -> Optional[Dict]:
     if not BASE_URL:
         return None
-    merged = dict(params)
-    headers: Dict[str, str] = {}
-    if API_KEY:
-        merged["api_key"] = API_KEY
-        headers["Authorization"] = f"Bearer {API_KEY}"
-        headers["X-API-Key"] = API_KEY
+    if not _consume_quota():
+        return None
+    # The key goes only in the header the vendor documents (X-Api-Key). In the
+    # query string it would end up in URLs, and from there in logs and proxies.
+    headers: Dict[str, str] = {"X-API-Key": API_KEY} if API_KEY else {}
     url = f"{BASE_URL}{path}"
     try:
-        response = SESSION.get(url, params=merged, headers=headers, timeout=timeout)
+        response = SESSION.get(url, params=dict(params), headers=headers, timeout=timeout)
         response.raise_for_status()
     except requests.RequestException as exc:  # pragma: no cover - network guarded
         LOGGER.debug("Indian API request to %s failed: %s", path, exc)
