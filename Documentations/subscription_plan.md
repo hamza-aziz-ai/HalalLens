@@ -12,9 +12,7 @@
    - Razorpay webhook handler updates subscription state.
 
 3. **Feature gating**
-   - Premium features (instant lookup, history, narration, watchlists and alerts)
-     are enforced in the API and surfaced in UI copy. Governance overrides are
-     admin-only, not a paid feature.
+   - Premium features (instant lookup, history, narration, watchlists and alerts) are enforced in the API and surfaced in UI copy. Governance overrides are admin-only, not a paid feature.
 
 ## Remaining gaps / enhancements
 
