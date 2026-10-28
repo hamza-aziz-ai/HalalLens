@@ -24,6 +24,9 @@ RUN pip install --no-cache-dir "pipenv>=2024.4.0" \
  && PIPENV_VENV_IN_PROJECT=1 pipenv install --system --deploy
 
 COPY . /app
+# Shell scripts from a Windows checkout (core.autocrlf) arrive with CRLF and
+# fail under bash (migrations run scripts/run_migrations.sh in this image).
+RUN find /app/scripts -name '*.sh' -exec sed -i 's/\r$//' {} +
 
 ARG POSTGRES_HOST=postgres
 ENV POSTGRES_HOST=${POSTGRES_HOST}
