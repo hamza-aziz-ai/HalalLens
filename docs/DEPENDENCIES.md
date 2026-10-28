@@ -27,6 +27,9 @@ torch (CUDA index), langchain, langchain-ollama, ollama, playwright, firecrawl-p
 ## Added on 2026-10-27
 None. `ratio_engine/amounts.py` uses only the standard library (`decimal`, `math`).
 
+## External services
+- Cloudflare R2: filing PDF storage in production (D-016), reached through the `minio` SDK's S3 API. Free tier 10 GB, free egress.
+
 ## CI actions (pinned by commit SHA)
 `actions/checkout`, `actions/setup-python`, `actions/setup-node`, `gitleaks/gitleaks-action`, `dependabot/fetch-metadata`, `googleapis/release-please-action`. Dependabot keeps the SHAs fresh.
 
