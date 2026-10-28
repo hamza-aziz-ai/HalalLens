@@ -1,121 +1,122 @@
 # HalalLens
 
-> **See your investments through a halal lens.** Read-only Shariah-compliance screening, explainability, and alerting for Indian & GCC equities and mutual-fund schemes.
+> **See your investments through a halal lens.** Read-only Shariah-compliance screening for BSE-listed Indian equities, with a rule-based "Explain Why" narrator and compliance-flip alerts.
 
-![CI](https://img.shields.io/github/actions/workflow/status/hamzaziizzz/HalalLens/ci.yml?branch=main)
-![License](https://img.shields.io/github/license/hamzaziizzz/HalalLens)
+[![CI](https://github.com/hamza-aziz-ai/HalalLens/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/hamza-aziz-ai/HalalLens/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/github/license/hamza-aziz-ai/HalalLens)](LICENSE)
 
----
-
-## Key Capabilities
-
-| Category                  | Highlights                                                                                         |
-| ------------------------- | -------------------------------------------------------------------------------------------------- |
-| **AAOIFI Screening**      | Ratio engine enforces 30% debt/cash caps and 5% non-permissible income thresholds per filing.      |
-| **Explain-Why Narration** | Rule-based by default. An optional LLM-backed narrator (vLLM/OpenAI style, `NARRATOR_MODE=llm`) is used only for conclusive verdicts and only if its text passes a best-effort consistency check; the badge and ratio table always show the engine's verdict. Unknown results are always narrated by the rule-based narrator.      |
-| **Watchlists & Alerts**   | File-backed watchlists plus compliance-flip alert engine (future: Celery + SES delivery).          |
-| **Filings Ingestion**     | Production-style BSE/NSE crawlers, PDF capture via MinIO, Camelot tables **and** XBRL/JSON parsing for AAOIFI metrics. |
-| **REST API**              | FastAPI service exposes `/halal-score`, `/narrate`, `/watchlist`, and `/alerts/check` endpoints.   |
+**Status: pilot.** Billing runs through Razorpay and the screen is a *configured, AAOIFI-inspired* financial screen, not a fatwa or a verified full AAOIFI assessment. Read [How the screen decides](#how-the-screen-decides) and [Known limitations](#known-limitations) before relying on a verdict.
 
 ---
 
-## Architecture Snapshot
+## What it does
 
-```
+| Area | What exists today |
+| ---- | ----------------- |
+| **Screening** | `ratio_engine/` computes five ratios per filing and returns one verdict: `compliant`, `non-compliant` or `insufficient-data`. |
+| **Explain-Why** | Rule-based by default. An optional LLM narrator (`NARRATOR_MODE=llm`) is used only for conclusive verdicts and only if its text passes a best-effort consistency check; the badge and ratio table always show the engine's verdict. Unknown results are always narrated by the rule-based narrator. |
+| **Alerts** | File-backed watchlists and a compliance-flip engine; email delivery through SMTP. `/alerts/check` is a paid route that still trusts a caller-supplied verdict (see [Known limitations](#known-limitations)). |
+| **Filings ingestion** | BSE announcements crawler, PDF capture in MinIO, Camelot tables plus XBRL/JSON parsing, Indian Stock API and Bhavcopy market data. |
+| **API + UI** | FastAPI service (`/docs` lists every route) and a Next.js 14 static-export dashboard. |
+| **Accounts + billing** | Email/password and Google SSO, hashed opaque session tokens, Razorpay orders with idempotent webhooks, trials. |
+
+Not built: GCC or mutual-fund coverage, NSE crawling (`crawler/nse_ann.py` exists but nothing calls it), RAG/vLLM serving, SES/Celery alert delivery, and the Flutter app's Dart source (`halallens-mobile/` is a platform scaffold with no `lib/`, so it cannot build).
+
+---
+
+## How the screen decides
+
+For each filing the engine computes five ratios and compares each against a configured cap:
+
+| Ratio | Cap | Basis |
+| ----- | --- | ----- |
+| Total debt / market cap | 30% | AAOIFI SS21 (uses *total* debt, not only interest-bearing) |
+| Cash and equivalents / market cap | 30% | AAOIFI SS21 (uses all cash, not only interest-bearing deposits) |
+| Non-permissible income / revenue | 5% | AAOIFI SS21 |
+| Accounts receivable / market cap | 67% | **not backed by SS21**, kept as configured |
+| Liquid assets / market cap | 49% | **not backed by SS21**, kept as configured |
+
+Verdict rule (`ratio_engine/engine.py`, one place; nothing else re-derives it):
+
+- **`non-compliant`**: any ratio computed from valid inputs fails. A failure is conclusive even if other inputs are missing.
+- **`compliant`**: all five ratios were computed from valid inputs and all passed. Prohibited income needs its base figure, interest income and dividend income to all be known (an explicit `0` counts); an unknown part is never assumed zero.
+- **`insufficient-data`**: anything else. This is *not* a failure. `is_compliant` is `null` in the API and the UI shows "Insufficient data".
+
+`needs-review` is an API-level overlay for filings with open data-quality issues; it is also stored and returned with `is_compliant = null`.
+
+Arithmetic is exact (Decimal, no tolerance): 0.30000000000000004 over a 0.30 cap fails. Inputs must be finite numbers within float range; booleans, NaN/inf, negatives and underflowing strings are treated as unknown.
+
+---
+
+## Architecture
+
+```mermaid
 flowchart TD
-    Crawler -->|Announcements| Cache[(Cache & Downloads)]
-    Cache --> ETL[Financial Data Processor]
+    Crawler[BSE crawler] -->|announcements| ETL[Financial data processor]
     ETL --> DB[(Postgres + MinIO)]
-    DB --> Ratio[Ratio Engine Service]
-    Ratio --> Narrator
-    Ratio --> Alerts
-    Narrator --> API[(FastAPI)]
+    Market[Indian Stock API / Bhavcopy] --> DB
+    DB --> Engine[Ratio engine]
+    Engine --> Narrator[Rule-based narrator]
+    Engine --> Alerts[Alerts]
+    Narrator --> API[FastAPI]
     Alerts --> API
+    Engine --> API
+    API --> UI[Next.js dashboard]
 ```
+
+Deeper maps: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md), [`docs/FLOW.md`](docs/FLOW.md), [`Documentations/dependency-map.md`](Documentations/dependency-map.md).
 
 ---
 
-## Local Development
+## Local development
 
 ```bash
-# 1. Clone and enter repo
-git clone https://github.com/hamzaziizzz/HalalLens.git
+git clone https://github.com/hamza-aziz-ai/HalalLens.git
 cd HalalLens
-
-# 2. Create env file (see Documentations/ for the project charter / required secrets)
-cp .env.local .env
-
-# 3. Install dependencies
-pipenv install --dev
+cp .env.example .env          # then fill in the values; never commit .env
+pipenv install --dev          # Python 3.14
 ```
 
-### Narrator configuration
+**Database.** Postgres and MinIO are external. For a fresh database apply `database/schema.sql`; for an existing one apply the dated files in `database/migrations/` in order. `scripts/run_migrations.sh` does both and records applied files in `schema_migrations`.
 
 ```bash
-# defaults to rule_based
-export NARRATOR_MODE=llm
-export LLM_ENDPOINT=http://192.168.1.9:8001/v1/chat/completions
-export LLM_MODEL=llama-3-8b-instruct
-export LLM_API_KEY=local-token    # optional for self-hosted vLLM
-export LLM_TEMPERATURE=0.0
-export LLM_MAX_TOKENS=400
-export LLM_TIMEOUT=30
+createdb halallens_dev
+DATABASE_URL=postgresql://user@localhost/halallens_dev bash scripts/run_migrations.sh
 ```
 
-**LLM text is best-effort, not guaranteed.** For `compliant` / `non-compliant` results the model must repeat the engine's verdict and its text is checked for contradicting wording; any doubt, error or unknown result falls back to the rule-based narrator. A paraphrase the check does not know can still contradict the verdict, so the UI marks LLM text as AI-generated. If `NARRATOR_MODE=llm` but endpoint/model are missing, the service automatically falls back to the deterministic narrator. Set `LLM_MAX_TOKENS=0` and/or `LLM_TIMEOUT=0` if you want the model/server to decide token counts and timeouts (useful for reasoning-heavy Ollama models like DeepSeek-R1).
+`20260728_security_hardening.sql` clears `user_sessions` (tokens are now stored as SHA-256 digests), so everyone signs in again once; it also adds the unique `(provider, event_id)` index on `payment_events`.
 
-### Database schema
+**API and UI.**
 
 ```bash
-createdb halallens_dev   # if needed
-psql halallens_dev -f database/schema.sql
-# Existing databases: apply incremental migrations too
-psql halallens_dev -f database/migrations/20241218_add_aaoifi_columns.sql
-# Reviewer workflow columns for feedback triage
-psql halallens_dev -f database/migrations/20241219_feedback_status.sql
-# Governance override table for manual AAOIFI fixes
-psql halallens_dev -f database/migrations/20241220_governance_overrides.sql
-# Feedback tracking tokens + re-evaluation metadata
-psql halallens_dev -f database/migrations/20241221_feedback_tracking.sql
-# Session-token hashing + payment idempotency (see "Security model" below)
-psql halallens_dev -f database/migrations/20260728_security_hardening.sql
+pipenv run uvicorn api.app:app --reload --port 8001      # http://localhost:8001/docs
+cd ui && npm install && npm run dev                        # http://localhost:3000
 ```
 
-> **Heads-up on `20260728_security_hardening.sql`:** it clears `user_sessions`,
-> because tokens are now stored as SHA-256 digests rather than in plaintext.
-> Everyone signs in again once after deployment. It also adds a unique index on
-> `payment_events (provider, event_id)`; if you have duplicate rows from replayed
-> webhooks the migration collapses them first.
+Set `NEXT_PUBLIC_HALAL_API_BASE_URL` (in `ui/.env.local`) to the API origin. It is baked in at build time.
 
-> **Heads-up:** if you are pointing the app at an established Postgres instance, run the migration file above (or apply the equivalent `ALTER TABLE financial_snapshots ...` statements) before restarting the API. Without the `accounts_receivable`, `liquid_assets`, `non_halal_income`, and `governance_notes` columns, `/filings/recent` will fail as soon as the backend starts selecting the AAOIFI fields.
->
-> Likewise, apply `20241219_feedback_status.sql` so the API/UI can store reviewer status, notes, and resolution timestamps for feedback reports. Skipping it results in `column "status" does not exist` errors as soon as the reviewer queue loads.
-
-### FastAPI service
+**Tests.**
 
 ```bash
-pipenv run uvicorn api.app:app --reload --port 8001
+pipenv run pytest                                   # backend; same command CI runs
+cd ui && npm test && npm run lint && npm run build  # frontend
 ```
 
-- `GET /health` - liveness probe
-- `POST /halal-score` - compute ratios from filing + market data payloads
-- `POST /narrate` - generate explain-why text from the same request
-- `GET /filings/{symbol}` - fetch the latest stored filing + computed ratios for a symbol
-- `GET /filings/recent` - list the newest filings with AAOIFI verdict snapshots
-- `GET /market-data/{symbol}` - proxy/caches Indian Stock API market caps & share prices (with Bhavcopy fallback)
-- `POST /watchlist` / `GET /watchlist/{user}` - manage compliance-watch entries
-- `POST /alerts/check` - run compliance-flip alert evaluation
-- `POST /feedback` - capture user-reported issues with filings/verdicts
-- `GET /feedback` - reviewer list endpoint (filter by status/limit)
-- `PATCH /feedback/{id}` - update status, reviewer, and notes
-- `GET /feedback/status/{token}` - requester view: track ticket status + audit trail
-- `GET /governance/overrides` - list manual overrides applied to AAOIFI metrics **(admin)**
-- `PUT /governance/overrides` - create/update an override for a filing **(admin)**
-- `DELETE /governance/overrides/{symbol}/{filing_date}` - remove an override (reverts to extracted values) **(admin)**
-- `POST /billing/cancel` - stop auto-renewal; paid access runs to the end of the period
-- `tools/metrics_inspector.py` - summarize `logs/metrics/ingestion_metrics.jsonl` (success/failure counts, durations). Helpful for quick CLI dashboards or feeding Promtail/Grafana.
+Tests must not need live Postgres, MinIO, an LLM or vendor APIs.
 
-### Security model
+### Narrator
+
+`NARRATOR_MODE` defaults to `rule_based` (the only path whose consistency with the verdict is guaranteed). With `NARRATOR_MODE=llm` (plus `LLM_ENDPOINT`, `LLM_MODEL`, optional `LLM_API_KEY`, `LLM_TEMPERATURE`, `LLM_MAX_TOKENS`, `LLM_TIMEOUT`) the model is asked only about `compliant` / `non-compliant` results. Its text is shown only if it repeats the engine's verdict in a `screen_verdict` field and its summary, verdict and bullets pass a keyword check; otherwise, on any LLM error, and for `insufficient-data`, the rule-based narrator is used, and the label shown is always the engine's. **This is best-effort, not a guarantee:** a paraphrase the check does not know can still contradict the verdict, so the UI marks LLM text as AI-generated. `tools/preflight.py` requires the LLM endpoint to be reachable in `llm` mode. Set `LLM_MAX_TOKENS=0` and/or `LLM_TIMEOUT=0` to let the server decide limits (useful for reasoning-heavy models).
+
+### Google SSO (optional)
+
+Create a Google "Web application" OAuth client, then set `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URI` (`<api>/auth/google/callback`) and `FRONTEND_BASE_URL`. The token is returned in the URL **fragment** (`/login#token=...`), never the query string, and the redirect must match `FRONTEND_BASE_URL` or the `halallens://` scheme.
+
+---
+
+## API and security model
+
+`/docs` (FastAPI OpenAPI) is the route reference. Every route has a tier:
 
 | Tier | Who | Routes |
 | ---- | --- | ------ |
@@ -124,28 +125,17 @@ pipenv run uvicorn api.app:app --reload --port 8001
 | **Paid** | active or trialing subscription | `/narrate`, `/watchlist*`, `/alerts/check`, `/filings/{symbol}/history`, `/filings/{symbol}?refresh=true` |
 | **Admin** | `is_admin`, seeded from `ADMIN_EMAILS` | `GET/PATCH /feedback`, `/feedback/{id}/events`, `/governance/*`, `/ingestion/stats`, `/ops/metrics` |
 
-Notes on the boundaries:
+`/halal-score` and `/narrate` return `is_compliant` (`true`, `false` or `null`) and `screen_verdict` (`compliant`, `non-compliant`, `insufficient-data`). **`null` is not `false`.**
 
-- **Governance overrides are admin-only, not a paid feature.** An override rewrites
-  the AAOIFI inputs behind *every* user's verdict for that filing, so it is a
-  data-integrity operation. The reviewer recorded on an override and on feedback
-  triage comes from the session, not from the request body.
-- **Watchlists are keyed off the session**, not off the `user_id` in the path or
-  body. The path parameter on `GET /watchlist/{user_id}` is retained only for URL
-  compatibility and is ignored.
-- **`/market-data` requires a session** because a cache miss spends the upstream
-  vendor quota.
-- **Session tokens are stored as SHA-256 digests.** A database dump cannot be
-  replayed against the API.
-- **Passwords** use PBKDF2-HMAC-SHA256 at 600k iterations, with a versioned hash
-  string. Accounts created under the old 100k scheme are re-hashed transparently
-  on their next successful login.
-- **Google SSO returns the token in the URL fragment only** (never the query
-  string, which would land in access logs and `Referer` headers), and the
-  post-login redirect must match `FRONTEND_BASE_URL`'s exact scheme and host, or
-  use the `halallens://` mobile scheme.
+Boundaries worth knowing:
 
-Rate limits (per worker process - see the caveat below):
+- Governance overrides rewrite the inputs behind *every* user's verdict for a filing, so they are admin-only. Reviewer identity comes from the session, never the request body.
+- Watchlists are keyed off the session; the `user_id` path parameter is ignored.
+- `/market-data` requires a session because a cache miss spends vendor quota.
+- Session tokens are SHA-256 digests; passwords are PBKDF2-HMAC-SHA256 at 600k iterations (older hashes are re-hashed on next login).
+- Razorpay webhooks are idempotent through the unique `(provider, event_id)` index on `payment_events`.
+
+Rate limits (per worker process, see the caveat):
 
 ```env
 RATE_LIMIT_ENABLED=true
@@ -154,209 +144,80 @@ RATE_LIMIT_REGISTER_PER_HOUR=5       # per IP, also throttles trial farming
 RATE_LIMIT_PUBLIC_PER_MINUTE=60      # per IP, /halal-score
 RATE_LIMIT_METERED_PER_MINUTE=30     # per user, /narrate + /market-data
 RATE_LIMIT_WRITE_PER_HOUR=30         # per IP, /feedback + /client-logs
-TRUST_PROXY_HEADERS=false            # set true only behind Caddy/your own proxy
+TRUST_PROXY_HEADERS=false            # true only behind a proxy you control
 ALLOWED_ORIGIN_REGEX=                # opt-in; matched with fullmatch, not a prefix
 ```
 
-> **Caveat:** the limiter keeps its counters in process memory, so running
-> `uvicorn --workers N` multiplies every limit by `N`, and the counters reset on
-> restart. That is acceptable for the pilot; move `SlidingWindowRateLimiter` in
-> `api/security.py` onto Redis before scaling out horizontally.
->
-> `TRUST_PROXY_HEADERS` gates whether `X-Forwarded-For` is believed for rate-limit
-> identity. Leave it off unless a proxy you control strips client-supplied values,
-> otherwise a caller can mint a fresh bucket per request.
-
-### Tests
-
-```bash
-pipenv run pytest
-```
-
-CI (GitHub Actions) installs the Pipenv environment and runs the same test suite on pushes and pull requests.
-
-### Next.js dashboard
-
-```bash
-cd ui
-npm install          # or pnpm install
-npm run dev          # http://192.168.1.9:3000
-```
-
-Set `NEXT_PUBLIC_HALAL_API_BASE_URL` in `ui/.env.local` to the FastAPI origin (default `http://192.168.1.9:8001`). The UI calls the API directly from the browser, fetches recent filings via `/filings/recent`, auto-looks up market caps/share prices via `/market-data`, and surfaces `/watchlist` + `/alerts/check` so you can add symbols and see compliance-flip alerts without leaving the dashboard.
-
-Head to `http://192.168.1.9:3000/login` to register/sign in; once authenticated the dashboard lives at `/dashboard` and mirrors the same routing when deployed with Docker (`/login` + `/dashboard` behind port 3001 in the compose stack). When the Google env vars are present you’ll also see a **Continue with Google** button—the FastAPI backend exchanges the OAuth code, issues a HalalLens bearer token, and redirects back to the dashboard with the token stored in `localStorage`.
-
-### Mobile app (Flutter)
-
-```bash
-cd halallens-mobile
-flutter pub get
-flutter run --dart-define=HALALLENS_API_BASE_URL=http://192.168.1.9:8001
-```
-
-Notes:
-- Use a LAN-accessible API URL when testing on a physical device (avoid `localhost`).
-- Optional defines:
-  - `HALALLENS_API_TIMEOUT_SECONDS=12`
-  - `HALALLENS_MOBILE_OAUTH_REDIRECT=halallens://auth/login`
-
-Google SSO on mobile uses deep links. The API accepts an optional `redirect` query param on `/auth/google/start` and will return the bearer token to `halallens://auth/login?...`. Android and iOS URL schemes are already configured in the app.
-
-### Google SSO (optional)
-
-1. Create a Google Cloud project, configure the OAuth consent screen (External), and register a “Web application” OAuth client. Add the dashboard origin(s) as “Authorized JavaScript origins” and `https://api.example.com/auth/google/callback` (plus `http://192.168.1.9:8001/auth/google/callback` for local dev) as authorized redirect URIs.
-2. Populate `.env` with:
-   ```env
-   GOOGLE_CLIENT_ID=your-client-id.apps.googleusercontent.com
-   GOOGLE_CLIENT_SECRET=super-secret
-   GOOGLE_REDIRECT_URI=http://192.168.1.9:8001/auth/google/callback
-   FRONTEND_BASE_URL=http://192.168.1.9:3000
-   ```
-3. Restart the API (or `docker compose up --build`). The `/auth/google/start` endpoint now redirects to Google; after consent the API links/creates a user record (using `google_sub`) and redirects back to `/login#token=...`.
-
-For mobile SSO, call `/auth/google/start?redirect=halallens://auth/login` so the token returns to the app.
-
-### Reviewer workflow (feedback triage)
-
-The dashboard now includes a “Feedback queue” card below the reporter form:
-
-1. Analysts submit issues via the public “Report an issue” form (`POST /feedback`). The API returns a tracking token so requestors can later hit `GET /feedback/status/{token}` to see status/resolution notes.
-2. Reviewers open the dashboard, scroll to “Feedback queue,” and press **Refresh** to load open reports from `GET /feedback?status=open`.
-3. Each entry shows the symbol, filing date (if provided), verdict, user message, and contact details. Reviewers can type notes and click **Mark resolved**, which fires `PATCH /feedback/{id}` with `{ status: "resolved", review_notes, reviewer }`. Marking resolved optionally triggers an automatic re-evaluation of the cited filing and stores the result in the audit trail exposed to requestors.
-4. The queue reloads automatically so only outstanding tickets remain, and you can set tickets to `in_review` when triaging.
-
-All reviewer actions are stored in the `feedback_reports` table (columns added in `20241219_feedback_status.sql` plus `20241221_feedback_tracking.sql`). The same audit log powers the requester-facing status endpoint, so analysts can see when their ticket moved to `in_review`, when it was resolved, and whether a re-check was executed.
-
-## Docker pilot deployment
-
-The repository ships Dockerfiles for both the FastAPI backend and the Next.js dashboard plus a `docker-compose.yml` that stands up PostgreSQL, API, and UI together.
-
-1. Copy `.env` to the project root (or create one) with your existing PostgreSQL connection details plus the Indian Stock Market API credentials, e.g.:
-   ```env
-   POSTGRES_HOST=host.docker.internal   # or the LAN IP of your DB server
-   POSTGRES_DB=halallens
-   POSTGRES_USER=halallens
-   POSTGRES_PASSWORD=supersecret
-   INDIAN_API_BASE_URL=https://api.indianstocks.local/v1   # provided by your vendor
-   INDIAN_API_KEY=supersecret-api-key
-   GOOGLE_CLIENT_ID=your-client-id.apps.googleusercontent.com
-   GOOGLE_CLIENT_SECRET=super-secret
-   GOOGLE_REDIRECT_URI=http://api:8001/auth/google/callback
-   FRONTEND_BASE_URL=http://192.168.1.9:3000
-   NEXT_PUBLIC_HALAL_API_BASE_URL=http://api:8001
-   ```
-   If you run Docker on native Linux, `host.docker.internal` is provided via the `extra_hosts` entry in `docker-compose.yml`; you can also set `POSTGRES_HOST` to the IP/hostname of your Postgres instance explicitly.
-2. Build and start the API + UI containers (they will connect to your existing Postgres):
-   ```bash
-   docker compose up --build
-   ```
-3. Visit:
-   - API docs: http://192.168.1.9:8001/docs
-   - Dashboard: http://192.168.1.9:3001 (already wired to the containerized API)
-
-The compose stack persists Postgres data in the `postgres_data` volume. Stop with `docker compose down` (add `-v` to drop the volume between runs).
-
-### Operations handbook
-
-| Topic | Checklist |
-| ----- | --------- |
-| **Logs & retention** | All components respect `HALAL_LOG_ROOT` and follow `logs/<component>/<Year>/<Month>/<component>.log` rotation (daily rollovers, max 31 per folder). Compress/ship these to centralized storage (e.g., S3, Vector) and prune old months via `find logs -type f -mtime +90 -delete`. |
-| **Secrets** | Store DB credentials, SMTP keys, Indian API keys, and LLM tokens in `.env` or your orchestrator’s secret manager. Never bake them into Docker images. If rotating passwords, update `.env`, run the relevant migration (if schema changed), then restart containers (`docker compose up -d --no-deps api ingestion`). |
-| **Migrations** | Every schema change lands in `database/migrations/`. Apply them in chronological order: `psql -f database/migrations/<timestamp>.sql`. For Docker pilots, run the migration on the external Postgres first (from the host or a psql container) *before* redeploying. |
-| **Backfill jobs** | Use `pipenv run python -m jobs.backfill_evaluations --from-date YYYYMMDD --to-date YYYYMMDD` to recompute ratios for historical filings after logic tweaks. For bulk ingestion, schedule `jobs.schedule_ingestion` or run `jobs.ingest_bse` manually with `--save-cache`. Documented examples live in `README_ingestion.md`. |
-| **Cache dirs** | `cache/` stores raw announcements (JSON) and extracted financial data. `downloads/` holds temporary PDFs before uploading to MinIO. Clean them periodically (`rm -rf cache/* downloads/*`) once data lands in MinIO/Postgres. |
-| **Manual overrides** | When heuristics misread filings (e.g., TCS non-halal income), use the dashboard “Governance overrides” card or the `/governance/overrides` API to upsert corrected metrics. Overrides are stored in `governance_overrides` and surfaced in filings responses. |
-| **Log formats** | Each entry uses weekday + 12‑hour timestamp: `Thursday 19-12-2025 07:15:00 PM INFO [component] message`. This matches the operator request for readability. |
-
-### Logging
-
-#### Ops alerting & metrics
-
-To receive email/Slack alerts whenever the ingestion scheduler fails (or when it recovers after consecutive failures), set the following environment variables before launching the scheduler or Docker stack:
-
-```
-OPS_SMTP_HOST=smtp.example.com
-OPS_SMTP_PORT=587
-OPS_SMTP_USERNAME=apikey
-OPS_SMTP_PASSWORD=secret
-OPS_EMAIL_SENDER=halallens-bot@example.com
-OPS_EMAIL_RECIPIENT=ops@example.com
-OPS_SLACK_WEBHOOK=https://hooks.slack.com/services/XXX/YYY/ZZZ   # optional
-```
-
-Alerts include the component name, severity, and traceback. Either email or Slack is optional—configure whichever channels you use.
-
-The scheduler also writes run metrics to `logs/metrics/ingestion_metrics.jsonl` (override with `INGESTION_METRICS_PATH`). Each line is JSON with `status`, start/end timestamps, and duration seconds; point your observability stack at that file or ship it via Filebeat/Vector to build dashboards of success/failure ratios.
-
-#### Viewing logs in Docker
-
-Mount the `logs/` directory into your host (compose already does this) and inspect per component:
-
-```bash
-# API logs for December 2025
-tail -f logs/api/2025/December/api.log
-
-# Scheduler logs (and rotations) in the same folder structure
-tail -f logs/scheduler/2025/December/scheduler.log
-```
-
-Rotations (`*.log.19-12-2025`) can be zipped or shipped off-line via cronjobs. `docker logs` still mirrors stdout for quick debugging, but the filesystem hierarchy is the canonical audit trail.
-
-### Ingestion scheduler
-
-To run BSE ingestion on an interval (default hourly):
-
-```bash
-pipenv run python -m jobs.schedule_ingestion
-```
-
-This simply loops over `jobs.ingest_bse` and logs success/failure timestamps. For production, map it to a systemd service, Windows Task Scheduler, or any cron-like runner. You can change the interval by editing `SLEEP_MINUTES` in `jobs/schedule_ingestion.py`.
-
-### Alert delivery (email)
-
-Configure SMTP credentials (optional) to deliver compliance flips via email:
-
-```
-SMTP_HOST=smtp.example.com
-SMTP_PORT=587
-SMTP_USERNAME=apikey
-SMTP_PASSWORD=secret
-ALERT_EMAIL_SENDER=alerts@example.com
-ALERT_EMAIL_RECIPIENT=team@example.com
-```
-
-When set, `/alerts/check` automatically emits emails in addition to returning the alert payload.
+> The limiter keeps counters in process memory, so `uvicorn --workers N` multiplies every limit by `N` and restarts reset them. Acceptable for the pilot; move `SlidingWindowRateLimiter` (`api/security.py`) to Redis before scaling out.
 
 ---
 
-## Repository Structure
+## Docker pilot
 
+`docker-compose.yml` runs `preflight`, `api` (port 8001), `ui` (port 3001), and the `ingestion` and `evaluation` schedulers against an **external** Postgres and MinIO. `docker-compose-prod.yml` adds Caddy for TLS and bundled Postgres/MinIO.
+
+```bash
+cp .env.example .env     # set POSTGRES_*, MINIO_*, INDIAN_API_*, NEXT_PUBLIC_HALAL_API_BASE_URL, ...
+docker compose up --build
 ```
-HalalLens/
-|- api/                 # FastAPI application wiring ratio engine, narrator, alerts
-|- alerts/              # Watchlist storage and alert evaluation
-|- config/              # Environment variable helpers
-|- crawler/             # BSE/NSE announcement fetchers
-|- database/            # Postgres manager for announcements & financial snapshots
-|- Documentations/      # Charter + project tracker
-|- etl/                 # Financial data processor and MinIO client
-|- jobs/                # CLI ingestion job tying crawler + ETL + DB
-|- narrator/            # Deterministic explain-why narration engine
-|- ratio_engine/        # AAOIFI-style ratio calculations and models
-|- ui/                  # Next.js 14 dashboard (search + explain-why)
-|- tests/               # Pytest coverage for ratio engine, narrator, alerts
-|- usage_example.py     # Sample end-to-end ingestion usage
-```
+
+Operations (logs, metrics, backups, secret rotation, troubleshooting): [`README_ops.md`](README_ops.md). Ingestion CLI: [`README_ingestion.md`](README_ingestion.md).
+
+> **Before deploying a new verdict engine** to a database that already holds evaluations, read [`docs/ROLLBACK.md`](docs/ROLLBACK.md) and [`docs/HANDOVER.md`](docs/HANDOVER.md): stored evaluations keep their old verdicts until they are recomputed.
 
 ---
 
-## Roadmap Highlights
+## CI, automation and releases
 
-- Harden NSE/BSE ingestion (retry logic, scheduling) and add MF/GCC sources.
-- Add Postgres schema/migrations plus automated data-quality checks.
-- Stand up vLLM narrator service + RAG pipeline for Explain-Why panel.
-- Build the Next.js dashboard (search, movers, watchlists) and connect alerts to SES.
-- Instrument Prometheus/Grafana and ship production-ready Helm charts.
+- **CI** (`.github/workflows/ci.yml`): `backend` (pytest), `ui` (lint, jest, build) and `secrets` (gitleaks over full history). Actions are pinned by SHA; the token is read-only.
+- **`main` is protected by a ruleset:** pull request required (squash merge), the three checks above must pass; the repository owner can bypass for hotfixes.
+- **Dependabot** opens weekly update PRs. Auto-merge is enabled only for minor/patch updates of GitHub Actions and UI dev dependencies; Python packages are reviewed by hand.
+- **Releases:** release-please opens a release PR from Conventional Commit titles on `main` (`feat:`, `fix:`, `ci:` ...). Merging it tags `vX.Y.Z`, updates `CHANGELOG.md` and publishes a GitHub Release. `build:`, `ci:` and `docs:` do not cut a release.
+- **Pages:** `nextjs.yml` publishes the static dashboard to GitHub Pages on every push to `main`; it does not set `NEXT_PUBLIC_HALAL_API_BASE_URL`, so the Pages build is not wired to an API.
+- No container registry or API deployment workflow exists yet.
 
-Track granular sprint tasks in `Documentations/HalalLens-Project-Tracker.xlsx`.
+---
+
+## Known limitations
+
+- **Methodology.** The receivables (67%) and liquid-assets (49%) market-cap gates are not backed by AAOIFI SS21 but are required for `compliant`. Debt and cash use total balances, not only interest-bearing ones.
+- **Income inputs are weak evidence.** The PDF extractor's prohibited-income regex also matches "interest income"; the vendor maps "Other, Net" to the base; vendor interest is net; governance overrides carry no declared contract. Interest and dividend figures are rarely extracted, so many filings screen as `insufficient-data`.
+- **Stored evaluations can be stale.** `jobs.backfill_evaluations` skips rows that already have ratios, so it does not recompute history; recompute tooling is not written yet.
+- `/alerts/check` takes `is_compliant` from the caller and iterates every user's watchlist entries; nothing in the scheduled jobs triggers flip detection.
+- `etl/financial_data_processor.py::_detect_scale` uses substring checks that can mis-scale values; `liquid_assets` is mapped from "current assets".
+- `market_data/indian_api.py::_get_stock_payload` is cached for the process lifetime, including failures.
+- `ui/lib/api.ts::callAnalysis` always calls the paid `/narrate`, so free users' manual analysis errors after `/halal-score` succeeds.
+- The rate limiter is per process (see above).
+
+---
+
+## Repository structure
+
+```
+api/              FastAPI app (api/app.py) and security helpers (api/security.py)
+alerts/           watchlist storage, flip engine, email notifier
+config/           environment helpers and logging config
+crawler/          BSE announcements fetcher (NSE fetcher exists, unused)
+database/         schema.sql, database manager, dated migrations/
+Documentations/   charter PDF and planning notes
+docs/             handover, decisions, architecture, threat and failure notes
+etl/              financial data processor and MinIO client
+halallens-mobile/ Flutter platform scaffold (no Dart source)
+jobs/             ingestion, evaluation and scheduler entry points
+market_data/      Indian Stock API and Bhavcopy resolution
+monitoring/       ops notifier and metrics
+narrator/         rule-based narrator and optional best-effort LLM narrator
+ratio_engine/     ratio math, verdict, summary, amount coercion
+scripts/          run_migrations.sh and helpers
+tests/            pytest suite
+tools/            preflight, probes, metrics inspector, load test
+ui/               Next.js 14 dashboard (static export) and jest tests
+```
+
+## Contributing
+
+Use Conventional Commit titles (`fix:`, `feat:`, `docs:`, `ci:`), keep one logical change per PR, and never commit secrets, keys or `.env` files. New environment variables go in `.env.example`; schema changes need a dated file in `database/migrations/` *and* an update to `database/schema.sql`. Changes to ratio logic need a row in the golden table in `tests/test_ratio_engine.py`.
+
+## License
+
+[MIT](LICENSE)

@@ -1,0 +1,33 @@
+# ROLLBACK
+
+How to undo a change. The risky ones first.
+
+## Last known good
+- `main` before the verdict fix: commit `63432a2` (a Dependabot update on top of PR #75). Tags: none yet (release-please creates `v0.x` on the first release PR).
+- Note the commit/tag before every risky deploy.
+
+## Rolling back the verdict-engine change (PR #87)
+**Code:** revert the squash commit on `main` (`git revert <sha>`, via a PR), rebuild images, redeploy. There is no schema change in #87, so no down-migration.
+
+**Data (the real risk):** the new engine does not rewrite stored evaluations by itself, but new evaluations (ingestion, `/filings/{symbol}`) use the new logic. After PR-B's recompute runs, rows are overwritten in place (`filing_evaluations` is keyed by `(symbol, filing_date)`).
+1. Before any recompute: export `filing_evaluations` (and the inputs used) to CSV / `pg_dump --table`; PR-B writes a before/after CSV in dry-run.
+2. To go back after a recompute: restore the table from that export.
+3. Re-check afterwards: `GET /filings/{symbol}` for a few symbols, the dashboard badges, `/ops/metrics`.
+
+## Controlled cutover (activation) and its rollback
+1. Caddy returns 503 on screening routes (keep the Razorpay webhook reachable); pause `ingestion` and `evaluation` schedulers; keep `/alerts/check` off; set `NARRATOR_MODE=rule_based`.
+2. Deploy API and UI together (UI before or with the API; the old UI renders `null` as "Non-compliant").
+3. Run the reviewed recompute from the dry-run export; verify coverage and that `verdict` and `is_compliant` agree on every row.
+4. Clear the in-process narration cache (restart the API); lift maintenance only after verification.
+**Rollback:** keep maintenance on, redeploy the previous images, restore the exported table, then lift maintenance.
+
+## Other changes
+| Change | How to undo |
+| ------ | ----------- |
+| CI / Dependabot / release-please (PR #74, #75) | Revert the PR; a ruleset can be edited or disabled in repo settings |
+| Dependency cleanup (PR #74) | Revert; `Pipfile.lock` restores the old pins (re-adding torch is a multi-GB image) |
+| Release created by release-please | Delete the GitHub Release and tag; revert the release PR commit |
+| Docs-only PRs | Revert |
+
+## Prefer a switch over a deploy
+There is no feature flag for the verdict. The safest brake is to keep the new engine un-deployed outside the cutover window.

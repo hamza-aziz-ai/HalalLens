@@ -1,6 +1,6 @@
 # HalalLens Mobile (Flutter)
 
-This is the native Flutter client for HalalLens.
+> **Scaffold only.** This directory holds the Flutter platform runners (`android/`, `ios/`, `macos/`, ...), `pubspec.yaml` and a template test. There is **no `lib/` Dart source** (it was never committed), so the app cannot build or run yet. The instructions below describe the intended setup.
 
 ## Setup
 

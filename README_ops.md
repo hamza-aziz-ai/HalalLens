@@ -12,14 +12,14 @@ This guide captures day‑to‑day operations for running HalalLens in a pilot o
 | `OPS_*` | Ops alerting (SMTP + Slack). See README for full list. |
 | `HALAL_LOG_ROOT` | Where component logs live (default `./logs`). |
 | `LOG_LEVEL` | `DEBUG` / `INFO`. Set globally or per service. |
-| `NARRATOR_*`, `LLM_*` | LLM narrator configuration (optional). |
+| `NARRATOR_*`, `LLM_*` | Narrator configuration. Default `NARRATOR_MODE=rule_based`. In `llm` mode the model is asked only about conclusive verdicts and its text is best-effort (UI marks it AI-generated); `tools/preflight.py` requires the endpoint to be reachable in that mode. |
 
 Store secrets in a `.env` file, Docker secrets, or whichever secret manager your platform provides. Rotate them periodically; when rotating DB passwords, restart API + ingestion containers to pick up the new values.
 
 ### Deployment quick-start
 
-1. Provision a host with Docker Compose v2. If you plan to run Ollama/vLLM locally, make sure a compatible GPU (CUDA 12+) is available and expose the service on `0.0.0.0`.
-2. Prepare external Postgres + MinIO/S3 endpoints (or reuse existing ones). Populate `.env` from `.env.example` with all `POSTGRES_*`, `MINIO_*`, `INDIAN_API_*`, `OPS_*`, and `LLM_*` values.
+1. Provision a host with Docker Compose v2. No GPU or LLM server is needed for the default rule-based narration; an LLM server is only needed if you set `NARRATOR_MODE=llm` (a compatible GPU if you self-host it).
+2. Prepare external Postgres + MinIO/S3 endpoints (or reuse existing ones). Populate `.env` from `.env.example` with all `POSTGRES_*`, `MINIO_*`, `INDIAN_API_*`, `OPS_*`, and (only for the LLM narrator) `NARRATOR_MODE` / `LLM_*`.
 3. Launch the stack:
 
    ```bash
@@ -29,17 +29,16 @@ Store secrets in a `.env` file, Docker secrets, or whichever secret manager your
 4. Verify:
 
    ```bash
-   curl http://192.168.1.9:8001/health
-   curl http://192.168.1.9:8001/ops/metrics
+   curl http://<api-host>:8001/health
+   curl http://<api-host>:8001/ops/metrics   # admin session required
    ```
 
-5. Start the ingestion scheduler (systemd or `docker compose run --rm ingestion`). Monitor GPU narrator hosts via `curl http://host.docker.internal:11434/health`.
+5. Start the ingestion scheduler (systemd or `docker compose run --rm ingestion`). Watch `/ops/metrics` and the ingestion heartbeat for failures.
 
 ## 2. Schema migrations
 
 1. Pull latest `main`.
-2. Apply any new files in `database/migrations/` using `psql` against your Postgres instance:  
-   `psql -h <host> -U <user> -d Halal-Lens -f database/migrations/<timestamp>_<name>.sql`
+2. Apply any new files in `database/migrations/` in chronological order. `scripts/run_migrations.sh` does this and records applied files in `schema_migrations` (set `DATABASE_URL`, or `POSTGRES_*`). A single file can also be applied with `psql -h <host> -U <user> -d <db> -f database/migrations/<timestamp>_<name>.sql`.
 3. Restart the API if columns changed.
 
 Never skip migrations; the backend expects the schema to match.
@@ -56,14 +55,15 @@ Never skip migrations; the backend expects the schema to match.
 
 ### Manual backfill
 
-To ingest specific ranges (e.g., newly added AAOIFI fields):
+To ingest a date range:
 
 ```bash
 pipenv run python -m jobs.ingest_bse --from-date 20251009 --to-date 20251009 --save-cache
-pipenv run python -m jobs.backfill_evaluations --from-date 20251009 --to-date 20251009
 ```
 
 `--save-cache` stores raw JSON in `cache/` for audits; clean it when finished.
+
+**Evaluations.** `jobs.backfill_evaluations` has no date flags: it takes the most recent filings (default 500) and only fills in rows that have **no ratios yet**. It does **not** recompute stored evaluations, so it cannot repair verdicts produced by older ratio logic. Recompute/dry-run tooling is not written yet; until it exists, treat stored verdicts from before the engine change as stale (see `docs/ROLLBACK.md`).
 
 ## 4. Logs & monitoring
 
@@ -86,7 +86,7 @@ pipenv run python -m jobs.backfill_evaluations --from-date 20251009 --to-date 20
     ```yaml
     - job_name: halallens_ingestion
       static_configs:
-        - targets: [192.168.1.9]
+        - targets: [<host>]
           labels:
             __path__: /home/halal/logs/metrics/ingestion_metrics.jsonl
             job: halallens-ingestion
@@ -109,7 +109,7 @@ pipenv run python -m jobs.backfill_evaluations --from-date 20251009 --to-date 20
 - You can verify the persistence by running:
 
   ```bash
-  curl "http://192.168.1.9:8001/filings/TCS?refresh=true"
+  curl -H "Authorization: Bearer <paid-session-token>" "http://<api-host>:8001/filings/TCS?refresh=true"
   psql -X -U $POSTGRES_USER -d $POSTGRES_DB -c \
       "SELECT symbol, filing_date, confidence FROM announcements ORDER BY filing_date DESC LIMIT 3;"
   ```
@@ -132,7 +132,7 @@ pipenv run python -m jobs.backfill_evaluations --from-date 20251009 --to-date 20
 
    ```bash
    pipenv run python -m jobs.ingest_bse --from-date 20241101 --to-date 20241107 --save-cache
-   pipenv run python -m jobs.backfill_evaluations --from-date 20241101 --to-date 20241107
+   pipenv run python -m jobs.precompute_evaluations --lookback-days 30   # evaluate filings that still need one
    ```
 
 2. Watch `logs/ingestion/` for errors; resolve missing market data by re-running just the affected symbols.
@@ -154,11 +154,10 @@ Keep this runbook alongside `README.md`; update both whenever operational requir
 - `GET /health` returns `{"status": "ok"}` – verifies FastAPI + DB connectivity.  
 - Scheduler heartbeat: check `/tmp/ingestion_heartbeat.txt` timestamp (or your custom path).  
 - Persistent Indian API failures: inspect `logs/market_data/` and consider adjusting API rate limits, refreshing the key, or falling back to Bhavcopy-only mode temporarily.  
-- LLM narration errors: confirm Ollama/vLLM endpoint reachable from containers (`curl http://host.docker.internal:11434/health`).  
+- `preflight` fails with an LLM endpoint error: the LLM endpoint is unreachable while `NARRATOR_MODE=llm`. Fix the endpoint or set `NARRATOR_MODE=rule_based`. Narration errors fall back to the rule-based narrator and show up in `/ops/metrics`.
 - Feedback queue empty but users reported issues: check `logs/api/.../api.log` for errors around `/feedback` endpoints.
 
 ## 10. Mobile app notes
 
-- The Flutter app lives in `halallens-mobile/` and expects `HALALLENS_API_BASE_URL` pointing to a LAN-accessible API origin (avoid `localhost` on device).
-- Google SSO deep-link return uses `halallens://auth/login` via `/auth/google/start?redirect=halallens://auth/login`.
-- If SSO redirects fail on mobile, verify the Android intent filter and iOS URL scheme are present in the app manifests.
+- `halallens-mobile/` is a Flutter **platform scaffold only**: it has no `lib/` Dart source and cannot build. There is no mobile client to operate.
+- The API still accepts the `halallens://auth/login` redirect on `/auth/google/start` for a future app.
