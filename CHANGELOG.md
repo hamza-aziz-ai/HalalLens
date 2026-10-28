@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.2](https://github.com/hamza-aziz-ai/HalalLens/compare/v0.2.1...v0.2.2) (2026-10-28)
+
+
+### Bug Fixes
+
+* **ui:** drop the unwired GitHub Pages deployment and the LAN-address API fallback ([#123](https://github.com/hamza-aziz-ai/HalalLens/issues/123)) ([7ae29b7](https://github.com/hamza-aziz-ai/HalalLens/commit/7ae29b73f441107afb5b3334d43e4663fa813ec8))
+
 ## [0.2.1](https://github.com/hamza-aziz-ai/HalalLens/compare/v0.2.0...v0.2.1) (2026-10-28)
 
 
