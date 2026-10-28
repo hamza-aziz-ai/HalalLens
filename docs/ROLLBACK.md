@@ -22,12 +22,12 @@ How to undo a change. The risky ones first.
 **Rollback:** keep maintenance on, redeploy the previous images, restore the exported table, then lift maintenance.
 
 ## Other changes
-| Change | How to undo |
-| ------ | ----------- |
-| CI / Dependabot / release-please (PR #74, #75) | Revert the PR; a ruleset can be edited or disabled in repo settings |
-| Dependency cleanup (PR #74) | Revert; `Pipfile.lock` restores the old pins (re-adding torch is a multi-GB image) |
-| Release created by release-please | Delete the GitHub Release and tag; revert the release PR commit |
-| Docs-only PRs | Revert |
+| Change                                         | How to undo                                                                        |
+|------------------------------------------------|------------------------------------------------------------------------------------|
+| CI / Dependabot / release-please (PR #74, #75) | Revert the PR; a ruleset can be edited or disabled in repo settings                |
+| Dependency cleanup (PR #74)                    | Revert; `Pipfile.lock` restores the old pins (re-adding torch is a multi-GB image) |
+| Release created by release-please              | Delete the GitHub Release and tag; revert the release PR commit                    |
+| Docs-only PRs                                  | Revert                                                                             |
 
 ## Prefer a switch over a deploy
 There is no feature flag for the verdict. The safest brake is to keep the new engine un-deployed outside the cutover window.

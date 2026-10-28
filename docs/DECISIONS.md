@@ -39,9 +39,9 @@ One entry per decision, newest last. Model for every entry below: Claude Sonnet 
 - **Why superseded:** the bypass removed an advertised feature without the maintainer deciding it. See D-010.
 
 ## D-005: One shared `coerce_amount` for untrusted numbers
-- **Chosen:** `ratio_engine/amounts.py`; bool, NaN/inf and underflowing strings become unknown, exact zeros stay zero. API, jobs, ETL, vendor mapper and cache runner delegate to it.
+- **Chosen:** `ratio_engine/amounts.py`; bool, NaN/inf and under-flowing strings become unknown, exact zeros stay zero. API, jobs, ETL, vendor mapper and cache runner delegate to it.
 - **Why:** Repo rule: fix once in the shared function. A boolean became a verified zero income in four places.
-- **Trade-off:** Behaviour changes for malformed inputs (now unknown). Numeric JSON literals already decoded to 0.0 are outside the guarantee.
+- **Trade-off:** Behavior changes for malformed inputs (now unknown). Numeric JSON literals already decoded to 0.0 are outside the guarantee.
 
 ## D-006: `main` is protected by a ruleset; auto-merge is narrow
 - **Chosen:** PR + `backend`/`ui`/`secrets` required, squash only, owner bypass. Auto-merge only for Dependabot minor/patch of GitHub Actions and UI dev deps.

@@ -56,4 +56,4 @@ With the database populated, restart the FastAPI service (`pipenv run uvicorn ap
 
 ## 4. UI hookups
 
-The Next.js dashboard calls the API directly to render recent filings—set `NEXT_PUBLIC_HALAL_API_BASE_URL` in `ui/.env.local` to point at the backend. Components in `ui/components/` provide ratio/narration rendering; you can extend them to include a filings list that auto-populates the analyzer form.
+The Next.js dashboard calls the API directly to render recent filings—set `NEXT_PUBLIC_HALAL_API_BASE_URL` in `ui/.env.local` to point at the backend. Components in `ui/components/` provide ratio/narration rendering; you can extend them to include a filings list that autopopulates the analyzer form.

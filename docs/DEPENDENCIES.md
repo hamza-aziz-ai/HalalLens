@@ -3,19 +3,19 @@
 Every dependency, why it is here, and who maintains it. New entries need a reason before they are added. Maintainer names are from general knowledge and **unverified**; check the package page before relying on them. Versions are pinned by hash in `Pipfile.lock` / `ui/package-lock.json`.
 
 ## Python runtime (`Pipfile [packages]`, 12)
-| Package | Why | Imported by | Note |
-| ------- | --- | ----------- | ---- |
-| fastapi, uvicorn | HTTP API and server | `api/` | |
-| psycopg2-binary | Postgres driver | `database/` | |
-| requests | HTTP client for vendor/BSE/Razorpay-adjacent calls | `api/`, `crawler/`, `etl/`, `market_data/`, `monitoring/`, `narrator/`, `tools/` | |
-| python-dotenv | load `.env` | `config/` | |
-| lxml | XBRL/XML parsing | `etl/` | |
-| minio | PDF object storage | `etl/` | |
-| pandas | tabular handling | `database/database_manager.py`, `market_data/bhavcopy.py` | pulls numpy; also required by camelot |
-| camelot-py (2.0.0) | PDF table extraction | `etl/financial_data_processor.py` | needs only `pypdfium2`; `ghostscript` is an optional extra we do not use |
-| pdfminer-six | PDF text extraction | `etl/` | declared explicitly; also brings `cryptography` |
-| cloudscraper | session handling for the NSE fetcher | `crawler/nse_ann.py` only | that crawler is not called anywhere: candidate for removal |
-| fake-useragent | rotating User-Agent | `crawler/nse_ann.py` only | same unused NSE fetcher: candidate for removal with cloudscraper |
+| Package            | Why                                                | Imported by                                                                      | Note                                                                     |
+|--------------------|----------------------------------------------------|----------------------------------------------------------------------------------|--------------------------------------------------------------------------|
+| fastapi, uvicorn   | HTTP API and server                                | `api/`                                                                           |                                                                          |
+| psycopg2-binary    | Postgres driver                                    | `database/`                                                                      |                                                                          |
+| requests           | HTTP client for vendor/BSE/Razorpay-adjacent calls | `api/`, `crawler/`, `etl/`, `market_data/`, `monitoring/`, `narrator/`, `tools/` |                                                                          |
+| python-dotenv      | load `.env`                                        | `config/`                                                                        |                                                                          |
+| lxml               | XBRL/XML parsing                                   | `etl/`                                                                           |                                                                          |
+| minio              | PDF object storage                                 | `etl/`                                                                           |                                                                          |
+| pandas             | tabular handling                                   | `database/database_manager.py`, `market_data/bhavcopy.py`                        | pulls numpy; also required by camelot                                    |
+| camelot-py (2.0.0) | PDF table extraction                               | `etl/financial_data_processor.py`                                                | needs only `pypdfium2`; `ghostscript` is an optional extra we do not use |
+| pdfminer-six       | PDF text extraction                                | `etl/`                                                                           | declared explicitly; also brings `cryptography`                          |
+| cloudscraper       | session handling for the NSE fetcher               | `crawler/nse_ann.py` only                                                        | that crawler is not called anywhere: candidate for removal               |
+| fake-useragent     | rotating User-Agent                                | `crawler/nse_ann.py` only                                                        | same unused NSE fetcher: candidate for removal with cloudscraper         |
 
 Dev: `pytest`, `pandas-stubs`.
 

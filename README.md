@@ -11,14 +11,14 @@
 
 ## What it does
 
-| Area | What exists today |
-| ---- | ----------------- |
-| **Screening** | `ratio_engine/` computes five ratios per filing and returns one verdict: `compliant`, `non-compliant` or `insufficient-data`. |
-| **Explain-Why** | Rule-based by default. An optional LLM narrator (`NARRATOR_MODE=llm`) is used only for conclusive verdicts and only if its text passes a best-effort consistency check; the badge and ratio table always show the engine's verdict. Unknown results are always narrated by the rule-based narrator. |
-| **Alerts** | File-backed watchlists and a compliance-flip engine; email delivery through SMTP. `/alerts/check` is a paid route that still trusts a caller-supplied verdict (see [Known limitations](#known-limitations)). |
-| **Filings ingestion** | BSE announcements crawler, PDF capture in MinIO, Camelot tables plus XBRL/JSON parsing, Indian Stock API and Bhavcopy market data. |
-| **API + UI** | FastAPI service (`/docs` lists every route) and a Next.js 14 static-export dashboard. |
-| **Accounts + billing** | Email/password and Google SSO, hashed opaque session tokens, Razorpay orders with idempotent webhooks, trials. |
+| Area                   | What exists today                                                                                                                                                                                                                                                                                   |
+|------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| **Screening**          | `ratio_engine/` computes five ratios per filing and returns one verdict: `compliant`, `non-compliant` or `insufficient-data`.                                                                                                                                                                       |
+| **Explain-Why**        | Rule-based by default. An optional LLM narrator (`NARRATOR_MODE=llm`) is used only for conclusive verdicts and only if its text passes a best-effort consistency check; the badge and ratio table always show the engine's verdict. Unknown results are always narrated by the rule-based narrator. |
+| **Alerts**             | File-backed watchlists and a compliance-flip engine; email delivery through SMTP. `/alerts/check` is a paid route that still trusts a caller-supplied verdict (see [Known limitations](#known-limitations)).                                                                                        |
+| **Filings ingestion**  | BSE announcements crawler, PDF capture in MinIO, Camelot tables plus XBRL/JSON parsing, Indian Stock API and Bhavcopy market data.                                                                                                                                                                  |
+| **API + UI**           | FastAPI service (`/docs` lists every route) and a Next.js 14 static-export dashboard.                                                                                                                                                                                                               |
+| **Accounts + billing** | Email/password and Google SSO, hashed opaque session tokens, Razorpay orders with idempotent webhooks, trials.                                                                                                                                                                                      |
 
 Not built: GCC or mutual-fund coverage, NSE crawling (`crawler/nse_ann.py` exists but nothing calls it), RAG/vLLM serving, SES/Celery alert delivery, and the Flutter app's Dart source (`halallens-mobile/` is a platform scaffold with no `lib/`, so it cannot build).
 
@@ -28,13 +28,13 @@ Not built: GCC or mutual-fund coverage, NSE crawling (`crawler/nse_ann.py` exist
 
 For each filing the engine computes five ratios and compares each against a configured cap:
 
-| Ratio | Cap | Basis |
-| ----- | --- | ----- |
-| Total debt / market cap | 30% | AAOIFI SS21 (uses *total* debt, not only interest-bearing) |
+| Ratio                             | Cap | Basis                                                           |
+|-----------------------------------|-----|-----------------------------------------------------------------|
+| Total debt / market cap           | 30% | AAOIFI SS21 (uses *total* debt, not only interest-bearing)      |
 | Cash and equivalents / market cap | 30% | AAOIFI SS21 (uses all cash, not only interest-bearing deposits) |
-| Non-permissible income / revenue | 5% | AAOIFI SS21 |
-| Accounts receivable / market cap | 67% | **not backed by SS21**, kept as configured |
-| Liquid assets / market cap | 49% | **not backed by SS21**, kept as configured |
+| Non-permissible income / revenue  | 5%  | AAOIFI SS21                                                     |
+| Accounts receivable / market cap  | 67% | **not backed by SS21**, kept as configured                      |
+| Liquid assets / market cap        | 49% | **not backed by SS21**, kept as configured                      |
 
 Verdict rule (`ratio_engine/engine.py`, one place; nothing else re-derives it):
 
@@ -118,12 +118,12 @@ Create a Google "Web application" OAuth client, then set `GOOGLE_CLIENT_ID`, `GO
 
 `/docs` (FastAPI OpenAPI) is the route reference. Every route has a tier:
 
-| Tier | Who | Routes |
-| ---- | --- | ------ |
-| **Public** | anyone (rate limited per IP) | `/health`, `/halal-score`, `/filings/recent`, `POST /feedback`, `GET /feedback/status/{token}`, `/billing/plans`, `/auth/*`, `/webhooks/razorpay` |
-| **Authenticated** | any signed-in user | `/auth/me`, `/auth/logout`, `/market-data/{symbol}`, `/billing/trial`, `/billing/razorpay/*`, `/billing/cancel` |
-| **Paid** | active or trialing subscription | `/narrate`, `/watchlist*`, `/alerts/check`, `/filings/{symbol}/history`, `/filings/{symbol}?refresh=true` |
-| **Admin** | `is_admin`, seeded from `ADMIN_EMAILS` | `GET/PATCH /feedback`, `/feedback/{id}/events`, `/governance/*`, `/ingestion/stats`, `/ops/metrics` |
+| Tier              | Who                                    | Routes                                                                                                                                            |
+|-------------------|----------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------|
+| **Public**        | anyone (rate limited per IP)           | `/health`, `/halal-score`, `/filings/recent`, `POST /feedback`, `GET /feedback/status/{token}`, `/billing/plans`, `/auth/*`, `/webhooks/razorpay` |
+| **Authenticated** | any signed-in user                     | `/auth/me`, `/auth/logout`, `/market-data/{symbol}`, `/billing/trial`, `/billing/razorpay/*`, `/billing/cancel`                                   |
+| **Paid**          | active or trialing subscription        | `/narrate`, `/watchlist*`, `/alerts/check`, `/filings/{symbol}/history`, `/filings/{symbol}?refresh=true`                                         |
+| **Admin**         | `is_admin`, seeded from `ADMIN_EMAILS` | `GET/PATCH /feedback`, `/feedback/{id}/events`, `/governance/*`, `/ingestion/stats`, `/ops/metrics`                                               |
 
 `/halal-score` and `/narrate` return `is_compliant` (`true`, `false` or `null`) and `screen_verdict` (`compliant`, `non-compliant`, `insufficient-data`). **`null` is not `false`.**
 

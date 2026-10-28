@@ -4,15 +4,15 @@ This guide captures day‑to‑day operations for running HalalLens in a pilot o
 
 ## 1. Secrets & environment
 
-| Variable | Purpose |
-| -------- | ------- |
-| `POSTGRES_*` | Database host, db name, user, password. Use external Postgres; Docker compose connects via `host.docker.internal`. |
-| `MINIO_*` | MinIO credentials if you override defaults from `jobs/ingest_bse.py`. |
-| `INDIAN_API_BASE_URL`, `INDIAN_API_KEY` | Indian Stock Market API endpoint + token for live market data/metrics. |
-| `OPS_*` | Ops alerting (SMTP + Slack). See README for full list. |
-| `HALAL_LOG_ROOT` | Where component logs live (default `./logs`). |
-| `LOG_LEVEL` | `DEBUG` / `INFO`. Set globally or per service. |
-| `NARRATOR_*`, `LLM_*` | Narrator configuration. Default `NARRATOR_MODE=rule_based`. In `llm` mode the model is asked only about conclusive verdicts and its text is best-effort (UI marks it AI-generated); `tools/preflight.py` requires the endpoint to be reachable in that mode. |
+| Variable                                | Purpose                                                                                                                                                                                                                                                      |
+|-----------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `POSTGRES_*`                            | Database host, db name, user, password. Use external Postgres; Docker compose connects via `host.docker.internal`.                                                                                                                                           |
+| `MINIO_*`                               | MinIO credentials if you override defaults from `jobs/ingest_bse.py`.                                                                                                                                                                                        |
+| `INDIAN_API_BASE_URL`, `INDIAN_API_KEY` | Indian Stock Market API endpoint + token for live market data/metrics.                                                                                                                                                                                       |
+| `OPS_*`                                 | Ops alerting (SMTP + Slack). See README for full list.                                                                                                                                                                                                       |
+| `HALAL_LOG_ROOT`                        | Where component logs live (default `./logs`).                                                                                                                                                                                                                |
+| `LOG_LEVEL`                             | `DEBUG` / `INFO`. Set globally or per service.                                                                                                                                                                                                               |
+| `NARRATOR_*`, `LLM_*`                   | Narrator configuration. Default `NARRATOR_MODE=rule_based`. In `llm` mode the model is asked only about conclusive verdicts and its text is best-effort (UI marks it AI-generated); `tools/preflight.py` requires the endpoint to be reachable in that mode. |
 
 Store secrets in a `.env` file, Docker secrets, or whichever secret manager your platform provides. Rotate them periodically; when rotating DB passwords, restart API + ingestion containers to pick up the new values.
 

@@ -17,7 +17,7 @@ Engine-owned three-state verdict (`REQUIRED_RATIOS`, strict income), exact Decim
 ## Verification
 - `pytest`: 503 passed; golden table rows for each missing/invalid input and for exact boundaries.
 - Four-job parity tests (old derivations fail them for the insufficient case when loaded from `main`).
-- Real ETL parser -> engine with boolean/underflowing fields -> `insufficient-data`.
+- Real ETL parser → engine with boolean/underflowing fields -> `insufficient-data`.
 - Not verified: production data; GitHub Actions on the final commit beyond the green run.
 
 ## Log

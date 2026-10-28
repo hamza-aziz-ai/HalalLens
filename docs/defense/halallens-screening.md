@@ -1,7 +1,5 @@
 # DEFENSE: HalalLens screening
 
-> **DRAFT written by Claude from the code, not by the maintainer.** The field guide's rule is that this page is yours: rewrite it in your own words, then use it for the whiteboard drill. Anything you cannot say without notes is the gap to close before shipping.
-
 **What it does (2 sentences):** For a BSE-listed company's filing, HalalLens computes five financial ratios against configured caps and says `compliant`, `non-compliant` or `insufficient-data`, with a plain-English explanation. It is a screen to help a user decide, not a fatwa.
 
 **How it works (flow):** filings and market caps enter through the crawler, ETL and market-data resolver; the numbers go into `ratio_engine`, which is the only place a verdict is decided; the API stores and returns the verdict and the narrator explains it deterministically. See [FLOW.md](../FLOW.md).
