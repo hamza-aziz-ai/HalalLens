@@ -32,3 +32,4 @@ None. `ratio_engine/amounts.py` uses only the standard library (`decimal`, `math
 - Names only live in `.env.example`; values live in `.env` (untracked) and the host's secret store.
 - Rotated by the maintainer after the 2026-10-21 history purge. Still to confirm by the maintainer: Razorpay test key and webhook secret, PEM key pair on all hosts, Postgres and MinIO credentials.
 - Never paste a secret value into docs, PRs, commits or chat. gitleaks scans every PR.
+- GitHub Actions secrets on the repo: `RELEASE_PLEASE_TOKEN` (fine-grained, this repo only, Contents + Pull requests read/write; used by `release-please.yml`; set 2026-10-28, renew before it expires) and `CLAUDE_CODE_OAUTH_TOKEN` (left by Claude Code's GitHub App setup on 2026-05-19; **no workflow uses it**; kept by the maintainer's choice; delete it and revoke the token before selling or handing over the repo).
