@@ -5,8 +5,8 @@ What must pass before a change counts as done. Paste real output into the PR; "t
 ## Commands
 
 ```bash
-pipenv run pytest                                # backend; CI runs the same command
-cd ui && npm ci && npm run lint && npm test && npm run build
+pipenv run pytest --cov                          # backend + coverage floor; CI runs the same (plus `pipenv run pip check`)
+cd ui && npm ci && npm run lint && npm test -- --coverage && npm run build
 docker build -f api.Dockerfile -t halal-lens-api:check .     # when Pipfile, Dockerfiles or .dockerignore change
 docker run --rm -v "$PWD:/repo:ro" ghcr.io/gitleaks/gitleaks:latest git /repo --no-banner --redact   # secrets over history
 ```
@@ -14,13 +14,32 @@ docker run --rm -v "$PWD:/repo:ro" ghcr.io/gitleaks/gitleaks:latest git /repo --
 **Pass looks like:** `pytest` ends with `N passed` and no failures (503 at the time of PR #87); jest `Test Suites: 7 passed`; lint `No ESLint warnings or errors`; `next build` finishes; gitleaks `no leaks found`.
 
 ## CI (required on every PR)
-`backend` (pytest), `ui` (lint, jest, build), `secrets` (gitleaks, full history). `main` cannot be merged without all three.
+`backend` (pip check, pytest with coverage), `ui` (lint, jest with coverage, build), `secrets` (gitleaks, full history). `main` cannot be merged without all three.
+
+## Coverage floors (a ratchet)
+- Backend: `.coveragerc` measures line and branch coverage over every application package, so modules no test imports count as 0%. `fail_under` is 43.5 (measured 43.58% on 2026-10-28, 512 tests).
+- UI: `ui/jest.config.cjs` counts every file in `app/`, `components/`, `lib/` and `providers/`. Thresholds: statements 13, branches 13, functions 18, lines 14 (measured 13.35 / 13.84 / 18.82 / 14.04 on 2026-10-28; the earlier 82% counted only files a test imported).
+- Raise a floor in the PR that adds the tests. Lowering one, or excluding files, needs the maintainer's review.
+- Coverage shows what ran, not what was checked: a test weakened to `assert True` keeps its coverage. It is a guard against regression, not the definition of done.
+
+## Road to CI as the only merge gate (agreed with Codex, 2026-10-28)
+Auto-merge stays held until these land, in order. "Complete enough" means every critical contract is tested across its real boundary, and representative regressions are shown to fail CI.
+1. Measurement: coverage floors above, `pip check`, unused `zod` removed.
+2. HTTP and security contracts: `TestClient(app)` with lifespan; route-tier matrix (anonymous / free / paid / admin, expired sessions, ownership, 401/403/422/429, CORS, nullable verdict JSON); a test that fails when a route has no tier; `/alerts/check` defects fixed.
+3. Billing contracts: real HMAC with dummy secrets; tampered or unsigned bodies; wrong owner, amount or currency; duplicate and concurrent settlement; webhook vs browser ordering; trial reuse.
+4. Real SQL and migrations: disposable Postgres 14 service in CI; bootstrap, seeded prior-schema upgrade, rerun, schema comparison; integration tests selected explicitly (ordinary tests stay offline).
+5. Input to verdict: PDF/XBRL/JSON/CSV fixtures through the real parsers into the engine (ingestion runs on the request path); `_detect_scale` fixed with a regression test; one success and one failure cycle per scheduler.
+6. UI: Jest contracts for `lib/api.ts` and auth/billing helpers, every verdict state; a small Playwright smoke on the served static export.
+7. Packaging: build the three Docker images; container smoke (startup, `/openapi.json`, a real screening request).
+8. Merge policy: CODEOWNERS plus a code-owner-review ruleset over sensitive paths (workflows, migrations, `api/app.py`, `api/security.py`, `ratio_engine/`, tests, gate config); a fail-closed required aggregate; branch up to date with `main`; dependency review; the release token only in the `release` environment. Then a deliberate-regression exercise and live enforcement tests, then activation.
+
+What CI cannot catch even then: behaviour no test asserts, vendor/Razorpay/Google API changes, production-data effects, performance, supply-chain malice.
 
 ## What the tests prove (and do not)
 - `tests/test_ratio_engine.py`: golden verdict table (boundaries at exactly 30%/5%, each missing input, each invalid input), exact-decimal edge cases.
 - `tests/test_job_verdicts.py`: all four jobs persist the engine's verdict pair; real adapters reject booleans. **Stubs** patch market lookup (and the BSE mapper in the persistence test).
 - `tests/test_amounts.py`: every converter x unusable/known values; real ETL parser -> engine; API payload rejection; thresholds; market-cap handling.
-- `tests/test_api_endpoints.py`: handlers without HTTP; final-pair parity for persistent and transient records.
+- `tests/test_api_endpoints.py`: handlers without HTTP (routing, auth dependencies, middleware and CORS are not exercised yet: step 2 above); final-pair parity for persistent and transient records.
 - They do **not** prove production data behaviour, the deployed UI, or the GitHub Actions environment.
 
 ## Manual path a customer would take (before activating a new engine)
