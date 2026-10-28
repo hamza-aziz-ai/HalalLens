@@ -21,7 +21,7 @@ import pytest
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
-from alerts import WatchlistStorage
+from alerts import AlertEngine, WatchEntry, WatchlistStorage
 from api.security import RateLimitRule, hash_session_token
 
 api_module = importlib.import_module("api.app")
@@ -210,7 +210,10 @@ def db(monkeypatch):
 
 @pytest.fixture
 def client(db, tmp_path, monkeypatch):
-    monkeypatch.setattr(api_module, "watch_storage", WatchlistStorage(tmp_path / "watchlists.json"))
+    storage = WatchlistStorage(tmp_path / "watchlists.json")
+    # The route and the engine must share one store, as they do in app.py.
+    monkeypatch.setattr(api_module, "watch_storage", storage)
+    monkeypatch.setattr(api_module, "alert_engine", AlertEngine(storage))
     # Context manager: runs startup/shutdown (lifespan) like a real server.
     with TestClient(api_module.app, raise_server_exceptions=False) as test_client:
         yield test_client
@@ -386,3 +389,134 @@ def test_watchlist_is_scoped_to_the_session_not_the_path(client):
     # Another subscriber asking for user 2's list by path still gets only their own.
     other = _call(client, "GET", "/watchlist/user:2", token="paid-token-2").json()
     assert other == []
+
+
+# --- /alerts/check: verdict from the stored evaluation, caller-scoped ---------
+
+FILING_DATE = datetime(2026, 1, 1)
+
+
+def _stored(verdict, is_compliant, symbol="ABC"):
+    return {
+        "symbol": symbol,
+        "filing_date": FILING_DATE,
+        "verdict": verdict,
+        "is_compliant": is_compliant,
+    }
+
+
+@pytest.fixture
+def alerts(client, db, monkeypatch):
+    """Watch entries for the paid caller (user:2) and another subscriber (user:3)."""
+
+    storage = api_module.watch_storage
+    storage.upsert(WatchEntry(user_id="user:2", symbol="ABC"))
+    storage.upsert(WatchEntry(user_id="user:3", symbol="ABC", last_is_compliant=True))
+    sent = []
+    monkeypatch.setattr(api_module.email_notifier, "send", sent.append)
+    db.get_quality_issues.return_value = []
+
+    def explode(*args, **kwargs):
+        raise AssertionError("/alerts/check must not fetch or re-evaluate")
+
+    for name in ("_market_data_for_filing", "_fetch_latest_filing_from_bse", "_ensure_filing_evaluation"):
+        monkeypatch.setattr(api_module, name, explode)
+
+    def check(body=None, token="paid-token"):
+        return _call(client, "POST", "/alerts/check", body or {"symbol": "ABC"}, token)
+
+    def baseline(owner):
+        return storage.list(owner)[0].last_is_compliant
+
+    return check, baseline, sent
+
+
+def test_alert_flip_uses_the_stored_verdict_and_only_the_caller(alerts, db):
+    check, baseline, sent = alerts
+    db.get_latest_filing.return_value = _stored("compliant", True)
+    assert check().json() == []  # seeds the caller's baseline
+    assert baseline("user:2") is True
+
+    db.get_latest_filing.return_value = _stored("non-compliant", False)
+    events = check().json()
+    assert [(e["user_id"], e["symbol"]) for e in events] == [("user:2", "ABC")]
+    assert [e.user_id for e in sent] == ["user:2"]
+    # The other subscriber's baseline is never read or moved by this caller.
+    assert baseline("user:3") is True
+
+    assert check().json() == []  # unchanged verdict: no second alert
+    assert len(sent) == 1
+
+
+def test_alert_ignores_a_caller_supplied_verdict(alerts, db):
+    check, baseline, sent = alerts
+    db.get_latest_filing.return_value = _stored("compliant", True)
+    check()
+    response = check({"symbol": "ABC", "is_compliant": False})
+    assert response.status_code == 200
+    assert response.json() == [] and sent == []
+    assert baseline("user:2") is True
+
+
+@pytest.mark.parametrize(
+    "record",
+    [
+        None,  # unknown symbol
+        _stored(None, None),  # newest filing not evaluated
+        _stored("needs-review", None),
+        _stored("insufficient-data", None),
+        _stored("compliant", False),  # inconsistent pair
+        _stored("non-compliant", True),
+        _stored("compliant", None),
+    ],
+)
+def test_alert_without_a_conclusive_stored_verdict_changes_nothing(alerts, db, record):
+    check, baseline, sent = alerts
+    db.get_latest_filing.return_value = record
+    response = check()
+    assert response.status_code == 200 and response.json() == []
+    assert baseline("user:2") is None and baseline("user:3") is True
+    assert sent == []
+
+
+def test_alert_with_open_quality_issues_changes_nothing(alerts, db):
+    check, baseline, sent = alerts
+    db.get_latest_filing.return_value = _stored("non-compliant", False)
+    db.get_quality_issues.return_value = ["ratio_anomaly: debt ratio > 100%"]
+    assert check().json() == []
+    assert baseline("user:2") is None and sent == []
+
+
+@pytest.mark.parametrize("failing", ["get_latest_filing", "get_quality_issues"])
+def test_alert_lookup_failure_is_503_and_changes_nothing(alerts, db, failing):
+    check, baseline, sent = alerts
+    db.get_latest_filing.return_value = _stored("non-compliant", False)
+    getattr(db, failing).side_effect = RuntimeError("db down")
+    response = check()
+    assert response.status_code == 503
+    assert baseline("user:2") is None and baseline("user:3") is True
+    assert sent == []
+
+
+def test_alert_normalises_the_symbol_and_queries_issues_by_canonical_symbol(alerts, db):
+    check, baseline, _ = alerts
+    # An alias request: the filing comes back under its canonical symbol.
+    db.get_latest_filing.return_value = _stored("compliant", True, symbol="ABCLTD")
+    check({"symbol": "  abc "})
+    db.get_latest_filing.assert_called_with("ABC")
+    db.get_quality_issues.assert_called_with("ABCLTD", FILING_DATE)
+    assert baseline("user:2") is True
+
+
+def test_alert_blank_symbol_is_422(alerts):
+    check, _, _ = alerts
+    assert check({"symbol": "   "}).status_code == 422
+
+
+def test_alert_check_is_rate_limited_per_user(alerts, db, monkeypatch):
+    check, _, _ = alerts
+    db.get_latest_filing.return_value = None
+    monkeypatch.setattr(api_module, "RATE_LIMIT_ENABLED", True)
+    monkeypatch.setitem(api_module.RATE_LIMIT_RULES, "metered", RateLimitRule(2, 60.0))
+    assert [check().status_code for _ in range(3)] == [200, 200, 429]
+

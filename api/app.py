@@ -1949,10 +1949,14 @@ class AlertEventPayload(BaseModel):
 
 
 class AlertCheckPayload(BaseModel):
-    """Payload used to evaluate compliance flip alerts."""
+    """Payload used to evaluate compliance flip alerts.
+
+    Only the symbol: the verdict comes from the stored evaluation. A legacy
+    `is_compliant` field is accepted and ignored (extra fields are dropped),
+    never trusted.
+    """
 
     symbol: str
-    is_compliant: bool
 
 
 class FeedbackPayload(BaseModel):
@@ -3060,13 +3064,55 @@ async def check_alerts(
     the endpoint into an unauthenticated mail trigger.
     """
 
-    _require_paid_feature(authorization, "Watchlist alerts")
+    session = _require_paid_feature(authorization, "Watchlist alerts")
+    owner = _watchlist_owner(session)
+    _enforce_rate_limit("metered", owner)
+    symbol = payload.symbol.strip().upper()
+    if not symbol:
+        raise HTTPException(status_code=422, detail="symbol is required")
+
+    is_compliant = _stored_alert_verdict(symbol)
+    # Only the caller's own entries are read or moved (alerts/engine.py).
     events: List[AlertEvent] = alert_engine.process_verdict(
-        payload.symbol, payload.is_compliant
+        symbol, is_compliant, user_id=owner
     )
+    # Best-effort: the baseline is already updated and send() swallows SMTP
+    # errors, so there is no exactly-once delivery.
     for event in events:
         email_notifier.send(event)
     return [AlertEventPayload(**asdict(event)) for event in events]
+
+
+def _stored_alert_verdict(symbol: str) -> Optional[bool]:
+    """Conclusive stored verdict of the symbol's newest filing, else None.
+
+    Read-only: no vendor calls and no re-evaluation. None (no alert, baseline
+    untouched) when the newest filing has no evaluation, the stored pair is not
+    a consistent conclusive verdict, or the filing has open quality issues.
+    Lookup failures are 503, never "no issues".
+    """
+
+    db = _get_db()
+    try:
+        record = db.get_latest_filing(symbol)
+    except Exception:
+        api_logger.exception("Alert check: filing lookup failed for %s", symbol)
+        raise HTTPException(status_code=503, detail="Filing data unavailable")
+    if not record:
+        return None
+    verdict, is_compliant = record.get("verdict"), record.get("is_compliant")
+    if not (
+        (verdict == "compliant" and is_compliant is True)
+        or (verdict == "non-compliant" and is_compliant is False)
+    ):
+        return None
+    try:
+        # Canonical symbol: get_latest_filing also matches aliases.
+        issues = db.get_quality_issues(record["symbol"], record["filing_date"])
+    except Exception:
+        api_logger.exception("Alert check: quality lookup failed for %s", symbol)
+        raise HTTPException(status_code=503, detail="Filing data unavailable")
+    return None if issues else is_compliant
 
 
 class FilingResponse(BaseModel):

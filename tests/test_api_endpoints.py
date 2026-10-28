@@ -144,7 +144,7 @@ def isolated_watch_storage(tmp_path):
     yield
 
 
-def test_watchlist_and_alert_handlers(isolated_watch_storage, paid_access):
+def test_watchlist_and_alert_handlers(isolated_watch_storage, paid_access, monkeypatch):
     # The client-supplied user_id is deliberately someone else's: the handler
     # must ignore it and key the entry off the authenticated session instead.
     entry = WatchlistEntryPayload(
@@ -161,15 +161,28 @@ def test_watchlist_and_alert_handlers(isolated_watch_storage, paid_access):
     assert items[0].symbol == "INFY"
     assert items[0].user_id == "user:1"
 
-    empty_events = _run(
-        api_module.check_alerts(AlertCheckPayload(symbol="INFY", is_compliant=True))
-    )
-    assert empty_events == []
+    # The verdict comes from the stored evaluation, never from the request.
+    stored = {"verdict": "compliant", "is_compliant": True}
 
-    events = _run(
-        api_module.check_alerts(AlertCheckPayload(symbol="INFY", is_compliant=False))
-    )
+    class FilingDB:
+        def get_latest_filing(self, symbol):
+            return {"symbol": symbol, "filing_date": datetime(2026, 1, 1), **stored}
+
+        def get_quality_issues(self, symbol, filing_date):
+            return []
+
+    monkeypatch.setattr(api_module, "_get_db", lambda: FilingDB())
+    monkeypatch.setattr(api_module.email_notifier, "send", lambda event: None)
+
+    assert _run(api_module.check_alerts(AlertCheckPayload(symbol="INFY"))) == []
+    # A caller claiming a flip changes nothing: the stored verdict is unchanged.
+    spoofed = AlertCheckPayload.model_validate({"symbol": "INFY", "is_compliant": False})
+    assert _run(api_module.check_alerts(spoofed)) == []
+
+    stored.update(verdict="non-compliant", is_compliant=False)
+    events = _run(api_module.check_alerts(AlertCheckPayload(symbol="infy")))
     assert len(events) == 1
+    assert events[0].user_id == "user:1"
 
 
 class AuthDBStub:

@@ -40,7 +40,8 @@ services:
       MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:?set in .env}
       INGESTION_HEARTBEAT: /tmp/ingestion_heartbeat.txt
       INGESTION_INTERVAL_MINUTES: ${INGESTION_INTERVAL_MINUTES:-60}
-      API_WORKERS: ${API_WORKERS:-4}
+      # One worker until watchlists leave the JSON file store (.env.example).
+      API_WORKERS: ${API_WORKERS:-1}
     depends_on:
       preflight:
         condition: service_completed_successfully
@@ -50,7 +51,7 @@ services:
       [
         "sh",
         "-c",
-        "uvicorn api.app:app --host 0.0.0.0 --port 8001 --workers ${API_WORKERS:-4} --proxy-headers"
+        "uvicorn api.app:app --host 0.0.0.0 --port 8001 --workers ${API_WORKERS:-1} --proxy-headers"
       ]
     ports:
       - "8001:8001"
