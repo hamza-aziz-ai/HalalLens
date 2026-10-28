@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.0](https://github.com/hamza-aziz-ai/HalalLens/compare/v0.4.0...v0.5.0) (2026-10-28)
+
+
+### Features
+
+* **deploy:** add a Cloudflare Tunnel mode beside Caddy's own TLS ([#134](https://github.com/hamza-aziz-ai/HalalLens/issues/134)) ([0194ee3](https://github.com/hamza-aziz-ai/HalalLens/commit/0194ee3d4e7ad51801ffeb4a576c0a2a0f105b64))
+
 ## [0.4.0](https://github.com/hamza-aziz-ai/HalalLens/compare/v0.3.0...v0.4.0) (2026-10-28)
 
 
