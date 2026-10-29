@@ -28,6 +28,8 @@ How to undo a change. The risky ones first.
 | Dependency cleanup (PR #74)                    | Revert; `Pipfile.lock` restores the old pins (re-adding torch is a multi-GB image) |
 | Release created by release-please              | Delete the GitHub Release and tag; revert the release PR commit                    |
 | Docs-only PRs                                  | Revert                                                                             |
+| Billing ledger and reconciliation (D-024, D-025) | Fix forward. Migrations `20261029_subscription_grants`, `_v2_payment_refunds`, `_v3_billing_reconcile`, `_v4_refund_actions` are additive, but older code would ignore grants and refund records and overwrite access. To stop the reconciler alone: `docker compose -f docker-compose-prod.yml stop billing-reconcile` (no data is lost; it resumes from its checkpoint). |
+| Cloudflare maintenance Worker                  | Remove the `halallens.in/*` route in the Cloudflare dashboard; the site works without it |
 | Auth hardening (D-020)                         | Do not revert the code alone: the migration revoked unproven admins and every session. Fix forward; if an admin is locked out, prove the mailbox with a reset link or Google sign-in. A full revert also needs `ALTER TABLE users DROP COLUMN email_verified_at; DROP TABLE auth_tokens;` and re-setting `is_admin` by hand. |
 
 ## Prefer a switch over a deploy

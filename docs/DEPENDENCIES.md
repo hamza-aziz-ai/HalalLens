@@ -35,7 +35,11 @@ None. `ratio_engine/amounts.py` uses only the standard library (`decimal`, `math
 | @types/jest 29.5.14 | types for the Jest 29 tests | New: without it the test files failed `tsc` (70 errors), and Next 16's build type-checks them. |
 
 ## External services
-- Cloudflare R2: filing PDF storage in production (D-016), reached through the `minio` SDK's S3 API. Free tier 10 GB, free egress.
+- Cloudflare R2: filing PDF storage and Postgres backups in production (D-016), reached through the `minio` SDK's S3 API. Free tier 10 GB, free egress.
+- Cloudflare Tunnel and Workers (free plan): the tunnel connects the VM; the `halallens-maintenance` Worker (`cloudflare/maintenance-worker.js`, deployed from the dashboard) serves the maintenance page when the origin is unreachable, 100,000 requests a day, fail open.
+- Razorpay (Test Mode): orders, webhooks, and since D-025 the reconciler's GET calls and automatic refund POSTs (TEST keys only).
+- Ollama (`ollama/ollama` image) signed in to the maintainer's ollama.com account for `gpt-oss:120b-cloud` (D-022).
+- OCI Email Delivery: SMTP for sign-up, reset and ops alerts.
 
 - GitHub Container Registry and Docker Hub: published images (D-018). Docker Hub credentials are the `DOCKERHUB_TOKEN` secret in the `publish` environment.
 - Trivy (`aquasec/trivy:0.75.0` image, run in `publish-images.yml`): vulnerability scan before publishing; run as a container rather than a marketplace action to keep third-party code out of a job that holds registry credentials.
