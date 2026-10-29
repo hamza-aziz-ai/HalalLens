@@ -7,7 +7,7 @@ One page. Trust boundaries are marked **[B]**. Deeper docs: [FLOW.md](FLOW.md), 
 | Module                          | Owns                                                                                                                                    |
 |---------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------|
 | `api/app.py`, `api/security.py` | HTTP routes (public / authenticated / paid / admin), auth, billing, rate limiting                                                       |
-| `api/billing.py`, `api/razorpay_client.py` | Paid access derived from `subscription_grants` (D-024); Razorpay REST access shared by the API and the reconciler                  |
+| `api/billing.py`, `api/razorpay_client.py` | Paid access derived from `subscription_grants` (D-024; Lifetime as an overlay from its settlement), the Lifetime upgrade credit and its settlement re-check (D-030); Razorpay REST access shared by the API and the reconciler |
 | `jobs/reconcile_payments.py`    | Payment reconciler (D-025): settles payments the webhook missed, applies refunds made elsewhere, automatic refunds (TEST keys only)    |
 | `ratio_engine/`                 | The five ratios and the **only** verdict derivation (`engine.py`), `summary.py`, `amounts.py`                                           |
 | `evaluation/`                   | Shared publication overlay (`quality.py`, D-027): ratio-anomaly detector and the policy that masks the engine's pair as `needs-review` while any quality issue is open |
@@ -52,7 +52,7 @@ flowchart TB
     OLL["`**ollama**: relay only, profile llm`"]
     ING["`**ingestion** job: hourly`"]
     BKP["`**backup** job: daily`"]
-    EVAL["`**evaluation** job: every 15 min`"]
+    EVAL["`**evaluation** job: every 15 min, then alert emails`"]
     REC["`**billing-reconcile** job: every 15 min`"]
     PRE["`**preflight**, one-shot: Postgres and the R2 bucket reachable`"]
     MIG["`**migrations**, one-shot: applies pending SQL files`"]
@@ -84,7 +84,7 @@ flowchart TB
   API -->|"`LLM narration`"| OLL
   OLL --> OCL
   API <-->|"`orders and checks out; webhooks in through Cloudflare /api/ [B3]`"| RZP
-  API -->|"`sign-up, reset, flip alerts`"| MAIL
+  API -->|"`sign-up, reset`"| MAIL
   API -->|"`quotes, paid refresh [B5]`"| ISA
   API -->|"`sign-in`"| GOO
 
@@ -92,7 +92,8 @@ flowchart TB
   ING -->|"`ingestion: daily files [B5]`"| BHAV
   ING -->|"`ingestion: filing PDFs`"| R2
   ING -->|"`ingestion: announcements, snapshots, quotes`"| PG
-  EVAL -->|"`evaluation: filing_evaluations`"| PG
+  EVAL -->|"`evaluation: filing_evaluations, watch rows`"| PG
+  EVAL -->|"`evaluation: compliance-flip emails to subscribers`"| MAIL
   BKP -->|"`backup: pg_dump`"| PG
   BKP -->|"`backup: dumps under backups/postgres/`"| R2
   REC -->|"`billing-reconcile: ledger, refunds, state`"| PG
@@ -295,10 +296,10 @@ flowchart TB
     end
     subgraph BILL["`**Billing**`"]
       direction TB
-      LED[("`**1. Ledger**: razorpay_orders, payment_events, subscription_grants (authoritative)`")]
+      LED[("`**1. Ledger**: razorpay_orders (with upgrade-credit terms, D-030), payment_events, subscription_grants (authoritative)`")]
       PROJ[("`**2. Projection** on users: plan, subscription_status, subscription_renewal`")]
       RF[("`**Refunds**: payment_refunds, refund_actions`")]
-      RS[("`**Reconciler state**: billing_reconcile_state, billing_tracked`")]
+      RS[("`**Reconciler state**: billing_reconcile_state, billing_tracked (incl. credit_conflict items)`")]
       LEG[("`**user_subscriptions**: legacy, nothing writes it`")]
       LED -->|"`same transaction`"| PROJ
     end
@@ -314,13 +315,14 @@ flowchart TB
 
   subgraph VOL["`**Named volumes**: survive container replacement, not VM loss`"]
     direction TB
-    PGV[("`**postgres17_data**: the database files (postgres_data keeps the 14 files for rollback, D-029)`")]
+    PGV[("`**postgres17_data**: the database files (postgres_data keeps the 14 files for rollback until a one-time cron removes it on 2026-11-13, D-029)`")]
     CACHE[("`**api_cache**: vendor caches, Indian Stock API monthly counter`")]
     OTH[("`**logs_data, caddy_data, caddy_config, ollama_data**`")]
   end
 
   ING -->|"`filings, quotes, quality issues`"| SCR
   EVAL -->|"`evaluations, market-data issues`"| SCR
+  EVAL -->|"`flip observations, alert acknowledgements`"| ACC
   API -->|"`evaluations, overrides`"| SCR
   API -->|"`accounts, watchlists, feedback`"| ACC
   API -->|"`orders, webhook, trial`"| BILL
@@ -352,15 +354,15 @@ Key: green boxes are the containers that write; grey cylinders are Postgres doma
 | Filings and evaluations | `announcements`, `financial_snapshots`, `market_data_snapshots`, `bhavcopy_quotes`, `indianapi_snapshots`, `filing_evaluations` | ingestion (filings, Bhavcopy market snapshots, evaluations of new filings); evaluation (`filing_evaluations`, market snapshots); api (paid refresh through the Indian Stock API, evaluations, `bhavcopy_quotes` and `indianapi_snapshots` caches) | api (filing, history and alert routes, narration); evaluation (engine inputs) |
 | Inputs under review | `governance_overrides`, `data_quality_issues` | api (admin overrides; quality issues); ingestion and evaluation (quality issues, market-data failures) | api and evaluation: overrides win over extracted values for every user; an open issue makes every writer store, and every filing route return, `needs-review` (D-027) |
 | Users and auth | `users`, `user_sessions` (SHA-256 digests), `auth_tokens`, `oauth_flows` | api (sign-up, login, reset, Google sign-in) | api, on every authenticated request |
-| Billing ledger | `subscription_plans` (seeded by migrations), `razorpay_orders`, `payment_events` (unique `(provider, event_id)`), `subscription_grants` (authoritative, D-024) | api (order, verify, webhook, trial, cancel); billing-reconcile (payments the webhook missed) | api (`api/billing.py` folds the grants); billing-reconcile |
+| Billing ledger | `subscription_plans` (seeded by migrations), `razorpay_orders` (with the Lifetime pricing terms: `list_amount`, `credit_amount`, `priced_at`, `price_valid_until`, `credit_version`, `credit_detail`, `refund_due_reason`, D-030), `payment_events` (unique `(provider, event_id)`), `subscription_grants` (authoritative, D-024) | api (order, verify, webhook, trial, cancel); billing-reconcile (payments the webhook missed) | api (`api/billing.py` folds the grants and prices the upgrade credit); billing-reconcile |
 | Access projection | `users.plan`, `users.subscription_status`, `users.subscription_renewal` | Written only with a grant change, in the same per-user locked transaction | api route tiers; an expired projection is refreshed from the grants |
 | Refunds (D-025) | `payment_refunds`, `refund_actions` | api (webhook refunds, settles refund actions); billing-reconcile (refunds made elsewhere, automatic refunds with TEST keys only) | billing-reconcile; api |
-| Reconciler state (D-025) | `billing_reconcile_state`, `billing_tracked` | billing-reconcile | billing-reconcile; api (`/health/billing` heartbeat) |
+| Reconciler state (D-025) | `billing_reconcile_state`, `billing_tracked` | billing-reconcile; api and billing-reconcile open a `credit_conflict` item when they record a refund of a payment that gave upgrade credit (D-030) | billing-reconcile; api (`/health/billing` heartbeat); `credit_conflict` items only by a human |
 | Watchlists (D-019, D-031) | `watchlist_entries`, `users.alert_emails` | api (paid users, keyed by the session's user id; `/alerts/check` observes the caller's row) and the evaluation scheduler (observes every row, sends and acknowledges alert emails) | api (`/watchlist`, `/alerts/check`, `/account/alert-emails`), evaluation scheduler |
 | Feedback | `feedback_reports`, `feedback_events` | api (public create, admin triage) | api (admins; the reporter by tracking token) |
 | Legacy | `user_subscriptions` | nothing (pre-ledger, kept for history) | nothing |
 | Objects in R2 | Filing PDFs; `backups/postgres/<db>-<timestamp>.dump` | ingestion (PDFs); backup (daily `pg_dump`, deletes dumps older than 14 days after a successful upload) | restore by hand ([README_ops.md](../README_ops.md)) |
-| Named volumes | `postgres17_data` (the old `postgres_data` holds the Postgres 14 files until the upgrade retention ends, D-029), `api_cache`, `logs_data`, `caddy_data`, `caddy_config`, `ollama_data` | the container that mounts each | the same container; they survive container replacement, not the loss of the VM |
+| Named volumes | `postgres17_data` (the old `postgres_data` holds the Postgres 14 files until a one-time cron job on the server removes it on 2026-11-13, D-029), `api_cache`, `logs_data`, `caddy_data`, `caddy_config`, `ollama_data` | the container that mounts each | the same container; they survive container replacement, not the loss of the VM |
 
 ## Trust boundaries [B]
 

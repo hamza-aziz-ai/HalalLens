@@ -76,7 +76,7 @@ flowchart TB
 Key: blue is the way in, green the steps the API runs, amber a decision, purple an outcome the visitor sees, grey data and outside services. Read top to bottom; the numbers match the notes below.
 
 1. The dashboard asks for a symbol's screen. Cloudflare carries it over HTTPS through a tunnel to Caddy, which sends `/api/` to FastAPI; the API checks the route's tier (public for a cached filing, paid for a refresh). Per-IP rate limits apply to computing and account routes such as `/halal-score`, `/narrate` and sign-in, not to filing lookups.
-2. The API loads the newest filing's figures from `financial_snapshots`, with any admin governance override applied, and the market cap from its cache, the Indian Stock API or, as a fallback, the BSE Bhavcopy.
+2. The API loads the newest filing's figures from `financial_snapshots`, with any admin governance override applied, and the market cap from its cache, the Indian Stock API or, as a fallback, the BSE Bhavcopy. A figure the extractors cannot establish is stored as missing, never guessed (D-028); the prohibited-income base in particular comes only from a governance override.
 3. `RatioEngine` computes the five ratios and compares each with its cap (30% debt, 30% cash, 5% non-permissible income, 67% receivables, 49% liquid assets) in exact Decimal. It is the only place a verdict is decided; an unknown input gives `insufficient-data`, never an assumed zero.
 4. If the filing has any open data-quality issue, the shared publication overlay returns `needs-review` with `is_compliant = null`; otherwise it returns the engine's verdict. The API and the scheduled jobs save the result in `filing_evaluations` through the same path, so a stored or cached result is never conclusive while an issue is open (D-027).
 5. Explain-why is a separate paid call. In LLM mode, and only for a conclusive verdict, `gpt-oss:120b-cloud` (through Ollama) drafts the text, which is shown only if it repeats the engine's verdict and passes a best-effort guard; otherwise, or on any error, the rule-based narrator writes it. The verdict shown never comes from the model.
@@ -116,8 +116,8 @@ flowchart TB
     UI["`**ui**: Next.js static export`"]
     APIC["`**api**: FastAPI`"]
     OLC["`**ollama**: relays to the cloud model`"]
-    PG[("`**postgres**`")]
-    JOBS["`**Jobs**: migrations, ingestion, evaluation, backup, billing-reconcile`"]
+    PG[("`**postgres 17**`")]
+    JOBS["`**Jobs**: migrations, ingestion, evaluation and alert emails, backup, billing-reconcile`"]
     TUN --> CADDY
     CADDY --> UI
     CADDY --> APIC
@@ -148,6 +148,7 @@ flowchart TB
   APIC --> GOO
   JOBS -->|"`PDFs, backups`"| R2
   JOBS -->|"`reconcile`"| RZP
+  JOBS -->|"`flip alerts`"| MAIL
   OLC --> OCL
 
   classDef gh fill:#dbeafe,stroke:#1d4ed8,color:#0f172a
@@ -169,7 +170,7 @@ Key: blue is GitHub, grey the image registries, amber a person, orange Cloudflar
 1. **Build and release.** Every change arrives as a pull request with a Conventional Commit title. The `backend`, `ui`, `secrets`, `docker` and `docker-arm64` checks must pass before a squash merge into `main`; release-please then tags `vX.Y.Z`, updates `CHANGELOG.md` and publishes the GitHub Release.
 2. **Images.** The published release starts `publish-images.yml`: it waits for CI on the released commit, builds the API and UI natively for amd64 and arm64, smoke-tests them (including the Caddy routing), scans them with Trivy and pushes them with an SBOM and provenance to GHCR and, when configured, Docker Hub. A published version is never overwritten.
 3. **Deploy (Continuous Delivery, not Continuous Deployment).** Nothing reaches production on its own. The maintainer approves a release and runs `scripts/deploy.sh vX.Y.Z` on the Oracle Cloud VM, which checks out the tag, pulls its images, starts the stack and smoke-tests through Caddy; rollback is the same command with the previous tag ([docs/ROLLBACK.md](docs/ROLLBACK.md)).
-4. **On the server.** The visitor reaches Cloudflare over HTTPS; `cloudflared` holds an outbound tunnel, so the VM has no open web port. Caddy serves the dashboard at `/` and the API under `/api/`. Beside the API run Postgres, the migrations, ingestion, evaluation, backup and billing-reconcile jobs, and an Ollama relay to the cloud model. Filing PDFs and database backups go to Cloudflare R2, email to OCI Email Delivery, payments to Razorpay in test mode, sign-in to Google OAuth.
+4. **On the server.** The visitor reaches Cloudflare over HTTPS; `cloudflared` holds an outbound tunnel, so the VM has no open web port. Caddy serves the dashboard at `/` and the API under `/api/`. Beside the API run Postgres 17, the migrations, ingestion, evaluation (which also emails compliance flips to subscribers, D-031), backup and billing-reconcile jobs, and an Ollama relay to the cloud model. Filing PDFs and database backups go to Cloudflare R2, sign-up, reset and alert email to OCI Email Delivery, payments to Razorpay in test mode, sign-in to Google OAuth.
 5. **While down.** If Caddy, the tunnel or the VM is unreachable, a Cloudflare Worker shows the HalalLens maintenance page instead of Cloudflare's error; `/api/*` never passes through it. A GitHub workflow probes `/api/health` and `/api/health/billing` every 30 minutes and opens an issue when either fails.
 
 The same images run on one machine with `docker-compose.yml` against an external Postgres and MinIO ([Docker pilot](docs/guides/DOCKER.md)). Server operations, backups and secret rotation: [README_ops.md](README_ops.md).

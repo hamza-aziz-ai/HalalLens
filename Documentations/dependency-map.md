@@ -1,6 +1,6 @@
 # Halal-Lens Dependency Map
 
-This map covers the development stack in `docker-compose.yml` (five services) and its three external dependencies. `docker-compose-prod.yml` also bundles Postgres and adds `migrations`, `caddy`, `backup`, `billing-reconcile`, and the optional `cloudflared` and `ollama` services (see `docs/guides/DOCKER.md` and `README_ops.md`).
+This map covers the development stack in `docker-compose.yml` (five services) and its three external dependencies. `docker-compose-prod.yml` also bundles Postgres 17 and adds `migrations`, `caddy`, `backup`, `billing-reconcile`, and the optional `cloudflared` and `ollama` services (see `docs/guides/DOCKER.md` and `README_ops.md`).
 
 | Component | Purpose | Depends on | Health Probe |
 |-----------|---------|------------|--------------|
@@ -8,7 +8,7 @@ This map covers the development stack in `docker-compose.yml` (five services) an
 | `api` service | FastAPI app that powers the public HTTP interface and narrations. | PostgreSQL, MinIO (for PDFs). Narration is rule-based by default; an LLM is called only when `NARRATOR_MODE=llm`. | Docker health-check hits `http://api:8001/health` via `tools/http_probe.py`. |
 | `ui` service | Next.js static export served by Caddy on port 3000 (exposed as 3001 in compose). | Starts after the API is healthy. | Docker health-check runs `wget --spider http://127.0.0.1:3000/`. |
 | `ingestion` scheduler | Hourly ingestion of BSE filings and Bhavcopy market data. | PostgreSQL, MinIO; starts after the API is healthy (no HTTP calls to it). | Health probe `python -m jobs.ingestion_health` verifies the heartbeat file is updated within twice the scheduler interval. |
-| `evaluation` scheduler | Evaluates filings that have no evaluation yet (`jobs.precompute_evaluations`), every `EVALUATION_INTERVAL_MINUTES` (default 15). | PostgreSQL; starts after the API is healthy. | Health probe `python -m jobs.evaluation_health` checks its heartbeat file. |
+| `evaluation` scheduler | Evaluates filings that have no evaluation, or a newer snapshot or override (`jobs.precompute_evaluations`), every `EVALUATION_INTERVAL_MINUTES` (default 15), then emails compliance flips to subscribers when `ALERT_EMAILS_ENABLED=true` (D-031). | PostgreSQL, SMTP for alert emails; starts after the API is healthy. | Health probe `python -m jobs.evaluation_health` checks its heartbeat file. |
 | `mobile` app | Flutter platform scaffold only (no Dart source, cannot build). | n/a | n/a |
 | PostgreSQL (external) | Stores filings, ratios, watchlists, accounts and billing. | n/a | Checked by `tools/preflight.py`. |
 | MinIO (external) | Holds cached PDFs (Cloudflare R2 in production). | n/a | Checked by `tools/preflight.py`. |

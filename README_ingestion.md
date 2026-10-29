@@ -30,7 +30,7 @@ Options:
 - `--download-dir`, `--cache-dir`: override default directories if needed.
 - `--category`: pass BSE category filters (default `-1` for all).
 
-Successful runs will log the number of announcements inserted, snapshots stored, and processor stats.
+Successful runs will log the number of announcements inserted, snapshots stored, and processor stats. A figure the extractor cannot establish is stored as missing, never guessed (D-028; the rules are in `docs/guides/SCREENING.md`), and new filings are evaluated through the shared publication path (D-027).
 
 BSE answers 403 to the production server (an Oracle Cloud address) for announcements, so production ingestion currently stores no filings; a permitted data source is the maintainer's decision (`docs/HANDOVER.md`).
 
