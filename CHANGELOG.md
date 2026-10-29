@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.7.0](https://github.com/hamza-aziz-ai/HalalLens/compare/v0.6.3...v0.7.0) (2026-10-29)
+
+
+### Features
+
+* **alerts:** store watchlists in PostgreSQL and detect flips with conditional updates ([#163](https://github.com/hamza-aziz-ai/HalalLens/issues/163)) ([2db63cd](https://github.com/hamza-aziz-ai/HalalLens/commit/2db63cd8707177bda3b20ffb159a5e40807f1717))
+
+
+### Bug Fixes
+
+* **ui:** upgrade to Next.js 16 and React 19, with ESLint 9 flat config ([#164](https://github.com/hamza-aziz-ai/HalalLens/issues/164)) ([6b174bc](https://github.com/hamza-aziz-ai/HalalLens/commit/6b174bcb944b1fd6ac90a567aed5577101df57d8))
+
 ## [0.6.3](https://github.com/hamza-aziz-ai/HalalLens/compare/v0.6.2...v0.6.3) (2026-10-29)
 
 
