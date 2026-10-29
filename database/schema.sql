@@ -168,7 +168,7 @@ CREATE INDEX IF NOT EXISTS idx_indianapi_snapshots_fetched_at
 CREATE TABLE IF NOT EXISTS users (
     id SERIAL PRIMARY KEY,
     email TEXT NOT NULL UNIQUE,
-    password_hash TEXT NOT NULL,
+    password_hash TEXT,
     provider TEXT NOT NULL DEFAULT 'password',
     google_sub TEXT UNIQUE,
     full_name TEXT,
@@ -178,6 +178,7 @@ CREATE TABLE IF NOT EXISTS users (
     subscription_status TEXT NOT NULL DEFAULT 'inactive',
     subscription_renewal DATE,
     trial_used BOOLEAN NOT NULL DEFAULT FALSE,
+    email_verified_at TIMESTAMPTZ,
     plan_started_at TIMESTAMPTZ,
     last_login TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -307,5 +308,18 @@ CREATE TABLE IF NOT EXISTS watchlist_entries (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (user_id, symbol, trigger)
 );
+
+-- Single-use emailed proofs (migration 20261029_auth_email_verification.sql).
+CREATE TABLE IF NOT EXISTS auth_tokens (
+    id BIGSERIAL PRIMARY KEY,
+    purpose TEXT NOT NULL CHECK (purpose IN ('signup', 'reset_password')),
+    email TEXT NOT NULL,
+    user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+    token_digest TEXT NOT NULL UNIQUE,
+    expires_at TIMESTAMPTZ NOT NULL,
+    consumed_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_auth_tokens_email_purpose ON auth_tokens (email, purpose);
 
 COMMIT;

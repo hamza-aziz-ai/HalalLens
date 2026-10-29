@@ -38,6 +38,7 @@ SESSIONS = {
         "subscription_status": "inactive",
         "is_admin": False,
         "expires_at": FUTURE,
+        "email_verified_at": PAST,
     },
     "paid-token": {
         "user_id": 2,
@@ -47,6 +48,7 @@ SESSIONS = {
         "subscription_renewal": FUTURE,
         "is_admin": False,
         "expires_at": FUTURE,
+        "email_verified_at": PAST,
     },
     "paid-token-2": {
         "user_id": 3,
@@ -56,6 +58,7 @@ SESSIONS = {
         "subscription_renewal": FUTURE,
         "is_admin": False,
         "expires_at": FUTURE,
+        "email_verified_at": PAST,
     },
     "admin-token": {
         "user_id": 4,
@@ -64,6 +67,7 @@ SESSIONS = {
         "subscription_status": "inactive",
         "is_admin": True,
         "expires_at": FUTURE,
+        "email_verified_at": PAST,
     },
     "expired-token": {
         "user_id": 5,
@@ -73,6 +77,7 @@ SESSIONS = {
         "subscription_renewal": FUTURE,
         "is_admin": False,
         "expires_at": PAST,
+        "email_verified_at": PAST,
     },
 }
 
@@ -90,10 +95,17 @@ ROUTES = {
     ("POST", "/narrate"): ("paid", "/narrate", SCORE_BODY),
     ("GET", "/auth/google/start"): ("public", "/auth/google/start", None),
     ("GET", "/auth/google/callback"): ("public", "/auth/google/callback?code=c&state=s", None),
-    ("POST", "/auth/register"): (
+    ("POST", "/auth/register"): ("public", "/auth/register", {"email": "new@example.invalid"}),
+    ("POST", "/auth/password/forgot"): ("public", "/auth/password/forgot", {"email": "new@example.invalid"}),
+    ("POST", "/auth/signup/confirm"): (
         "public",
-        "/auth/register",
-        {"email": "new@example.invalid", "password": "StrongPass123!"},
+        "/auth/signup/confirm",
+        {"token": "t" * 43, "password": "StrongPass123!"},
+    ),
+    ("POST", "/auth/password/reset"): (
+        "public",
+        "/auth/password/reset",
+        {"token": "t" * 43, "password": "StrongPass123!"},
     ),
     ("POST", "/auth/login"): (
         "public",
@@ -151,7 +163,7 @@ ROUTES = {
 # message keeps a handler's legitimate 401 (wrong password on /auth/login) or
 # 403 from being mistaken for a tier decision.
 GUARD_MESSAGES = {
-    401: ("Authorization token required", "Invalid session", "Session expired"),
+    401: ("Authorization token required", "Invalid session", "Session expired", "Email not verified"),
     402: ("requires an active subscription",),
     403: ("requires an admin account",),
 }

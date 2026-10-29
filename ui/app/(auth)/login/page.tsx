@@ -4,11 +4,25 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import clsx from "clsx";
-import { loginUser, registerUser, saveAuthToken } from "@/lib/auth";
+import {
+  loginUser,
+  registerUser,
+  requestPasswordReset,
+  saveAuthToken,
+  takeFragmentParam,
+} from "@/lib/auth";
 import { useAuth } from "@/providers/AuthProvider";
 import { API_BASE } from "@/lib/api";
 
-type Mode = "signin" | "signup";
+type Mode = "signin" | "signup" | "forgot";
+
+// Reasons a Google sign-in is refused (api/app.py _build_auth_error_redirect).
+const GOOGLE_ERRORS: Record<string, string> = {
+  account_exists:
+    "An account with this email already exists. Sign in with your password (or use 'Forgot password'), then link Google from your account.",
+  verify_email:
+    "This Google account is linked to a HalalLens account with a different email that is not verified yet. Use 'Forgot password' for that email first.",
+};
 
 const cardBase =
   "w-full rounded-3xl border border-white/10 bg-white/5 p-8 shadow-[0_25px_80px_rgba(3,7,18,0.6)] backdrop-blur";
@@ -20,6 +34,7 @@ export default function LoginPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
@@ -29,35 +44,42 @@ export default function LoginPage() {
   }, [loading, user, router]);
 
   useEffect(() => {
-    if (typeof window === "undefined") return;
-    const { hash, search } = window.location;
-    let params: URLSearchParams | null = null;
-    if (hash && hash.length > 1) {
-      params = new URLSearchParams(hash.substring(1));
-    } else if (search && search.length > 1) {
-      params = new URLSearchParams(search.substring(1));
+    const googleError = takeFragmentParam("error");
+    if (googleError) {
+      setError(GOOGLE_ERRORS[googleError] ?? "Google sign-in failed. Please try again.");
+      return;
     }
-    if (!params) return;
-    const oauthToken = params.get("token");
+    const oauthToken = takeFragmentParam("token");
     if (!oauthToken) return;
-    window.history.replaceState(null, "", window.location.pathname);
     saveAuthToken(oauthToken);
     refresh();
     router.replace("/dashboard");
   }, [refresh, router]);
 
+  const switchMode = (next: Mode) => {
+    setMode(next);
+    setError(null);
+    setNotice(null);
+  };
+
   const handleSubmit = async () => {
-    if (!email.trim() || !password) {
-      setError("Email and password are required.");
+    if (!email.trim() || (mode === "signin" && !password)) {
+      setError(mode === "signin" ? "Email and password are required." : "Email is required.");
       return;
     }
     try {
       setSubmitting(true);
       setError(null);
-      const profile =
-        mode === "signup"
-          ? await registerUser(email.trim(), password)
-          : await loginUser(email.trim(), password);
+      setNotice(null);
+      if (mode === "signup") {
+        setNotice(await registerUser(email.trim()));
+        return;
+      }
+      if (mode === "forgot") {
+        setNotice(await requestPasswordReset(email.trim()));
+        return;
+      }
+      const profile = await loginUser(email.trim(), password);
       setUser(profile);
       router.replace("/dashboard");
     } catch (err: any) {
@@ -133,7 +155,7 @@ export default function LoginPage() {
           <div className="mb-4 flex gap-2 text-xs font-semibold uppercase text-slate-400">
             <button
               type="button"
-              onClick={() => setMode("signin")}
+              onClick={() => switchMode("signin")}
               className={clsx(
                 "flex-1 rounded-full border px-3 py-1 transition",
                 mode === "signin"
@@ -145,7 +167,7 @@ export default function LoginPage() {
             </button>
             <button
               type="button"
-              onClick={() => setMode("signup")}
+              onClick={() => switchMode("signup")}
               className={clsx(
                 "flex-1 rounded-full border px-3 py-1 transition",
                 mode === "signup"
@@ -168,17 +190,35 @@ export default function LoginPage() {
               value={email}
               onChange={(e) => setEmail(e.target.value)}
             />
-            <label className="text-xs font-semibold uppercase text-slate-400">
-              Password
-            </label>
-            <input
-              className="w-full rounded-lg border border-white/10 bg-white/10 px-3 py-2 text-sm text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-cyan-400/60"
-              type="password"
-              placeholder="••••••••"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-            />
+            {mode === "signin" ? (
+              <>
+                <label className="text-xs font-semibold uppercase text-slate-400">
+                  Password
+                </label>
+                <input
+                  className="w-full rounded-lg border border-white/10 bg-white/10 px-3 py-2 text-sm text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-cyan-400/60"
+                  type="password"
+                  placeholder="••••••••"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                />
+                <button
+                  type="button"
+                  onClick={() => switchMode("forgot")}
+                  className="text-xs text-cyan-200 hover:text-cyan-100"
+                >
+                  Forgot password?
+                </button>
+              </>
+            ) : (
+              <p className="text-xs text-slate-400">
+                {mode === "signup"
+                  ? "We email you a link to confirm the address; you choose your password there."
+                  : "We email you a link to set a new password. It also confirms your email."}
+              </p>
+            )}
             {error && <p className="text-xs text-rose-300">{error}</p>}
+            {notice && <p className="text-xs text-emerald-300">{notice}</p>}
             <button
               type="button"
               disabled={submitting}
@@ -191,7 +231,9 @@ export default function LoginPage() {
               {submitting
                 ? "Please wait…"
                 : mode === "signup"
-                ? "Create account"
+                ? "Email me a sign-up link"
+                : mode === "forgot"
+                ? "Email me a link"
                 : "Sign in"}
             </button>
             <div className="relative my-4 flex items-center">

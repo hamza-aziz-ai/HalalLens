@@ -10,7 +10,7 @@ import {
   ReactNode,
 } from "react";
 import type { UserProfile } from "@/lib/types";
-import { fetchCurrentUser, saveAuthToken } from "@/lib/auth";
+import { fetchCurrentUser, saveAuthToken, takeFragmentParam } from "@/lib/auth";
 
 type AuthContextValue = {
   user: UserProfile | null;
@@ -28,20 +28,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      if (typeof window !== "undefined") {
-        const { hash, search } = window.location;
-        let params: URLSearchParams | null = null;
-        if (hash && hash.length > 1) {
-          params = new URLSearchParams(hash.substring(1));
-        } else if (search && search.length > 1) {
-          params = new URLSearchParams(search.substring(1));
-        }
-        if (params) {
-          const oauthToken = params.get("token");
-          if (oauthToken) {
-            window.history.replaceState(null, "", window.location.pathname);
-            saveAuthToken(oauthToken);
-          }
+      // A session token arrives only on the Google sign-in landing page, and
+      // only in the fragment; other pages never take one from the URL.
+      if (
+        typeof window !== "undefined" &&
+        window.location.pathname.replace(/\/$/, "") === "/login"
+      ) {
+        const oauthToken = takeFragmentParam("token");
+        if (oauthToken) {
+          saveAuthToken(oauthToken);
         }
       }
       const profile = await fetchCurrentUser();
