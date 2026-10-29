@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.13.0](https://github.com/hamza-aziz-ai/HalalLens/compare/v0.12.0...v0.13.0) (2026-10-29)
+
+
+### Features
+
+* **billing:** purchases queue behind paid time instead of replacing it; Switch, Extend and Lifetime rules ([#196](https://github.com/hamza-aziz-ai/HalalLens/issues/196)) ([8fd9000](https://github.com/hamza-aziz-ai/HalalLens/commit/8fd9000d299f044e119da7af9eb937e539dfc925))
+
 ## [0.12.0](https://github.com/hamza-aziz-ai/HalalLens/compare/v0.11.2...v0.12.0) (2026-10-29)
 
 
