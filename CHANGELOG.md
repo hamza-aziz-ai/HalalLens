@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.18.1](https://github.com/hamza-aziz-ai/HalalLens/compare/v0.18.0...v0.18.1) (2026-10-29)
+
+
+### Bug Fixes
+
+* **billing:** Lifetime takes effect when paid ([#229](https://github.com/hamza-aziz-ai/HalalLens/issues/229)) ([3780db4](https://github.com/hamza-aziz-ai/HalalLens/commit/3780db45a46512e89d132f7f3457bc5d0983f7e4))
+
 ## [0.18.0](https://github.com/hamza-aziz-ai/HalalLens/compare/v0.17.4...v0.18.0) (2026-10-29)
 
 
