@@ -13,6 +13,7 @@ database/         schema.sql, database manager, dated migrations/
 Documentations/   charter PDF and planning notes
 docs/             handover, decisions, architecture, threat and failure notes
 etl/              financial data processor and MinIO client
+evaluation/       shared publication overlay: anomaly detector, needs-review masking policy
 halallens-mobile/ Flutter platform scaffold (no Dart source)
 jobs/             ingestion, evaluation, backup, payment reconciler and scheduler entry points
 market_data/      Indian Stock API and Bhavcopy resolution

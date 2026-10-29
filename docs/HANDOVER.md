@@ -2,7 +2,13 @@
 
 Read first: [ARCHITECTURE.md](ARCHITECTURE.md), [CONSTRAINTS.md](CONSTRAINTS.md). Newest entry on top. Update last, every session.
 
-## Latest session: 2026-10-29, night (model: Claude Opus 5.5, `claude-opus-5-5`): billing ledger, reconciliation, automatic refunds, maintenance pages that come and go on their own
+## Latest session: 2026-10-29, late night (model: Claude Opus 5.5, `claude-opus-5-5`): one publication path for verdicts (D-027)
+
+- **Done:** `fix(evaluations)` PR (not merged): every writer (API, the four jobs, Indian history) publishes through `BSEDatabaseManager.publish_filing_evaluation` (advisory lock, any open issue gives `needs-review`); stored and cached reads are masked; issue reads fail closed (503); market recovery resolves only the types a live lookup disproves; recompute simulates publication and rejects stale previews. Design agreed with Codex in council.
+- **Left:** after merge and deploy, the repair in README_ops ("Repair after D-027"): inventory query, dump, recompute dry run, review, then `--write`; not run anywhere yet. The AGENTS.md wording ("needs-review is an API-level overlay", opt-in test list) still needs the maintainer's edit.
+- **Risks:** more filings show `needs-review` (market and system override issues now block job results too, ASSUMPTIONS #27); one issue read per row on every filing response; the recompute input re-read is outside the lock (marked `ponytail:` in code).
+
+## Session: 2026-10-29, night (model: Claude Opus 5.5, `claude-opus-5-5`): billing ledger, reconciliation, automatic refunds, maintenance pages that come and go on their own
 
 **Done** (production runs **v0.17.1** on the Oracle VM, deployed from the published images)
 - Billing ledger (#196, D-024): purchases queue behind paid time (Switch / Extend / Upgrade by plan rank, "starts on" dates, "No automatic renewal"); Lifetime covers every plan; settlement is one transaction under a per-user lock; verify grants only a captured payment matching the order. #199: a payment finished on the bank's page is found by polling the order after the checkout closes; labels follow the last queued plan. Proven in production (Test Mode): a Starter bought on top of Annual queued to 29/10/2027, granted by the `payment.captured` webhook.

@@ -10,6 +10,7 @@ One page. Trust boundaries are marked **[B]**. Deeper docs: [FLOW.md](FLOW.md), 
 | `api/billing.py`, `api/razorpay_client.py` | Paid access derived from `subscription_grants` (D-024); Razorpay REST access shared by the API and the reconciler                  |
 | `jobs/reconcile_payments.py`    | Payment reconciler (D-025): settles payments the webhook missed, applies refunds made elsewhere, automatic refunds (TEST keys only)    |
 | `ratio_engine/`                 | The five ratios and the **only** verdict derivation (`engine.py`), `summary.py`, `amounts.py`                                           |
+| `evaluation/`                   | Shared publication overlay (`quality.py`, D-027): ratio-anomaly detector and the policy that masks the engine's pair as `needs-review` while any quality issue is open |
 | `narrator/`                     | Explain-why text: rule-based by default; optional LLM text for conclusive verdicts behind a best-effort guard (`narrator/explainer.py`) |
 | `alerts/`                       | Watchlists in Postgres, flip detection, SMTP notifier                                                                                   |
 | `crawler/`, `etl/`, `jobs/`     | BSE announcements -> PDF/XBRL parsing -> Postgres + S3-compatible store (R2 in production, MinIO locally); schedulers                   |
@@ -349,7 +350,7 @@ Key: green boxes are the containers that write; grey cylinders are Postgres doma
 | Domain | Tables | Writers | Readers |
 |--------|--------|---------|---------|
 | Filings and evaluations | `announcements`, `financial_snapshots`, `market_data_snapshots`, `bhavcopy_quotes`, `indianapi_snapshots`, `filing_evaluations` | ingestion (filings, Bhavcopy market snapshots, evaluations of new filings); evaluation (`filing_evaluations`, market snapshots); api (paid refresh through the Indian Stock API, evaluations, `bhavcopy_quotes` and `indianapi_snapshots` caches) | api (filing, history and alert routes, narration); evaluation (engine inputs) |
-| Inputs under review | `governance_overrides`, `data_quality_issues` | api (admin overrides; quality issues); ingestion and evaluation (quality issues, market-data failures) | api and evaluation: overrides win over extracted values for every user; an open issue makes the API answer `needs-review` |
+| Inputs under review | `governance_overrides`, `data_quality_issues` | api (admin overrides; quality issues); ingestion and evaluation (quality issues, market-data failures) | api and evaluation: overrides win over extracted values for every user; an open issue makes every writer store, and every filing route return, `needs-review` (D-027) |
 | Users and auth | `users`, `user_sessions` (SHA-256 digests), `auth_tokens`, `oauth_flows` | api (sign-up, login, reset, Google sign-in) | api, on every authenticated request |
 | Billing ledger | `subscription_plans` (seeded by migrations), `razorpay_orders`, `payment_events` (unique `(provider, event_id)`), `subscription_grants` (authoritative, D-024) | api (order, verify, webhook, trial, cancel); billing-reconcile (payments the webhook missed) | api (`api/billing.py` folds the grants); billing-reconcile |
 | Access projection | `users.plan`, `users.subscription_status`, `users.subscription_renewal` | Written only with a grant change, in the same per-user locked transaction | api route tiers; an expired projection is refreshed from the grants |
@@ -372,7 +373,7 @@ Key: green boxes are the containers that write; grey cylinders are Postgres doma
 
 ## Verdict ownership
 
-`RatioEngine.evaluate` returns `RatioEvaluation.verdict` (`compliant` / `non-compliant` / `insufficient-data`). `is_compliant` is derived. The API adds `needs-review` when data-quality issues are open. No other module may re-derive a verdict.
+`RatioEngine.evaluate` returns `RatioEvaluation.verdict` (`compliant` / `non-compliant` / `insufficient-data`). `is_compliant` is derived. The shared publication overlay (`evaluation/quality.py`, applied by `BSEDatabaseManager.publish_filing_evaluation` for every writer and by `_filing_response` for every filing read) publishes `needs-review` while any data-quality issue is open; it only masks the engine's pair and never derives a verdict from ratios (D-027). No other module may re-derive a verdict.
 
 ## Deployment
 
