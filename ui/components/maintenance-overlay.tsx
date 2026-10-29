@@ -58,9 +58,17 @@ export default function MaintenanceOverlay() {
       role="alertdialog"
       aria-modal="true"
       aria-labelledby="maintenance-title"
-      className="fixed inset-0 z-[100] grid place-items-center bg-[radial-gradient(1100px_circle_at_10%_-10%,rgba(14,116,144,0.38),transparent_45%),radial-gradient(900px_circle_at_90%_0%,rgba(16,185,129,0.2),transparent_40%),#05070d] px-4 text-slate-200"
+      className="fixed inset-0 z-[100] grid place-items-center px-4 text-slate-200"
+      // Inline on purpose: a Tailwind bg-[...] mixing gradients and a colour
+      // compiles to an invalid background-image, leaving the page visible.
+      style={{
+        backgroundColor: "#05070d",
+        backgroundImage:
+          "radial-gradient(1100px circle at 10% -10%, rgba(14,116,144,0.38), transparent 45%), " +
+          "radial-gradient(900px circle at 90% 0%, rgba(16,185,129,0.2), transparent 40%)",
+      }}
     >
-      <div className="w-full max-w-md rounded-[28px] border border-white/10 bg-white/5 p-8 text-center shadow-[0_25px_80px_rgba(3,7,18,0.5)]">
+      <div className="w-full max-w-md rounded-[28px] border border-white/10 bg-slate-900 p-8 text-center shadow-[0_25px_80px_rgba(3,7,18,0.5)]">
         <svg className="mx-auto mb-5 h-11 w-11 animate-spin motion-reduce:animate-none" viewBox="0 0 44 44" fill="none" aria-hidden="true">
           <circle cx="22" cy="22" r="17" stroke="#22d3ee" strokeWidth="3" opacity=".35" />
           <path d="M22 5a17 17 0 0 1 17 17" stroke="#34d399" strokeWidth="3" strokeLinecap="round" />

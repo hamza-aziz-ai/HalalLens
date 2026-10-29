@@ -22,7 +22,7 @@ export default function PolicyLayout({
   children,
 }: PolicyLayoutProps) {
   return (
-    <main className="min-h-screen bg-[radial-gradient(1200px_circle_at_10%_-10%,rgba(14,116,144,0.35),transparent_45%),radial-gradient(900px_circle_at_85%_0%,rgba(16,185,129,0.18),transparent_40%),#05070d] px-4 py-12 text-slate-100">
+    <main className="min-h-screen bg-[#05070d] bg-[image:radial-gradient(1200px_circle_at_10%_-10%,rgba(14,116,144,0.35),transparent_45%),radial-gradient(900px_circle_at_85%_0%,rgba(16,185,129,0.18),transparent_40%)] px-4 py-12 text-slate-100">
       <div className="mx-auto flex max-w-4xl flex-col gap-8">
         <header className="rounded-3xl border border-white/10 bg-gradient-to-br from-slate-900/90 via-slate-900/70 to-slate-950/80 p-8 shadow-[0_25px_80px_rgba(3,7,18,0.55)] animate-fade-up">
           <div className="flex flex-wrap items-center justify-between gap-3 text-xs uppercase tracking-[0.2em] text-cyan-300/80">
