@@ -1,227 +1,216 @@
 # HalalLens
 
-> **See your investments through a halal lens.** Read-only Shariah-compliance screening for BSE-listed Indian equities, with a rule-based "Explain Why" narrator and compliance-flip alerts.
+Status: pilot. Information and education only, not investment advice, and not a fatwa or a verified full AAOIFI assessment.
 
-[![CI](https://github.com/hamza-aziz-ai/HalalLens/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/hamza-aziz-ai/HalalLens/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/github/license/hamza-aziz-ai/HalalLens)](LICENSE)
+HalalLens screens BSE-listed Indian equities against an AAOIFI-inspired Shariah screen built from their filings. For each filing it computes five ratios (total debt, cash, accounts receivable and liquid assets against market cap, and non-permissible income against revenue) and returns one verdict: `compliant`, `non-compliant` or `insufficient-data` when an input is unknown, never a guess. An explain-why narrator says in plain English which ratios decided it, watchlists send compliance-flip alerts by email, and paid plans (Explain-Why, watchlists, alerts, filing history) are sold through Razorpay. The public site is https://halallens.in.
 
-**Status: pilot.** Billing runs through Razorpay and the screen is a *configured, AAOIFI-inspired* financial screen, not a fatwa or a verified full AAOIFI assessment. Read [How the screen decides](#how-the-screen-decides) and [Known limitations](#known-limitations) before relying on a verdict.
+## System Design
 
----
-
-## What it does
-
-| Area                   | What exists today                                                                                                                                                                                                                                                                                   |
-|------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| **Screening**          | `ratio_engine/` computes five ratios per filing and returns one verdict: `compliant`, `non-compliant` or `insufficient-data`.                                                                                                                                                                       |
-| **Explain-Why**        | Rule-based by default. An optional LLM narrator (`NARRATOR_MODE=llm`) is used only for conclusive verdicts and only if its text passes a best-effort consistency check; the badge and ratio table always show the engine's verdict. Unknown results are always narrated by the rule-based narrator. |
-| **Alerts**             | File-backed watchlists and a compliance-flip engine; email delivery through SMTP. `/alerts/check` (paid) reads the stored verdict of the newest filing and checks only the caller's watchlist; the file store needs a single API worker (see [Known limitations](#known-limitations)).              |
-| **Filings ingestion**  | BSE announcements crawler, PDF capture in MinIO, Camelot tables plus XBRL/JSON parsing, Indian Stock API and Bhavcopy market data.                                                                                                                                                                  |
-| **API + UI**           | FastAPI service (`/docs` lists every route) and a Next.js 16 static-export dashboard.                                                                                                                                                                                                               |
-| **Accounts + billing** | Email/password and Google SSO, hashed opaque session tokens, Razorpay orders with idempotent webhooks, trials.                                                                                                                                                                                      |
-
-Not built: GCC or mutual-fund coverage, NSE crawling (`crawler/nse_ann.py` exists but nothing calls it), RAG/vLLM serving, SES/Celery alert delivery, and the Flutter app's Dart source (`halallens-mobile/` is a platform scaffold with no `lib/`, so it cannot build).
-
----
-
-## How the screen decides
-
-For each filing the engine computes five ratios and compares each against a configured cap:
-
-| Ratio                             | Cap | Basis                                                           |
-|-----------------------------------|-----|-----------------------------------------------------------------|
-| Total debt / market cap           | 30% | AAOIFI SS21 (uses *total* debt, not only interest-bearing)      |
-| Cash and equivalents / market cap | 30% | AAOIFI SS21 (uses all cash, not only interest-bearing deposits) |
-| Non-permissible income / revenue  | 5%  | AAOIFI SS21                                                     |
-| Accounts receivable / market cap  | 67% | **not backed by SS21**, kept as configured                      |
-| Liquid assets / market cap        | 49% | **not backed by SS21**, kept as configured                      |
-
-Verdict rule (`ratio_engine/engine.py`, one place; nothing else re-derives it):
-
-- **`non-compliant`**: any ratio computed from valid inputs fails. A failure is conclusive even if other inputs are missing.
-- **`compliant`**: all five ratios were computed from valid inputs and all passed. Prohibited income needs its base figure, interest income and dividend income to all be known (an explicit `0` counts); an unknown part is never assumed zero.
-- **`insufficient-data`**: anything else. This is *not* a failure. `is_compliant` is `null` in the API and the UI shows "Insufficient data".
-
-`needs-review` is an API-level overlay for filings with open data-quality issues; it is also stored and returned with `is_compliant = null`.
-
-Arithmetic is exact (Decimal, no tolerance): 0.30000000000000004 over a 0.30 cap fails. Inputs must be finite numbers within float range; booleans, NaN/inf, negatives and underflowing strings are treated as unknown.
-
----
-
-## Architecture
+What happens to one screening request. Solid arrows are the path every request takes; dotted arrows are optional, cached or written on the side.
 
 ```mermaid
-flowchart TD
-    Crawler[BSE crawler] -->|announcements| ETL[Financial data processor]
-    ETL --> DB[(Postgres + MinIO)]
-    Market[Indian Stock API / Bhavcopy] --> DB
-    DB --> Engine[Ratio engine]
-    Engine --> Narrator[Rule-based narrator]
-    Engine --> Alerts[Alerts]
-    Narrator --> API[FastAPI]
-    Alerts --> API
-    Engine --> API
-    API --> UI[Next.js dashboard]
+flowchart TB
+  V(["`**Visitor**: dashboard in the browser`"])
+
+  subgraph EDGE["`**Edge**`"]
+    direction LR
+    CF["`**Cloudflare**: HTTPS, tunnel to the server`"] --> CADDY["`**Caddy**: dashboard at /, API under /api/`"]
+  end
+
+  subgraph API["`**FastAPI**`"]
+    direction TB
+    REQ["`**1. GET /api/filings/SYMBOL**: rate limit, route tier`"]
+    LOAD["`**2. Gather inputs**: newest filing snapshot with governance overrides applied, market cap`"]
+    ENG["`**3. RatioEngine**: five ratios against their caps in exact Decimal; the only verdict owner`"]
+    QI{"`**4. Open data-quality issues?**`"}
+    NR(["`**needs-review**, is_compliant null`"])
+    VER(["`**Engine verdict**: compliant, non-compliant or insufficient-data`"])
+    REQ --> LOAD --> ENG --> QI
+    QI -->|"`yes`"| NR
+    QI -->|"`no`"| VER
+  end
+
+  subgraph INPUTS["`**Inputs**`"]
+    direction TB
+    PG[("`**Postgres**: financial_snapshots, governance_overrides, filing_evaluations`")]
+    MKT["`**Market data**: cache, Indian Stock API, then Bhavcopy`"]
+  end
+
+  subgraph NARR["`**Narrator**`"]
+    direction TB
+    ASK["`**5. POST /api/narrate** (paid): same inputs, same engine verdict`"]
+    MODE{"`**LLM mode on and verdict conclusive?**`"}
+    LLM["`**LLM**: gpt-oss:120b-cloud through Ollama`"]
+    GUARD{"`**Verdict guard passes?**`"}
+    AI(["`**LLM text**, marked AI-generated`"])
+    RB(["`**Rule-based text**`"])
+    ASK --> MODE
+    MODE -->|"`yes`"| LLM --> GUARD
+    GUARD -->|"`yes`"| AI
+    GUARD -->|"`no, or LLM error`"| RB
+    MODE -->|"`no`"| RB
+  end
+
+  OLL["`**ollama.com** cloud model`"]
+
+  V -->|"`HTTPS`"| CF
+  CADDY --> REQ
+  PG -->|"`snapshot, overrides`"| LOAD
+  MKT -.->|"`market cap`"| LOAD
+  QI -.->|"`store evaluation`"| PG
+  VER -.->|"`dashboard asks why`"| ASK
+  LLM <-.-> OLL
+
+  classDef edge fill:#dbeafe,stroke:#1d4ed8,color:#0f172a
+  classDef step fill:#dcfce7,stroke:#15803d,color:#0f172a
+  classDef decision fill:#fef3c7,stroke:#b45309,color:#0f172a
+  classDef outcome fill:#ede9fe,stroke:#6d28d9,color:#0f172a
+  classDef store fill:#f1f5f9,stroke:#475569,color:#0f172a
+  class V,CF,CADDY edge
+  class REQ,LOAD,ENG,ASK,LLM step
+  class QI,MODE,GUARD decision
+  class NR,VER,AI,RB outcome
+  class PG,MKT,OLL store
 ```
 
-Deeper maps: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md), [`docs/FLOW.md`](docs/FLOW.md), [`Documentations/dependency-map.md`](Documentations/dependency-map.md).
+Key: blue is the way in, green the steps the API runs, amber a decision, purple an outcome the visitor sees, grey data and outside services. Read top to bottom; the numbers match the notes below.
 
----
+1. The dashboard asks for a symbol's screen. Cloudflare carries it over HTTPS through a tunnel to Caddy, which sends `/api/` to FastAPI; the API applies the per-IP rate limit and the route's tier (public for a cached filing, paid for a refresh).
+2. The API loads the newest filing's figures from `financial_snapshots`, with any admin governance override applied, and the market cap from its cache, the Indian Stock API or, as a fallback, the BSE Bhavcopy.
+3. `RatioEngine` computes the five ratios and compares each with its cap (30% debt, 30% cash, 5% non-permissible income, 67% receivables, 49% liquid assets) in exact Decimal. It is the only place a verdict is decided; an unknown input gives `insufficient-data`, never an assumed zero.
+4. If the filing has open data-quality issues the API overlays `needs-review` and returns `is_compliant = null`; otherwise it returns the engine's verdict. For a stored filing, the result is saved in `filing_evaluations` with the same status.
+5. Explain-why is a separate paid call. In LLM mode, and only for a conclusive verdict, `gpt-oss:120b-cloud` (through Ollama) drafts the text, which is shown only if it repeats the engine's verdict and passes a best-effort guard; otherwise, or on any error, the rule-based narrator writes it. The verdict shown never comes from the model.
 
-## Local development
+Method detail and the caps' sources: [Screening method](docs/guides/SCREENING.md). Modules and request functions: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), [docs/FLOW.md](docs/FLOW.md).
 
-```bash
-git clone https://github.com/hamza-aziz-ai/HalalLens.git
-cd HalalLens
-cp .env.example .env          # then fill in the values; never commit .env
-pipenv install --dev          # Python 3.14
+## Solution Architecture
+
+How the code becomes the live site at https://halallens.in. Right: build and release on GitHub. Middle: the image registries, the maintainer's deploy and the Cloudflare edge. Left: the server, with the managed services it uses below it.
+
+```mermaid
+flowchart TB
+  subgraph GH["`**GitHub**`"]
+    direction TB
+    PR["`**Pull request**, Conventional Commit title`"] --> CI["`**CI checks**: backend, ui, secrets, docker, docker-arm64`"]
+    CI --> MERGE["`**Squash merge** into main`"]
+    MERGE --> RP["`**release-please**: tag vX.Y.Z, changelog, GitHub Release`"]
+    RP --> PUB["`**publish-images**: gate on CI, amd64 + arm64 build, smoke tests, Trivy scan, SBOM`"]
+    UP["`**Uptime workflow**, every 30 minutes`"]
+  end
+
+  GHCR[("`**GHCR** images`")]
+  HUB[("`**Docker Hub** copy`")]
+  M(["`**Maintainer** approves and runs scripts/deploy.sh vX.Y.Z`"])
+  V(["`**Visitor**`"])
+
+  subgraph CF["`**Cloudflare**`"]
+    direction TB
+    EDGE["`**Edge**: HTTPS for halallens.in`"]
+    WK["`**Maintenance Worker**: page while the server is unreachable`"]
+  end
+
+  subgraph VM["`**Oracle Cloud VM**: Docker Compose`"]
+    direction TB
+    TUN["`**cloudflared**: tunnel dials out, no open web port`"]
+    CADDY["`**caddy**: / to ui, /api/ to api`"]
+    UI["`**ui**: Next.js static export`"]
+    APIC["`**api**: FastAPI`"]
+    OLC["`**ollama**: relays to the cloud model`"]
+    PG[("`**postgres**`")]
+    JOBS["`**Jobs**: migrations, ingestion, evaluation, backup, billing-reconcile`"]
+    TUN --> CADDY
+    CADDY --> UI
+    CADDY --> APIC
+    APIC --> OLC
+    APIC --> PG
+    JOBS --> PG
+  end
+
+  subgraph EXT["`**Managed services**`"]
+    direction LR
+    R2[("`**Cloudflare R2**: filing PDFs, Postgres backups`")]
+    MAIL["`**OCI Email Delivery**: SMTP`"]
+    RZP["`**Razorpay**, test mode`"]
+    GOO["`**Google OAuth**`"]
+    OCL["`**ollama.com** model`"]
+  end
+
+  PUB --> GHCR
+  PUB -.->|"`when configured`"| HUB
+  M -.->|"`pull the tag's images`"| GHCR
+  M -.->|"`restart the stack`"| VM
+  V -->|"`HTTPS`"| EDGE
+  EDGE -->|"`tunnel`"| TUN
+  EDGE -.->|"`origin down`"| WK
+  UP -.->|"`/api/health, /api/health/billing`"| EDGE
+  APIC --> MAIL
+  APIC --> RZP
+  APIC --> GOO
+  JOBS -->|"`PDFs, backups`"| R2
+  JOBS -->|"`reconcile`"| RZP
+  OLC --> OCL
+
+  classDef gh fill:#dbeafe,stroke:#1d4ed8,color:#0f172a
+  classDef reg fill:#f1f5f9,stroke:#475569,color:#0f172a
+  classDef person fill:#fef3c7,stroke:#b45309,color:#0f172a
+  classDef edge fill:#ffedd5,stroke:#c2410c,color:#0f172a
+  classDef vm fill:#dcfce7,stroke:#15803d,color:#0f172a
+  classDef ext fill:#ede9fe,stroke:#6d28d9,color:#0f172a
+  class PR,CI,MERGE,RP,PUB,UP gh
+  class GHCR,HUB reg
+  class M,V person
+  class EDGE,WK edge
+  class TUN,CADDY,UI,APIC,OLC,PG,JOBS vm
+  class R2,MAIL,RZP,GOO,OCL ext
 ```
 
-**Database.** Postgres and MinIO are external. For a fresh database apply `database/schema.sql`; for an existing one apply the dated files in `database/migrations/` in order. `scripts/run_migrations.sh` does both and records applied files in `schema_migrations`.
+Key: blue is GitHub, grey the image registries, amber a person, orange Cloudflare, green the containers on the server, purple managed services. Solid arrows run on every change or request; dotted arrows are manual, conditional or periodic. Start at the pull request (top right), then follow the visitor from Cloudflare into the server.
 
-```bash
-createdb halallens_dev
-DATABASE_URL=postgresql://user@localhost/halallens_dev bash scripts/run_migrations.sh
-```
+1. **Build and release.** Every change arrives as a pull request with a Conventional Commit title. The `backend`, `ui`, `secrets`, `docker` and `docker-arm64` checks must pass before a squash merge into `main`; release-please then tags `vX.Y.Z`, updates `CHANGELOG.md` and publishes the GitHub Release.
+2. **Images.** The published release starts `publish-images.yml`: it waits for CI on the released commit, builds the API and UI natively for amd64 and arm64, smoke-tests them (including the Caddy routing), scans them with Trivy and pushes them with an SBOM and provenance to GHCR and, when configured, Docker Hub. A published version is never overwritten.
+3. **Deploy (Continuous Delivery, not Continuous Deployment).** Nothing reaches production on its own. The maintainer approves a release and runs `scripts/deploy.sh vX.Y.Z` on the Oracle Cloud VM, which checks out the tag, pulls its images, starts the stack and smoke-tests through Caddy; rollback is the same command with the previous tag ([docs/ROLLBACK.md](docs/ROLLBACK.md)).
+4. **On the server.** The visitor reaches Cloudflare over HTTPS; `cloudflared` holds an outbound tunnel, so the VM has no open web port. Caddy serves the dashboard at `/` and the API under `/api/`. Beside the API run Postgres, the migrations, ingestion, evaluation, backup and billing-reconcile jobs, and an Ollama relay to the cloud model. Filing PDFs and database backups go to Cloudflare R2, email to OCI Email Delivery, payments to Razorpay in test mode, sign-in to Google OAuth.
+5. **While down.** If Caddy, the tunnel or the VM is unreachable, a Cloudflare Worker shows the HalalLens maintenance page instead of Cloudflare's error; `/api/*` never passes through it. A GitHub workflow probes `/api/health` and `/api/health/billing` every 30 minutes and opens an issue when either fails.
 
-`20260728_security_hardening.sql` clears `user_sessions` (tokens are now stored as SHA-256 digests), so everyone signs in again once; it also adds the unique `(provider, event_id)` index on `payment_events`.
+The same images run on one machine with `docker-compose.yml` against an external Postgres and MinIO ([Docker pilot](docs/guides/DOCKER.md)). Server operations, backups and secret rotation: [README_ops.md](README_ops.md).
 
-**API and UI.**
+## Quick start
 
-```bash
-pipenv run uvicorn api.app:app --reload --port 8001      # http://localhost:8001/docs
-cd ui && npm install && npm run dev                        # http://localhost:3000
-```
-
-Set `NEXT_PUBLIC_HALAL_API_BASE_URL` (in `ui/.env.local`) to the API origin. It is baked in at build time.
-
-**Tests.**
-
-```bash
-pipenv run pytest                                   # backend; same command CI runs
-cd ui && npm test && npm run lint && npm run build  # frontend
-```
-
-Tests must not need live Postgres, MinIO, an LLM or vendor APIs.
-
-### Narrator
-
-`NARRATOR_MODE` defaults to `rule_based` (the only path whose consistency with the verdict is guaranteed). With `NARRATOR_MODE=llm` (plus `LLM_ENDPOINT`, `LLM_MODEL`, optional `LLM_API_KEY`, `LLM_TEMPERATURE`, `LLM_MAX_TOKENS`, `LLM_TIMEOUT`) the model is asked only about `compliant` / `non-compliant` results. Its text is shown only if it repeats the engine's verdict in a `screen_verdict` field and its summary, verdict and bullets pass a keyword check; otherwise, on any LLM error, and for `insufficient-data`, the rule-based narrator is used, and the label shown is always the engine's. **This is best-effort, not a guarantee:** a paraphrase the check does not know can still contradict the verdict, so the UI marks LLM text as AI-generated. `tools/preflight.py` requires the LLM endpoint to be reachable in `llm` mode. Set `LLM_MAX_TOKENS=0` and/or `LLM_TIMEOUT=0` to let the server decide limits (useful for reasoning-heavy models).
-
-### Google SSO (optional)
-
-Create a Google "Web application" OAuth client, then set `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URI` (`<api>/auth/google/callback`; behind Caddy in production `https://<domain>/api/auth/google/callback`) and `FRONTEND_BASE_URL`. The token is returned in the URL **fragment** (`/login#token=...`), never the query string, and the redirect must match `FRONTEND_BASE_URL` or the `halallens://` scheme.
-
----
-
-## API and security model
-
-`/docs` (FastAPI OpenAPI) is the route reference. Every route has a tier:
-
-| Tier              | Who                                    | Routes                                                                                                                                            |
-|-------------------|----------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------|
-| **Public**        | anyone (rate limited per IP)           | `/health`, `/health/billing` (reconciler heartbeat: status and age only), `/halal-score`, `/filings/recent`, `POST /feedback`, `GET /feedback/status/{token}`, `/billing/plans`, `/auth/*`, `/webhooks/razorpay`, `/client-logs`, cached `/filings/{symbol}` |
-| **Authenticated** | any signed-in user with a verified email | `/auth/me`, `/auth/logout`, `/auth/google/link/*`, `/market-data/{symbol}`, `/billing/trial`, `/billing/entitlement`, `/billing/razorpay/*`, `/billing/cancel`              |
-| **Paid**          | active or trialing subscription        | `/narrate`, `/watchlist*`, `/alerts/check`, `/filings/{symbol}/history`, `/filings/{symbol}?refresh=true`                                         |
-| **Admin**         | `is_admin` on a verified account; granted to `ADMIN_EMAILS` only when that mailbox is proven | `GET/PATCH /feedback`, `/feedback/{id}/events`, `/governance/*`, `/ingestion/stats`, `/ops/metrics`                                               |
-
-`/halal-score` and `/narrate` return `is_compliant` (`true`, `false` or `null`) and `screen_verdict` (`compliant`, `non-compliant`, `insufficient-data`). **`null` is not `false`.**
-
-Boundaries worth knowing:
-
-- Accounts are email-first (D-020): sign-up emails a link and the password is chosen there; `POST /auth/password/forgot` sends a set-password link that also verifies the email and signs out every device. Every session belongs to a verified email; an address in `ADMIN_EMAILS` becomes admin only after its mailbox is proven (sign-up link, reset link or Google). Google sign-in matches accounts by Google ID only, never by email, and needs `email_verified=true`; a different Google account is linked only from the account page, after re-entering the password, and only the session that started the link can finish it (D-021). Every Google flow is single-use, expires in 10 minutes and is bound to the browser that started it by a short-lived HttpOnly cookie, which needs the UI and API on one origin (`/api`, the production setup). Links carry the single-use token in the URL fragment; only its SHA-256 digest is stored.
-- Governance overrides rewrite the inputs behind *every* user's verdict for a filing, so they are admin-only. Reviewer identity comes from the session, never the request body.
-- Watchlists are keyed off the session; the `user_id` path parameter is ignored.
-- `/alerts/check` takes only a symbol. The verdict is the stored evaluation of the symbol's newest filing, used only when it is conclusive and has no open quality issues; a caller-supplied `is_compliant` is ignored, and only the caller's own entries are checked or moved. Lookup failures return 503.
-- `/market-data` requires a session because a cache miss spends vendor quota.
-- Session tokens are SHA-256 digests; passwords are PBKDF2-HMAC-SHA256 at 600k iterations (older hashes are re-hashed on next login).
-- Razorpay webhooks are idempotent through the unique `(provider, event_id)` index on `payment_events`.
-
-Rate limits (per worker process, see the caveat):
-
-```env
-RATE_LIMIT_ENABLED=true
-RATE_LIMIT_LOGIN_PER_MINUTE=10       # per IP
-RATE_LIMIT_REGISTER_PER_HOUR=5       # per IP, also throttles trial farming
-RATE_LIMIT_PUBLIC_PER_MINUTE=60      # per IP, /halal-score
-RATE_LIMIT_METERED_PER_MINUTE=30     # per user, /narrate + /market-data
-RATE_LIMIT_WRITE_PER_HOUR=30         # per IP, /feedback + /client-logs
-TRUST_PROXY_HEADERS=false            # true only behind a proxy you control
-ALLOWED_ORIGIN_REGEX=                # opt-in; matched with fullmatch, not a prefix
-```
-
-> The limiter keeps counters in process memory, so `uvicorn --workers N` multiplies every limit by `N` and restarts reset them. Acceptable for the pilot; move `SlidingWindowRateLimiter` (`api/security.py`) to Redis before scaling out.
-
----
-
-## Docker pilot
-
-`docker-compose.yml` runs `preflight`, `api` (port 8001), `ui` (port 3001), and the `ingestion` and `evaluation` schedulers against an **external** Postgres and MinIO. `docker-compose-prod.yml` adds Caddy for TLS and a bundled Postgres, stores filing PDFs in an external S3-compatible bucket (Cloudflare R2 by default; MinIO no longer publishes free images), and serves everything on one domain (`HALAL_APP_DOMAIN`): the dashboard at `/` and the API under `/api/` (Swagger at `/api/docs`). In production, register `https://<domain>/api/auth/google/callback` with Google and `https://<domain>/api/webhooks/razorpay` with Razorpay. Caddy either serves the domain itself with Let's Encrypt (`CADDY_MODE=tls`) or sits behind a Cloudflare Tunnel with no open web ports (`CADDY_MODE=tunnel`, used for `halallens.in`); see `README_ops.md`.
+Run the API, the dashboard and the schedulers with Docker Compose against your own Postgres and MinIO (apply `database/schema.sql` first, see [Local development](docs/guides/SETUP.md)):
 
 ```bash
 cp .env.example .env     # set POSTGRES_*, MINIO_*, INDIAN_API_*, NEXT_PUBLIC_HALAL_API_BASE_URL, ...
 docker compose up --build
 ```
 
-Published images: every release publishes `halallens-api` and `halallens-ui` for linux/amd64 and linux/arm64 to GHCR (`ghcr.io/hamza-aziz-ai/halallens-api`, `...-ui`) and, when configured, Docker Hub, tagged `vX.Y.Z` (and `latest` for the newest release). See `.github/workflows/publish-images.yml`.
+Open http://localhost:3001 for the dashboard and http://localhost:8001/docs for the API. To run from source instead, follow [Local development](docs/guides/SETUP.md).
 
-Operations (logs, metrics, backups, secret rotation, troubleshooting): [`README_ops.md`](README_ops.md). Ingestion CLI: [`README_ingestion.md`](README_ingestion.md).
+## Documentation
 
-> **Before deploying a new verdict engine** to a database that already holds evaluations, read [`docs/ROLLBACK.md`](docs/ROLLBACK.md) and [`docs/HANDOVER.md`](docs/HANDOVER.md): stored evaluations keep their old verdicts until they are recomputed.
+| Guide                                               | What it covers                                                                                                   |
+|-----------------------------------------------------|------------------------------------------------------------------------------------------------------------------|
+| [Screening method](docs/guides/SCREENING.md)        | What exists today, the five ratios and their caps, the verdict rule, exact arithmetic, the full limitations list |
+| [Local development](docs/guides/SETUP.md)           | Clone and install, the database and migrations, running the API and UI, tests, the narrator, Google SSO          |
+| [API and security model](docs/guides/API.md)        | Route tiers, account and Google sign-in boundaries, governance and watchlist rules, rate limits                  |
+| [Docker pilot](docs/guides/DOCKER.md)               | The development and production Compose stacks, published images, links to operations                             |
+| [CI, automation and releases](docs/guides/CI-CD.md) | CI checks, the `main` ruleset, Dependabot, docs auto-merge, release-please                                       |
+| [Repository structure](docs/guides/STRUCTURE.md)    | What each top-level folder holds, and the module map                                                             |
+| [Operations runbook](README_ops.md)                 | Environment, deployment, logs, metrics, backups, secret rotation, troubleshooting                                |
+| [Ingestion CLI](README_ingestion.md)                | Crawling BSE announcements, parsing filings, backfills and recomputes                                            |
 
----
-
-## CI, automation and releases
-
-- **CI** (`.github/workflows/ci.yml`): `backend` (pytest), `ui` (lint, jest, build) and `secrets` (gitleaks over full history). Actions are pinned by SHA; the token is read-only.
-- **`main` is protected by a ruleset:** pull request required (squash merge), the three checks above must pass; the repository owner can bypass for hotfixes.
-- **Dependabot** runs monthly and groups its PRs, titled `build(deps): ...`. Per ecosystem (GitHub Actions, UI, Python): one minor/patch group (UI splits dev and runtime), one group for majors, and one for security updates, which Dependabot raises separately as advisories appear. Auto-merge covers GitHub Actions and UI dev minor/patch, plus patch-level security updates for Actions and the UI; UI runtime minors, Python and every major wait for a human. Majors of the UI framework stack (Next, React, TypeScript, eslint, jest, Testing Library, Tailwind) and `@types/node` are ignored until their planned upgrade (types follow the Node 24 runtime).
-- **Docs-only PRs auto-merge** (`docs-automerge.yml`): when every changed file is Markdown under `docs/` or `Documentations/`, a README or `CHANGELOG.md`, the PR squash-merges once `backend`, `ui` and `secrets` pass. `AGENTS.md` and `CLAUDE.md` stay manual. The rule runs from `main` (`pull_request_target`), so a PR cannot change the rule that judges it.
-- **Releases (automatic):** release-please opens a release PR from Conventional Commit titles on `main` (`feat:` bumps the minor version, `fix:` the patch; `build:`, `ci:` and `docs:` do not release). With `RELEASE_PLEASE_TOKEN` in the `release` environment (usable only from `main`), CI runs on that PR and it auto-merges when green; the merge tags `vX.Y.Z`, updates `CHANGELOG.md` and publishes the GitHub Release. A release is a tag and notes only: nothing is deployed. Squash-merge PRs so each change appears once in the changelog. Without the secret the release PR must be merged by hand.
-- **No GitHub Pages:** the static Pages build (`nextjs.yml`) was removed on 2026-10-28 because it was never wired to an API. **The UI ships only with the Docker deployment** (`ui` service), built with `NEXT_PUBLIC_HALAL_API_BASE_URL`.
-- No container registry or API deployment workflow exists yet.
-
----
+The `docs/` folder is the engineering record, kept in the "Defend What You Ship" layout. Start with [docs/HANDOVER.md](docs/HANDOVER.md) (where things stand) and [docs/CONSTRAINTS.md](docs/CONSTRAINTS.md) (rules for changes); it also holds the decision log ([DECISIONS](docs/DECISIONS.md)), rejected options ([ALTERNATIVES](docs/ALTERNATIVES.md)), [ARCHITECTURE](docs/ARCHITECTURE.md), the request [FLOW](docs/FLOW.md), data structures ([DATA](docs/DATA.md)), [THREAT](docs/THREAT.md) and [FAILURE](docs/FAILURE.md) maps, the [TESTING](docs/TESTING.md) plan, the [ROLLBACK](docs/ROLLBACK.md) plan, open [ASSUMPTIONS](docs/ASSUMPTIONS.md) and the [DEPENDENCIES](docs/DEPENDENCIES.md) log. Operations and ingestion live in [README_ops.md](README_ops.md) and [README_ingestion.md](README_ingestion.md); the charter and planning notes in [Documentations/](Documentations/).
 
 ## Known limitations
 
-- **Methodology.** The receivables (67%) and liquid-assets (49%) market-cap gates are not backed by AAOIFI SS21 but are required for `compliant`. Debt and cash use total balances, not only interest-bearing ones.
-- **Income inputs are weak evidence.** The PDF extractor's prohibited-income regex also matches "interest income"; the vendor maps "Other, Net" to the base; vendor interest is net; governance overrides carry no declared contract. Interest and dividend figures are rarely extracted, so many filings screen as `insufficient-data`.
-- **Stored evaluations can be stale.** Evaluations computed by an older engine keep their verdicts until recomputed: run `python -m jobs.backfill_evaluations --recompute --report dry_run.csv` (dry run), then `--recompute --report write_run.csv --write` (a new report name each run; an existing file is refused). It uses the current stored inputs and stored market caps, never calls the vendor, and `--write` requires the report.
-- **Watchlists live in Postgres** (`watchlist_entries`, D-019). Re-adding a symbol keeps its baseline; a flip is detected with conditional updates, so concurrent `/alerts/check` calls send at most one alert per flip. Run one worker anyway (`API_WORKERS=1`, the compose default) while the rate limiter is per-process. Alerts fire only when a user calls `/alerts/check` (no scheduled job does), and email is best-effort.
-- `etl/financial_data_processor.py::_detect_scale` uses substring checks that can mis-scale values; `liquid_assets` is mapped from "current assets".
-- `market_data/indian_api.py::_get_stock_payload` is cached for the process lifetime, including failures.
-- `ui/lib/api.ts::callAnalysis` always calls the paid `/narrate`, so free users' manual analysis errors after `/halal-score` succeeds.
-- The rate limiter is per process (see above).
+- **No filings in production yet.** BSE answers 403 to the production server for announcements, so production ingestion stores no filings; a permitted data source (written permission or a licensed feed) is the maintainer's decision, and the blocking is not worked around.
+- **Inputs are weak evidence.** The PDF extractor's prohibited-income regex also matches "interest income", the vendor maps "Other, Net" to non-permissible income and its interest is net, `liquid_assets` is mapped from "current assets", and governance overrides carry no declared contract. The receivables (67%) and liquid-assets (49%) gates are not backed by AAOIFI SS21 but are required for `compliant`, and evaluations stored by an older engine keep their verdicts until recomputed.
+- **Single-host pilot.** Everything runs on one VM with one API worker; the rate limiter keeps its counters in process memory, so more workers multiply every limit and a restart resets them. Move it to Redis before scaling out.
 
----
-
-## Repository structure
-
-```
-api/              FastAPI app (api/app.py) and security helpers (api/security.py)
-alerts/           watchlist storage, flip engine, email notifier
-config/           environment helpers and logging config
-crawler/          BSE announcements fetcher (NSE fetcher exists, unused)
-database/         schema.sql, database manager, dated migrations/
-Documentations/   charter PDF and planning notes
-docs/             handover, decisions, architecture, threat and failure notes
-etl/              financial data processor and MinIO client
-halallens-mobile/ Flutter platform scaffold (no Dart source)
-jobs/             ingestion, evaluation and scheduler entry points
-market_data/      Indian Stock API and Bhavcopy resolution
-monitoring/       ops notifier and metrics
-narrator/         rule-based narrator and optional best-effort LLM narrator
-ratio_engine/     ratio math, verdict, summary, amount coercion
-scripts/          run_migrations.sh and helpers
-tests/            pytest suite
-tools/            preflight, probes, metrics inspector, load test
-ui/               Next.js 16 dashboard (static export) and jest tests
-```
+The full list is in [Screening method](docs/guides/SCREENING.md#known-limitations).
 
 ## Contributing
 
-Use Conventional Commit titles (`fix:`, `feat:`, `docs:`, `ci:`), keep one logical change per PR, and never commit secrets, keys or `.env` files. New environment variables go in `.env.example`; schema changes need a dated file in `database/migrations/` *and* an update to `database/schema.sql`. Changes to ratio logic need a row in the golden table in `tests/test_ratio_engine.py`.
+Use Conventional Commit titles (`fix:`, `feat:`, `docs:`, `ci:`), keep one logical change per PR, and never commit secrets, keys or `.env` files. New environment variables go in `.env.example`; schema changes need a dated file in `database/migrations/` *and* an update to `database/schema.sql`. Changes to ratio logic need a row in the golden table in `tests/test_ratio_engine.py`. Update this README and the guides in `docs/guides/` in the same PR as the behaviour they describe.
 
 ## License
 
