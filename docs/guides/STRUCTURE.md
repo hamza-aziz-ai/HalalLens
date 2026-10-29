@@ -4,7 +4,7 @@ What each top-level folder holds, and the module map. Back to the [README](../..
 
 ```
 api/              FastAPI app (api/app.py), security, mailer, billing grant fold, Razorpay client
-alerts/           watchlist storage, flip engine, email notifier
+alerts/           watchlist storage and flip observation, alert-email sender (scheduler step)
 caddy/            maintenance page served by the front Caddy
 cloudflare/       maintenance Worker for when the origin is down
 config/           environment helpers and logging config
