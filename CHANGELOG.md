@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.1](https://github.com/hamza-aziz-ai/HalalLens/compare/v0.7.0...v0.7.1) (2026-10-29)
+
+
+### Bug Fixes
+
+* **ui:** apply Alpine security updates in the dashboard image ([#170](https://github.com/hamza-aziz-ai/HalalLens/issues/170)) ([e24f783](https://github.com/hamza-aziz-ai/HalalLens/commit/e24f783a9b416a7e2a7279e665e8195bb81f8376))
+
 ## [0.7.0](https://github.com/hamza-aziz-ai/HalalLens/compare/v0.6.3...v0.7.0) (2026-10-29)
 
 
