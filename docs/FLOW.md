@@ -260,7 +260,7 @@ sequenceDiagram
   A->>P: settle_razorpay_order, only if captured and the terms match
   Note over P: One transaction: order row FOR UPDATE, user row locked, then claim, grant, event and projection.
   alt granted
-    P-->>A: granted (queued behind paid time, order paid, trial used)
+    P-->>A: granted (timed plans queue behind paid time, Lifetime starts now; order paid, trial used)
   else settled
     P-->>A: settled (the other path won, nothing granted twice)
   else refunded_payment
@@ -276,14 +276,14 @@ Key: solid arrows are requests, dashed arrows answers; boxes are branches and th
 
 1. The account page asks for an order (`_require_session`: a verified session is enough, no subscription). 503 when billing is not configured.
 2. The plan must exist and be active (else 404), and `billing.lifetime_held` reads the user's grants.
-3. A Lifetime grant that is active or queued covers every plan: 409. Settlement checks this again under the lock (step 23), because two checkouts can be open at once.
+3. A Lifetime grant that is not refunded covers every plan: 409. Settlement checks this again under the lock (step 23), because two checkouts can be open at once.
 4. to 7. The API creates the Razorpay order (any upstream failure is 503, never 502), stores it as `created` in `razorpay_orders`, and returns the public key and order id.
 8. Razorpay's Checkout takes the payment in the browser.
 9. to 15. On the success callback the page posts the order id, payment id and signature to `/billing/razorpay/verify`. The API answers 404 for an order that is not the caller's, 400 for a malformed `pay_` id or a bad HMAC signature, and the current plan for an order that is no longer `created` or `attempted`. The signature proves only the pairing, so the API fetches the payment: it must be `captured`, for this order, amount and currency (`payment_matches_order`), else 409 ("not confirmed yet") or 503 if Razorpay cannot be reached. Then it settles.
 16. and 17. When the checkout closes without the callback (the payment can finish on the bank's page), `waitForOrderSettlement` polls the caller's own order every 2 s for up to 30 s and tells the user what the server saw.
 18. The webhook is the authoritative path: the browser call can be lost after money moved. The signature is checked over the raw body. `refund.processed` goes to the refund path (section 6); `payment.captured` and `order.paid` settle; any other event, and a grant event whose payment does not match the order, is only recorded in `payment_events`, where the unique `(provider, event_id)` index ignores duplicates.
 19. Both callers use `settle_razorpay_order`, which locks the order row and then the user's grants, so concurrent settlements serialise.
-20. `granted`: a new `subscription_grants` row starts when the user's paid time ends (D-024: purchases queue, nothing paid is discarded); the order becomes `paid` with its funding payment id, the event is recorded, the `users` projection is rewritten, and the trial counts as used.
+20. `granted`: a new `subscription_grants` row; a timed plan starts when the user's timed paid time ends (D-024: purchases queue, nothing paid is discarded), a Lifetime starts at settlement and is the current plan at once, over any timed time (D-024 amendment); the order becomes `paid` with its funding payment id, the event is recorded, the `users` projection is rewritten, and the trial counts as used.
 21. `settled`: the order was already claimed; nothing is granted twice. The webhook then falls through to record its event once.
 22. `refunded_payment`: this payment was fully refunded before settlement, so it can never fund the order; another attempt still can (D-025).
 23. `refund_due`: a Lifetime grant already covers the user. The order is marked `refund_due` with this payment id and no time is granted; the reconciler owes the refund (sections 5 and 6).

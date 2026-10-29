@@ -24,7 +24,7 @@ Boundaries worth knowing:
 - `/market-data` requires a session because a cache miss spends vendor quota.
 - Session tokens are SHA-256 digests; passwords are PBKDF2-HMAC-SHA256 at 600k iterations (older hashes are re-hashed on next login).
 - Razorpay webhooks are idempotent through the unique `(provider, event_id)` index on `payment_events`.
-- Plans are one-time purchases on a ledger of grants (D-024): a purchase made while paid time runs queues behind it, nothing renews, and `/billing/cancel` changes nothing (it returns the current state for old clients). Refunds touch only the payment they refund (D-025).
+- Plans are one-time purchases on a ledger of grants (D-024): a timed purchase (Starter, Annual) made while paid time runs queues behind it, Lifetime takes effect when paid and overlays any timed time (a Lifetime refund reveals what remains), nothing renews, and `/billing/cancel` changes nothing (it returns the current state for old clients). Refunds touch only the payment they refund (D-025).
 - Upstream failures (Razorpay, Google) answer 503, never 502, because Cloudflare replaces an origin 502 with its own page. A failed Google sign-in redirects to `/login#error=<code>` instead of returning JSON.
 
 Rate limits (per worker process, see the caveat):

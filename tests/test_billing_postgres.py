@@ -197,9 +197,26 @@ def test_lifetime_turns_a_late_payment_into_refund_due(db):
     assert len(manager.get_subscription_grants(user_id)) == 1
 
 
+def test_lifetime_bought_during_annual_is_projected_at_settlement_and_its_refund_restores_annual(db):
+    manager, admin = db
+    user_id = _user(admin)
+    _order(admin, user_id, "order_a", "annual")
+    _order(admin, user_id, "order_life", "lifetime")
+    _settle(manager, "order_a", "pay_a")
+    with admin.cursor() as cur:
+        cur.execute("SELECT subscription_renewal FROM users WHERE id = %s", (user_id,))
+        annual_end = cur.fetchone()[0]
+    assert _settle(manager, "order_life", "pay_l")[0] == "granted"
+    assert _plan(admin, user_id) == "lifetime"
+    assert _refund(manager, "order_life", "pay_l", "rfnd_l", 200000) == "revoked"
+    with admin.cursor() as cur:
+        cur.execute("SELECT plan, subscription_renewal FROM users WHERE id = %s", (user_id,))
+        assert cur.fetchone() == ("annual", annual_end)
+
+
 def test_lifetime_and_another_purchase_racing_never_strand_money(db):
-    # Without the per-user lock both settle, and the Starter grant lands behind
-    # Lifetime where it can never run: paid for, worth nothing, nobody told.
+    # Without the per-user lock both settle, and the Starter grant lands under
+    # Lifetime where it can never be used: paid for, worth nothing, nobody told.
     manager, admin = db
     for round_ in range(15):
         user_id = _user(admin, f"race{round_}@example.com")
