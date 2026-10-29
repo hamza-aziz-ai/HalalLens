@@ -77,6 +77,7 @@ from config import (
 )
 from api import billing
 from api.razorpay_client import RazorpayClient, RazorpayError
+from api.razorpay_client import payment_created_at
 from api.razorpay_client import payment_matches_order as _payment_matches_order
 from api.mailer import send_email
 from api.security import (
@@ -308,6 +309,18 @@ class EntitlementSegment(BaseModel):
     end: Optional[datetime] = None  # None: Lifetime
 
 
+class LifetimeQuote(BaseModel):
+    plan_code: str
+    #: Amounts in paise: amount = list_amount - credit_amount.
+    list_amount: int
+    credit_amount: int
+    amount: int
+    #: Payable below one rupee: no checkout, contact support.
+    blocked: bool
+    #: How long an order's price holds for a payment attempt.
+    valid_for_seconds: int
+
+
 class EntitlementResponse(BaseModel):
     plan: str
     subscription_status: str
@@ -319,6 +332,9 @@ class EntitlementResponse(BaseModel):
     purchases_blocked: bool
     #: Every plan is a one-time purchase; nothing renews automatically.
     auto_renewal: bool = False
+    #: What Lifetime would cost now after upgrade credit (D-030); a preview,
+    #: the order fixes the binding price. None when Lifetime is held or not sold.
+    lifetime_quote: Optional[LifetimeQuote] = None
 
 
 class RazorpayOrderRequest(BaseModel):
@@ -336,17 +352,25 @@ class TrialStartRequest(BaseModel):
 class RazorpayOrderResponse(BaseModel):
     key_id: str
     order_id: str
+    #: Charged amount in paise (list_amount - credit_amount).
     amount: int
     currency: str
     plan_code: str
     plan_name: str
     email: str
+    list_amount: int
+    credit_amount: int = 0
+    #: Credited orders only: the price holds for payment attempts created by then.
+    price_valid_until: Optional[datetime] = None
 
 
 class RazorpayOrderStatusResponse(BaseModel):
     order_id: str
     #: created | attempted (not paid yet) | paid | refund_due | refunded
     status: str
+    #: refund_due only: lifetime_held | price_expired | credit_changed, and what to tell the buyer
+    reason: Optional[str] = None
+    message: Optional[str] = None
 
 
 class RazorpayVerifyRequest(BaseModel):
@@ -592,6 +616,7 @@ INGESTION_METRICS_PATH = Path(
     os.getenv("INGESTION_METRICS_PATH", "logs/metrics/ingestion_metrics.jsonl")
 )
 narration_notifier = OpsNotifier(component="narrator")
+billing_notifier = OpsNotifier(component="billing")
 MARKET_ALERT_EVENTS: Deque[Dict[str, Any]] = deque(maxlen=OPS_EVENT_HISTORY)
 LLM_FAILURE_EVENTS: Deque[Dict[str, Any]] = deque(maxlen=OPS_EVENT_HISTORY)
 
@@ -1045,10 +1070,22 @@ def _create_razorpay_order(
     user_id: int,
     email: str,
     plan: Dict[str, Any],
+    quote: Optional[Dict[str, Any]] = None,
+    priced_at: Optional[datetime] = None,
 ) -> Dict[str, Any]:
+    """Create the Razorpay order (outside any DB transaction), then store it with its terms.
+
+    ``quote`` (billing.upgrade_quote, priced at ``priced_at`` by the database
+    clock) makes it a credited order: Razorpay is asked for the charged
+    amount and the stored order carries the pricing terms (D-030).
+    """
+
     _ensure_razorpay_enabled()
-    amount_paise = int(plan["price_inr"]) * 100
-    receipt = f"user_{user_id}_{int(time.time())}"
+    list_paise = int(plan["price_inr"]) * 100
+    amount_paise = int(quote["amount"]) if quote else list_paise
+    # Unique per call (two checkouts in one second must not share a receipt);
+    # Razorpay allows 40 characters.
+    receipt = f"user_{user_id}_{secrets.token_hex(8)}"
     payload = {
         "amount": amount_paise,
         "currency": "INR",
@@ -1057,6 +1094,7 @@ def _create_razorpay_order(
             "user_id": str(user_id),
             "plan_code": plan["code"],
             "email": email,
+            **({"list_amount": str(list_paise), "credit_amount": str(quote["credit_amount"])} if quote else {}),
         },
     }
     try:
@@ -1075,6 +1113,25 @@ def _create_razorpay_order(
             status_code=503, detail="Checkout is unavailable right now. Please try again shortly."
         )
     order = resp.json()
+    terms: Dict[str, Any] = {"list_amount": order["amount"]}
+    if quote:
+        # Fail closed: a credited order is stored only for exactly the quoted charge.
+        if order.get("amount") != amount_paise or str(order.get("currency") or "").upper() != "INR":
+            api_logger.error(
+                "Razorpay order %s came back as %s %s, quoted %s INR: not stored",
+                order.get("id"), order.get("amount"), order.get("currency"), amount_paise,
+            )
+            raise HTTPException(
+                status_code=503, detail="Checkout is unavailable right now. Please try again shortly."
+            )
+        terms = {
+            "list_amount": list_paise,
+            "credit_amount": int(quote["credit_amount"]),
+            "priced_at": priced_at,
+            "price_valid_until": priced_at + billing.PRICE_VALIDITY,
+            "credit_version": billing.CREDIT_VERSION,
+            "credit_detail": {"sources": quote["sources"]},
+        }
     _get_db().create_razorpay_order(
         user_id=user_id,
         order_id=order["id"],
@@ -1084,8 +1141,9 @@ def _create_razorpay_order(
         payload=order,
         plan_code=plan["code"],
         interval_days=int(plan.get("interval_days") or 0),
+        **terms,
     )
-    return order
+    return {**order, **terms}
 
 
 def _build_google_redirect(
@@ -3070,15 +3128,46 @@ async def start_billing_trial(
     )
 
 
-@app.get("/billing/entitlement", response_model=EntitlementResponse)
-async def billing_entitlement(authorization: Optional[str] = Header(None)) -> EntitlementResponse:
-    """Current and queued paid periods, and when a new purchase would start."""
+def _upgrade_plan() -> Optional[Dict[str, Any]]:
+    """The active never-ending (Lifetime) plan, if one is sold."""
 
+    return next(
+        (p for p in _get_db().list_subscription_plans(active_only=True) if int(p.get("interval_days") or 0) <= 0),
+        None,
+    )
+
+
+def _lifetime_quote(grants, funding, now, plan) -> Optional[Dict[str, Any]]:
+    """billing.upgrade_quote for ``plan`` at its list price, or None when Lifetime is already held."""
+
+    if billing.lifetime_held(grants):
+        return None
+    return billing.upgrade_quote(grants, funding, now, int(plan["price_inr"]) * 100)
+
+
+@app.get("/billing/entitlement", response_model=EntitlementResponse)
+async def billing_entitlement(
+    response: Response, authorization: Optional[str] = Header(None)
+) -> EntitlementResponse:
+    """Current and queued paid periods, when a new purchase would start, and the Lifetime price after credit."""
+
+    response.headers["Cache-Control"] = "no-store"  # per-user money figures
     _, session = _require_session(authorization)
     _subscription_active(session)
-    grants = _get_db().get_subscription_grants(session["user_id"])
+    db = _get_db()
+    grants = db.get_subscription_grants(session["user_id"])
     now = _utcnow()
+    plan = _upgrade_plan()
+    quote = _lifetime_quote(grants, db.get_credit_funding(session["user_id"]), now, plan) if plan else None
     return EntitlementResponse(
+        lifetime_quote=None if quote is None else LifetimeQuote(
+            plan_code=plan["code"],
+            list_amount=quote["list_amount"],
+            credit_amount=quote["credit_amount"],
+            amount=quote["amount"],
+            blocked=quote["blocked"],
+            valid_for_seconds=int(billing.PRICE_VALIDITY.total_seconds()),
+        ),
         plan=session.get("plan") or "free",
         subscription_status=session.get("subscription_status") or "inactive",
         segments=[
@@ -3103,16 +3192,35 @@ async def create_razorpay_order(
     if billing.lifetime_held(_get_db().get_subscription_grants(session["user_id"])):
         # Settlement re-checks this under the user lock (two checkouts can be open).
         raise HTTPException(status_code=409, detail="Lifetime access already covers every plan.")
+    quote, priced_at = None, None
+    if int(plan.get("interval_days") or 0) <= 0:
+        # Lifetime is priced with upgrade credit (D-030) on one locked read;
+        # the lock is released before Razorpay is called.
+        quote, priced_at = _get_db().quote_upgrade(
+            session["user_id"], lambda grants, funding, now: _lifetime_quote(grants, funding, now, plan)
+        )
+        if quote is None:
+            raise HTTPException(status_code=409, detail="Lifetime access already covers every plan.")
+        if quote["blocked"]:
+            raise HTTPException(
+                status_code=409,
+                detail="Your credit covers almost all of the Lifetime price, so we can't open a checkout. "
+                "Please contact support to upgrade.",
+            )
     order = _create_razorpay_order(
         user_id=session["user_id"],
         email=session["email"],
         plan=plan,
+        quote=quote,
+        priced_at=priced_at,
     )
     api_logger.info(
-        "Razorpay order created user_id=%s plan=%s order_id=%s",
+        "Razorpay order created user_id=%s plan=%s order_id=%s amount=%s credit=%s",
         session["user_id"],
         plan_code,
         order.get("id"),
+        order.get("amount"),
+        order.get("credit_amount", 0),
     )
     return RazorpayOrderResponse(
         key_id=RAZORPAY_KEY_ID,
@@ -3122,6 +3230,9 @@ async def create_razorpay_order(
         plan_code=plan_code,
         plan_name=plan["name"],
         email=session["email"],
+        list_amount=int(order["list_amount"]),
+        credit_amount=int(order.get("credit_amount") or 0),
+        price_valid_until=order.get("price_valid_until"),
     )
 
 
@@ -3151,15 +3262,31 @@ def _settle_razorpay_order(
     expected_user_id: Optional[int] = None,
     event_type: str,
     event_payload: Dict[str, Any],
+    payment: Dict[str, Any],
 ) -> Tuple[str, Optional[Dict[str, Any]]]:
     """Turn a captured payment into a grant, exactly once (D-024).
 
-    Browser verification and the webhook both land here; the database does
-    the claim, grant, event and projection in one transaction under the user
-    lock, so the loser of a race gets "settled" and nothing is granted twice,
-    and a crash never leaves a paid order without access.
+    Browser verification and the webhook both land here (the reconciler calls
+    the same database method); the database does the claim, grant, event and
+    projection in one transaction under the user lock, so the loser of a race
+    gets "settled" and nothing is granted twice, and a crash never leaves a
+    paid order without access. ``payment`` is the payment entity: its
+    ``created_at`` (when the attempt was created) decides whether a credited
+    order's price still binds (D-030). When it is missing for a credited
+    order, the payment is fetched here, outside any lock; still missing
+    means "retry" and nothing changes.
     """
 
+    attempt_at = payment_created_at(payment)
+    if attempt_at is None:
+        order = _get_db().get_razorpay_order(order_id)
+        if order and order.get("credit_version") is not None:
+            try:
+                attempt_at = payment_created_at(
+                    RazorpayClient(RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET).fetch_payment(payment_id)
+                )
+            except RazorpayError as exc:
+                api_logger.warning("Razorpay payment fetch for %s failed: %s", payment_id, exc)
     result, info = _get_db().settle_razorpay_order(
         order_id=order_id,
         payment_id=payment_id,
@@ -3168,6 +3295,8 @@ def _settle_razorpay_order(
         payload=event_payload,
         project=billing.project,
         lifetime_held=billing.lifetime_held,
+        payment_created_at=attempt_at,
+        credit_refusal=billing.credit_refusal,
     )
     if result == "missing":
         raise HTTPException(status_code=404, detail="Order not found")
@@ -3177,13 +3306,48 @@ def _settle_razorpay_order(
             order_id, payment_id, info["granted_plan"], event_type,
         )
     elif result == "refund_due":
-        # Two checkouts were open and Lifetime won: keep the money on record
-        # and refund it by hand (README_ops, Billing).
+        # Keep the money on record; the reconciler refunds it (TEST keys) or
+        # a human does (README_ops, Billing).
         api_logger.error(
-            "REFUND DUE: order_id=%s payment_id=%s paid while Lifetime covers user_id=%s",
-            order_id, payment_id, info["user_id"],
+            "REFUND DUE: order_id=%s payment_id=%s user_id=%s reason=%s",
+            order_id, payment_id, info["user_id"], info.get("refund_due_reason"),
+        )
+    elif result == "retry":
+        api_logger.warning(
+            "Credited order %s: payment %s has no creation time yet; left for a retry", order_id, payment_id
         )
     return result, info
+
+
+#: What the buyer is told when a payment is kept for a refund, by reason.
+REFUND_DUE_MESSAGES = {
+    "lifetime_held": "Lifetime access already covers your account, so this payment will be refunded.",
+    "price_expired": "This payment started after your Lifetime price expired (a price with credit is held "
+    "for 15 minutes), so the full amount will be refunded. Please start a new checkout.",
+    "credit_changed": "A purchase your credit came from changed after the price was set (for example, it "
+    "was refunded), so the full amount will be refunded. Please start a new checkout.",
+}
+
+
+def _refund_due_message(reason: Optional[str]) -> str:
+    return REFUND_DUE_MESSAGES.get(reason or "lifetime_held", REFUND_DUE_MESSAGES["lifetime_held"])
+
+
+def _alert_credit_conflict(refund_id: str, payment_id: Optional[str], info: Optional[Dict[str, Any]]) -> None:
+    """A refunded payment had funded credit on a settled upgrade (D-030): alert only."""
+
+    conflicts = (info or {}).get("credit_conflicts") if isinstance(info, dict) else None
+    if not conflicts:
+        return
+    api_logger.error(
+        "CREDIT CONFLICT: refund %s of payment %s; credit was used by order(s) %s", refund_id, payment_id, conflicts
+    )
+    billing_notifier.notify(
+        "error",
+        f"Billing needs attention: credit_conflict (refund {refund_id}, order {conflicts[0]})",
+        "A refunded payment funded upgrade credit on a settled Lifetime order. See README_ops, Billing "
+        "(credit_conflict). Tracked in billing_tracked until resolved by hand.",
+    )
 
 
 def _current_subscription_response(user_id: int) -> SubscriptionStatusResponse:
@@ -3211,7 +3375,12 @@ async def razorpay_order_status(
     order = _get_db().get_razorpay_order(order_id)
     if not order or order.get("user_id") != session.get("user_id"):
         raise HTTPException(status_code=404, detail="Order not found")
-    return RazorpayOrderStatusResponse(order_id=order_id, status=order["status"])
+    # Orders that went refund_due before D-030 carry no reason: Lifetime was held.
+    reason = (order.get("refund_due_reason") or "lifetime_held") if order["status"] == "refund_due" else None
+    return RazorpayOrderStatusResponse(
+        order_id=order_id, status=order["status"], reason=reason,
+        message=_refund_due_message(reason) if reason else None,
+    )
 
 
 @app.post("/billing/razorpay/verify", response_model=SubscriptionStatusResponse)
@@ -3250,17 +3419,21 @@ async def verify_razorpay_payment(
             "access is added automatically within a few minutes.",
         )
 
-    result, _ = _settle_razorpay_order(
+    result, info = _settle_razorpay_order(
         order_id=payload.order_id,
         payment_id=payload.payment_id,
         expected_user_id=session["user_id"],
         event_type="payment.verified",
         event_payload={"order_id": payload.order_id, "payment_id": payload.payment_id},
+        payment=payment,
     )
     if result == "refund_due":
+        raise HTTPException(status_code=409, detail=_refund_due_message(info.get("refund_due_reason")))
+    if result == "retry":
         raise HTTPException(
-            status_code=409,
-            detail="Lifetime access already covers your account, so this payment will be refunded.",
+            status_code=503,
+            detail="Could not confirm the payment with Razorpay yet. If money was taken, "
+            "access is added automatically within a few minutes.",
         )
     if result == "refunded_payment":
         raise HTTPException(status_code=409, detail="This payment was already refunded.")
@@ -3338,6 +3511,7 @@ async def razorpay_webhook(request: Request) -> Dict[str, str]:
             )
         elif result != "duplicate":
             api_logger.info("Refund %s recorded: %s", refund_id, result)
+        _alert_credit_conflict(refund_id, refunded_payment, info)
         return {"status": result}
 
     order = db.get_razorpay_order(order_id) if order_id else None
@@ -3350,8 +3524,10 @@ async def razorpay_webhook(request: Request) -> Dict[str, str]:
                 payment_id=payment_id,
                 event_type=event_type,
                 event_payload=event,
+                payment=payment_entity,  # the payment entity's created_at, never the envelope's
             )
-            if result in ("granted", "refund_due", "refunded_payment"):
+            if result in ("granted", "refund_due", "refunded_payment", "retry"):
+                # retry: nothing recorded; the reconciler settles it from the payment.
                 return {"status": result}
             # Already settled elsewhere; fall through to record the event.
         else:

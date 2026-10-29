@@ -420,3 +420,132 @@ def test_refund_action_state_never_moves_backwards_and_manual_refunds_settle_the
     with admin.cursor() as cur:
         cur.execute("SELECT resolved_at FROM billing_tracked WHERE provider_id = 'pay_2'")
         assert cur.fetchone()[0] is not None
+
+
+# --- upgrade credit (D-030) ----------------------------------------------------------
+
+CREDIT_MIGRATION = ROOT / "database/migrations/20261030_lifetime_upgrade_credit.sql"
+
+
+def test_credit_migration_backfills_old_orders_and_is_idempotent(db):
+    import psycopg2
+
+    manager, admin = db
+    user_id = _user(admin)
+    with admin.cursor() as cur:
+        # The pre-D-030 shape.
+        cur.execute("ALTER TABLE razorpay_orders DROP CONSTRAINT razorpay_orders_credit_terms_check")
+        cur.execute(
+            "ALTER TABLE razorpay_orders DROP COLUMN list_amount, DROP COLUMN credit_amount, DROP COLUMN priced_at, "
+            "DROP COLUMN price_valid_until, DROP COLUMN credit_version, DROP COLUMN credit_detail, "
+            "DROP COLUMN refund_due_reason"
+        )
+        cur.execute("ALTER TABLE billing_tracked DROP CONSTRAINT billing_tracked_kind_check")
+        cur.execute("ALTER TABLE billing_tracked ADD CONSTRAINT billing_tracked_kind_check "
+                    "CHECK (kind IN ('payment', 'refund', 'order'))")
+    _order(admin, user_id, "order_old", "lifetime")  # unpaid, made before the migration
+    with admin.cursor() as cur:
+        cur.execute(CREDIT_MIGRATION.read_text(encoding="utf-8"))
+        cur.execute(CREDIT_MIGRATION.read_text(encoding="utf-8"))  # idempotent
+    order = manager.get_razorpay_order("order_old")
+    assert (order["list_amount"], order["credit_amount"], order["credit_version"]) == (200000, 0, None)
+    # Completes exactly as before: no attempt time needed.
+    assert _settle(manager, "order_old", "pay_old")[0] == "granted"
+    with admin.cursor() as cur, pytest.raises(psycopg2.errors.CheckViolation):
+        cur.execute("UPDATE razorpay_orders SET credit_amount = 1 WHERE order_id = 'order_old'")
+    manager.track_billing_item(kind="credit_conflict", provider_id="rfnd_x", order_id="order_old",
+                               reason="credit_conflict", last_status=None, recheck_after_seconds=0)
+
+
+def _credited(manager, user_id, order_id):
+    """A Lifetime order priced with credit on the database clock, as the API stores it."""
+
+    from api.billing import CREDIT_VERSION, PRICE_VALIDITY, upgrade_quote
+
+    quote, priced_at = manager.quote_upgrade(user_id, lambda g, f, now: upgrade_quote(g, f, now, 200000))
+    manager.create_razorpay_order(
+        user_id=user_id, order_id=order_id, amount=quote["amount"], currency="INR", status="created", payload={},
+        plan_code="lifetime", interval_days=0, list_amount=200000, credit_amount=quote["credit_amount"],
+        priced_at=priced_at, price_valid_until=priced_at + PRICE_VALIDITY, credit_version=CREDIT_VERSION,
+        credit_detail={"sources": quote["sources"]},
+    )
+    return quote, int(priced_at.timestamp())
+
+
+def _settle_credited(manager, order_id, payment_id, created_at):
+    from api.billing import credit_refusal
+
+    return manager.settle_razorpay_order(
+        order_id=order_id, payment_id=payment_id, expected_user_id=None, event_type="payment.captured",
+        payload={}, project=project, lifetime_held=lifetime_held, payment_created_at=created_at,
+        credit_refusal=credit_refusal,
+    )
+
+
+def test_credited_lifetime_on_real_sql(db):
+    manager, admin = db
+    user_id = _user(admin)
+    _order(admin, user_id, "order_a", "annual")
+    _settle(manager, "order_a", "pay_a")
+    quote, created = _credited(manager, user_id, "order_l")
+    assert 0 < quote["credit_amount"] <= 50000 and quote["amount"] == 200000 - quote["credit_amount"]
+    order = manager.get_razorpay_order("order_l")
+    assert order["credit_detail"]["sources"][0]["payment_id"] == "pay_a"
+    assert _settle_credited(manager, "order_l", "pay_l", None)[0] == "retry"
+    assert manager.get_razorpay_order("order_l")["status"] == "created"
+    assert _settle_credited(manager, "order_l", "pay_l", created)[0] == "granted"
+    assert _plan(admin, user_id) == "lifetime"
+    # The Annual is refunded afterwards: alert item, access unchanged, never due for a re-check.
+    assert _refund(manager, "order_a", "pay_a", "rfnd_a", 50000) == "revoked"
+    assert _plan(admin, user_id) == "lifetime"
+    with admin.cursor() as cur:
+        cur.execute("SELECT order_id, reason, resolved_at FROM billing_tracked WHERE kind = 'credit_conflict'")
+        assert cur.fetchall() == [("order_l", "credit_conflict", None)]
+        cur.execute("UPDATE billing_tracked SET next_check_at = NOW() - INTERVAL '1 day'")
+    assert manager.due_billing_items(10) == []
+
+
+def test_credited_lifetime_refund_due_reasons_on_real_sql(db):
+    manager, admin = db
+    user_id = _user(admin)
+    _order(admin, user_id, "order_a", "annual")
+    _settle(manager, "order_a", "pay_a")
+    _, created = _credited(manager, user_id, "order_late")
+    _, created2 = _credited(manager, user_id, "order_changed")
+    assert _settle_credited(manager, "order_late", "pay_late", created + 15 * 60 + 2)[0] == "refund_due"
+    assert _refund(manager, "order_a", "pay_a", "rfnd_part", 100) == "partial"
+    assert _settle_credited(manager, "order_changed", "pay_ch", created2)[0] == "refund_due"
+    reasons = {o: manager.get_razorpay_order(o)["refund_due_reason"] for o in ("order_late", "order_changed")}
+    assert reasons == {"order_late": "price_expired", "order_changed": "credit_changed"}
+    assert _plan(admin, user_id) == "annual"
+
+
+def test_credited_settlement_racing_a_source_refund_never_grants_on_stale_credit_silently(db):
+    manager, admin = db
+    for round_ in range(10):
+        user_id = _user(admin, f"credit{round_}@example.com")
+        _order(admin, user_id, f"a_{round_}", "annual")
+        _settle(manager, f"a_{round_}", f"pay_a{round_}")
+        _, created = _credited(manager, user_id, f"l_{round_}")
+        barrier = threading.Barrier(2)
+        out = {}
+
+        def settle():
+            barrier.wait()
+            out["settle"] = _settle_credited(manager, f"l_{round_}", f"pay_l{round_}", created)[0]
+
+        def refund():
+            barrier.wait()
+            out["refund"] = _refund(manager, f"a_{round_}", f"pay_a{round_}", f"rfnd_{round_}", 50000)
+
+        threads = [threading.Thread(target=settle), threading.Thread(target=refund)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        with admin.cursor() as cur:
+            cur.execute("SELECT COUNT(*) FROM billing_tracked WHERE kind = 'credit_conflict' AND order_id = %s",
+                        (f"l_{round_}",))
+            conflicts = cur.fetchone()[0]
+        # Either the refund came first (no grant) or the grant came first (alert opened).
+        assert (out["settle"], conflicts) in (("refund_due", 0), ("granted", 1)), (out, conflicts)

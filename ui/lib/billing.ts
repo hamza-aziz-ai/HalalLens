@@ -21,24 +21,37 @@ export function purchaseLabel(plan: BillingPlan, currentRank: number): string {
   return plan.rank < currentRank ? "Switch" : "Extend";
 }
 
+/** Paise as rupees: "₹1502", or "₹1501.63" when there are paise. */
+export function formatRupees(paise: number): string {
+  return paise % 100 === 0 ? `₹${paise / 100}` : `₹${(paise / 100).toFixed(2)}`;
+}
+
+/** "₹2000 − ₹498 credit = ₹1502" for a price with upgrade credit (D-030). */
+export function creditBreakdown(price: { list_amount: number; credit_amount: number; amount: number }): string {
+  return `${formatRupees(price.list_amount)} − ${formatRupees(price.credit_amount)} credit = ${formatRupees(price.amount)}`;
+}
+
+/** refund_due only: reason (lifetime_held | price_expired | credit_changed) and the buyer-facing message. */
+export type OrderSettlement = { status: string; reason?: string | null; message?: string | null };
+
 /**
  * After the checkout closes without its success callback, ask the server what
  * happened: a payment finished on the bank's page is settled by the webhook.
- * Polls every 2 s for up to `timeoutMs`; returns the last status seen.
+ * Polls every 2 s for up to `timeoutMs`; returns the last status (and refund reason) seen.
  */
-export async function waitForOrderSettlement(orderId: string, timeoutMs = 30_000): Promise<string> {
+export async function waitForOrderSettlement(orderId: string, timeoutMs = 30_000): Promise<OrderSettlement> {
   const deadline = Date.now() + timeoutMs;
-  let status = "created";
+  let seen: OrderSettlement = { status: "created" };
   while (Date.now() < deadline) {
     try {
-      status = (await request<{ status: string }>(`/billing/razorpay/order/${encodeURIComponent(orderId)}`)).status;
+      seen = await request<OrderSettlement>(`/billing/razorpay/order/${encodeURIComponent(orderId)}`);
     } catch {
       // A transient failure: keep waiting until the deadline.
     }
-    if (status !== "created" && status !== "attempted") return status;
+    if (seen.status !== "created" && seen.status !== "attempted") return seen;
     await new Promise((resolve) => setTimeout(resolve, 2_000));
   }
-  return status;
+  return seen;
 }
 
 export async function createRazorpayOrder(

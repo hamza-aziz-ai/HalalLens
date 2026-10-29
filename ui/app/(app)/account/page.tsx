@@ -6,6 +6,7 @@ import clsx from "clsx";
 import type { BillingPlan, Entitlement } from "@/lib/types";
 import {
   createRazorpayOrder,
+  creditBreakdown,
   fetchBillingPlans,
   fetchEntitlement,
   loadRazorpayScript,
@@ -77,6 +78,9 @@ export default function AccountPage() {
   // never queues: it takes effect when paid (D-024 amendment).
   const startsLater = running?.end && entitlement ? entitlement.next_purchase_starts : null;
   const startsLaterFor = (plan: BillingPlan) => (plan.interval_days > 0 ? startsLater : null);
+  // Lifetime's price after credit for unused paid time (D-030), when this user can buy it.
+  const quoteFor = (plan: BillingPlan) =>
+    entitlement?.lifetime_quote?.plan_code === plan.code ? entitlement.lifetime_quote : null;
 
   const handleUpgrade = async (plan: BillingPlan) => {
     if (!user) return;
@@ -86,6 +90,20 @@ export default function AccountPage() {
     try {
       await loadRazorpayScript();
       const order = await createRazorpayOrder(plan.code);
+      // A price with upgrade credit is fixed by the order (D-030); the credit
+      // shrinks as the current plan runs, so confirm when it moved since the preview.
+      const preview = quoteFor(plan);
+      if (preview && order.amount !== preview.amount) {
+        const binding = {
+          list_amount: order.list_amount ?? order.amount,
+          credit_amount: order.credit_amount ?? 0,
+          amount: order.amount,
+        };
+        if (!window.confirm(`Your ${plan.name} price is now ${creditBreakdown(binding)}. Continue to payment?`)) {
+          setUpgradeMessage("Checkout cancelled. No money was taken.");
+          return;
+        }
+      }
 
       // null: the checkout closed without its success callback.
       const paymentResult = await new Promise<{
@@ -131,11 +149,11 @@ export default function AccountPage() {
         });
       } else {
         setUpgradeMessage("Checking your payment…");
-        const status = await waitForOrderSettlement(order.order_id);
-        if (status === "refund_due") {
-          throw new Error("Lifetime access already covers your account, so this payment will be refunded.");
+        const settlement = await waitForOrderSettlement(order.order_id);
+        if (settlement.status === "refund_due") {
+          throw new Error(settlement.message ?? "This payment will be refunded.");
         }
-        if (status !== "paid") {
+        if (settlement.status !== "paid") {
           throw new Error(
             "No completed payment yet. If you did pay, your plan appears here within a few minutes; otherwise no money was taken.",
           );
@@ -307,7 +325,8 @@ export default function AccountPage() {
             const planStartsLater = startsLaterFor(plan);
             const showTrial = plan.trial_days > 0 && trialEligible;
             const isAnnual = plan.interval_days >= 365 && plan.interval_days > 0;
-            const disableUpgrade = upgradeLoading || billingLoading || isLifetimeUser;
+            const quote = quoteFor(plan);
+            const disableUpgrade = upgradeLoading || billingLoading || isLifetimeUser || Boolean(quote?.blocked);
             const label = purchaseLabel(plan, currentRank);
             return (
               <div
@@ -368,6 +387,16 @@ export default function AccountPage() {
                         >
                           {label}
                         </button>
+                        {quote && quote.credit_amount > 0 && (
+                          <p className={clsx("text-[11px]", mutedTextClass)}>
+                            {creditBreakdown(quote)} for your unused paid time.
+                          </p>
+                        )}
+                        {quote?.blocked && (
+                          <p className="text-[11px] text-amber-300">
+                            Your credit covers almost all of the price, so checkout is closed: contact support to upgrade.
+                          </p>
+                        )}
                         {planStartsLater && (
                           <p className={clsx("text-[11px]", mutedTextClass)}>
                             {extendsLastPlan ? "Adds to your plan; " : ""}starts {formatDate(planStartsLater)}
