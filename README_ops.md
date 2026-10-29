@@ -86,6 +86,19 @@ Either way it starts the stack, waits for the API health check, prints the servi
 
 **During a deploy** the api and ui containers restart for a few seconds. The front Caddy then answers with `caddy/maintenance.html` (503, `Retry-After: 20`, reloads itself), and `/api/*` with a JSON 503. Cloudflare's own "Bad gateway" page appears only when Caddy, cloudflared or the VM itself is down. Every 502 is avoided on purpose: Cloudflare replaces an origin 502 with its own page, so upstream failures in the API (Razorpay, Google) answer 503. Unknown paths get the dashboard's 404 page (`ui/app/not-found.tsx`, exported as `404.html`).
 
+### Cloudflare maintenance Worker (origin down)
+
+The front Caddy's maintenance page cannot help when Caddy, cloudflared or the VM itself is down; Cloudflare then shows its own error page. `cloudflare/maintenance-worker.js` covers that case on the free Workers plan: it passes every request to the origin and answers a 503 maintenance page only when Cloudflare reports the origin unreachable (502, 504, 520 to 527, 530 = tunnel down) or the fetch fails.
+
+Deploy once from the Cloudflare dashboard (no token needed):
+
+1. **Workers & Pages → Create → Worker**, name it `halallens-maintenance`, deploy the starter, then **Edit code**, replace everything with `cloudflare/maintenance-worker.js` and **Deploy**. Under **Settings**, turn **Observability** logs off (they would record visitor requests).
+2. **Settings → Domains & Routes → Add → Route:** zone `halallens.in`, route `halallens.in/*`, failure mode **Fail open** (if the Worker errors or the free plan's 100,000 requests a day run out, traffic goes straight to the origin).
+3. **Websites → halallens.in → Workers Routes → Add route:** `halallens.in/api/*` with Worker **None**, so API calls and Razorpay webhooks never pass through the Worker.
+4. Check: `curl -sI https://halallens.in/` still returns 200, and `/api/health` 200. The real test is the next time the tunnel is down (the page should show instead of Cloudflare's).
+
+The page is a copy of `caddy/maintenance.html` (a dashboard Worker cannot import files): change both together and paste the Worker again.
+
 ### Published images
 
 `publish-images.yml` runs when release-please publishes a release, or by hand (Actions → Publish images → Run workflow, with an existing tag) to retry. It waits for CI to pass on the released commit, builds `halallens-api` and `halallens-ui` natively for amd64 and arm64, runs the container and Caddy smoke tests, scans with Trivy (fails on fixable CRITICAL findings; HIGH and unfixed CRITICAL are listed in the run summary; reviewed exceptions go in `.trivyignore` with a reason and expiry), then pushes `vX.Y.Z-amd64` and `vX.Y.Z-arm64`, joins them into `vX.Y.Z`, and moves `latest` only for the newest release. A version tag that already exists is never overwritten.
