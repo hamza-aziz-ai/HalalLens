@@ -5,14 +5,14 @@ from __future__ import annotations
 
 import argparse
 import logging
-from dataclasses import asdict
 from datetime import datetime, timezone
 from typing import Dict, Iterable, List, Optional
 
 from config.logging_config import configure_logging as setup_file_logging
 from database import BSEDatabaseManager
+from evaluation import quality
 from market_data import fetch_indian_financial_snapshot, indian_api_enabled
-from ratio_engine import FinancialSnapshotInput, MarketDataInput, RatioEngine, build_summary
+from ratio_engine import FinancialSnapshotInput, MarketDataInput, RatioEngine
 from ratio_engine.amounts import coerce_amount
 
 
@@ -246,16 +246,11 @@ def _evaluate_snapshot(db: BSEDatabaseManager, symbol: str, filing_dt: datetime)
             provider=provider or "manual",
         ),
     )
-    verdict = evaluation.verdict
-    summary = build_summary(evaluation)
-    ratios_payload = {name: asdict(comp) for name, comp in evaluation.ratios.items()}
-    db.upsert_filing_evaluation(
-        symbol=snapshot.symbol,
+    quality.publish_evaluation(
+        db,
+        snapshot,
+        evaluation,
         filing_date=snapshot.filing_date,
-        is_compliant=evaluation.is_compliant,
-        ratios=ratios_payload,
-        summary=summary,
-        verdict=verdict,
         narration_source="ingestion",
         market_cap_used=market_cap,
         trailing_cap_used=None,

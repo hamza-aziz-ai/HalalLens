@@ -25,9 +25,14 @@ from config import (
     POSTGRES_USER,
     POSTGRES_PASSWORD
 )
+from evaluation import quality
 from utils.datetime_parser import parse_bse_datetime
 
 logger = logging.getLogger(__name__)
+
+# First key of the two-key advisory lock that serialises one filing's
+# publication and quality-issue writes (pg_advisory_xact_lock(int4, int4)).
+FILING_LOCK_NAMESPACE = 20261029
 
 
 class BSEDatabaseManager:
@@ -471,94 +476,211 @@ class BSEDatabaseManager:
                     return None
                 return row["market_cap"], row["share_price"], row.get("provider")
 
-    def upsert_filing_evaluation(
+    def _lock_filing(self, cursor, symbol: str, filing_date: datetime) -> None:
+        """Serialise publication and issue writes for one filing until commit.
+
+        Transaction-scoped, keyed on the canonical (symbol, filing instant), in
+        its own two-key namespace so it cannot meet the single-key job locks.
+        """
+
+        cursor.execute(
+            """
+            SELECT pg_advisory_xact_lock(
+                %(namespace)s,
+                hashtext(%(symbol)s || '|' || extract(epoch FROM %(filing_date)s::timestamptz)::text)
+            )
+            """,
+            {
+                "namespace": FILING_LOCK_NAMESPACE,
+                "symbol": str(symbol).strip().upper(),
+                "filing_date": filing_date,
+            },
+        )
+
+    @staticmethod
+    def _open_issue_rows(cursor, symbol: str, filing_date: datetime) -> List[Dict]:
+        cursor.execute(
+            """
+            SELECT issue_type, details
+              FROM data_quality_issues
+             WHERE symbol = %(symbol)s
+               AND filing_date = %(filing_date)s
+               AND resolved_at IS NULL
+             ORDER BY created_at ASC, id ASC
+            """,
+            {"symbol": symbol, "filing_date": filing_date},
+        )
+        return [dict(row) for row in cursor.fetchall()]
+
+    def publish_filing_evaluation(
         self,
         *,
         symbol: str,
         filing_date: datetime,
-        is_compliant: Optional[bool],
-        ratios: Dict,
-        summary: str,
         verdict: str,
+        is_compliant: Optional[bool],
+        summary: str,
+        ratios: Dict,
+        anomalies: Optional[Sequence[str]],
         narration_source: str,
         market_cap_used: Optional[float],
         trailing_cap_used: Optional[float],
         market_data_provider: Optional[str] = None,
-    ) -> None:
-        """Persist computed ratio evaluations for a filing."""
+        expect: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Store an engine result through the shared publication overlay (D-027).
 
+        One transaction under the filing's advisory lock: reconcile the
+        detector-owned `ratio_anomaly` row with `anomalies` (None: the detector
+        did not run), read every open issue, apply evaluation.quality.publish
+        and upsert filing_evaluations. Any open issue publishes needs-review.
+        `expect` (recompute --write) rejects the write with StalePublication
+        when the stored evaluation, the open issue types or the published pair
+        differ from the preview. Returns the published verdict, is_compliant,
+        summary, quality_issues (display text) and issue_types.
+        """
+
+        key = {"symbol": symbol, "filing_date": filing_date}
         with self.get_connection() as conn:
-            with conn.cursor() as cursor:
-                try:
+            with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+                self._lock_filing(cursor, symbol, filing_date)
+                open_issues = self._open_issue_rows(cursor, symbol, filing_date)
+                issues = quality.reconcile(open_issues, anomalies)
+                final_verdict, final_is_compliant, final_summary = quality.publish(
+                    verdict, is_compliant, summary, issues, anomalies or ()
+                )
+
+                if expect is not None:
                     cursor.execute(
                         """
-                        INSERT INTO filing_evaluations (
-                            symbol,
-                            filing_date,
-                            is_compliant,
-                            ratios,
-                            summary,
-                            verdict,
-                            narration_source,
-                            market_cap_used,
-                            trailing_cap_used,
-                            market_data_provider
-                        )
-                        VALUES (
-                            %(symbol)s,
-                            %(filing_date)s,
-                            %(is_compliant)s,
-                            %(ratios)s,
-                            %(summary)s,
-                            %(verdict)s,
-                            %(narration_source)s,
-                            %(market_cap_used)s,
-                            %(trailing_cap_used)s,
-                            %(market_data_provider)s
-                        )
-                        ON CONFLICT (symbol, filing_date)
-                        DO UPDATE SET
-                            is_compliant = EXCLUDED.is_compliant,
-                            ratios = EXCLUDED.ratios,
-                            summary = EXCLUDED.summary,
-                            verdict = EXCLUDED.verdict,
-                            narration_source = EXCLUDED.narration_source,
-                            market_cap_used = EXCLUDED.market_cap_used,
-                            trailing_cap_used = EXCLUDED.trailing_cap_used,
-                            market_data_provider = EXCLUDED.market_data_provider,
-                            evaluated_at = NOW()
+                        SELECT evaluated_at FROM filing_evaluations
+                         WHERE symbol = %(symbol)s AND filing_date = %(filing_date)s
                         """,
-                        {
-                            "symbol": symbol,
-                            "filing_date": filing_date,
-                            "is_compliant": is_compliant,
-                            "ratios": Json(ratios),
-                            "summary": summary,
-                            "verdict": verdict,
-                            "narration_source": narration_source,
-                            "market_cap_used": market_cap_used,
-                            "trailing_cap_used": trailing_cap_used,
-                            "market_data_provider": market_data_provider,
-                        },
+                        key,
                     )
-                    conn.commit()
-                except Exception as exc:
-                    conn.rollback()
-                    logger.error(
-                        "Failed to upsert filing evaluation for %s@%s: %s",
+                    row = cursor.fetchone()
+                    current = (
+                        row["evaluated_at"] if row else None,
+                        final_verdict,
+                        final_is_compliant,
+                        quality.issue_types(issues),
+                    )
+                    wanted = (
+                        expect.get("evaluated_at"),
+                        expect.get("verdict"),
+                        expect.get("is_compliant"),
+                        tuple(expect.get("issue_types") or ()),
+                    )
+                    if current != wanted:
+                        raise quality.StalePublication(
+                            f"{symbol}@{filing_date}: preview {wanted} is now {current}"
+                        )
+
+                if anomalies is not None:
+                    detail = quality.combined_anomaly(anomalies)
+                    existing = next(
+                        (i for i in open_issues if i["issue_type"] == quality.RATIO_ANOMALY),
+                        None,
+                    )
+                    # Identical and still open: no write, so no timestamp churn.
+                    if detail and (existing is None or existing["details"] != detail):
+                        cursor.execute(
+                            """
+                            INSERT INTO data_quality_issues (symbol, filing_date, issue_type, details)
+                            VALUES (%(symbol)s, %(filing_date)s, %(issue_type)s, %(details)s)
+                            ON CONFLICT (symbol, filing_date, issue_type)
+                            DO UPDATE SET details = EXCLUDED.details,
+                                          resolved_at = NULL,
+                                          created_at = NOW()
+                            """,
+                            {**key, "issue_type": quality.RATIO_ANOMALY, "details": detail},
+                        )
+                    elif not detail and existing is not None:
+                        cursor.execute(
+                            """
+                            UPDATE data_quality_issues
+                               SET resolved_at = NOW()
+                             WHERE symbol = %(symbol)s
+                               AND filing_date = %(filing_date)s
+                               AND issue_type = %(issue_type)s
+                               AND resolved_at IS NULL
+                            """,
+                            {**key, "issue_type": quality.RATIO_ANOMALY},
+                        )
+
+                cursor.execute(
+                    """
+                    INSERT INTO filing_evaluations (
                         symbol,
                         filing_date,
-                        exc,
+                        is_compliant,
+                        ratios,
+                        summary,
+                        verdict,
+                        narration_source,
+                        market_cap_used,
+                        trailing_cap_used,
+                        market_data_provider
                     )
-                    raise
+                    VALUES (
+                        %(symbol)s,
+                        %(filing_date)s,
+                        %(is_compliant)s,
+                        %(ratios)s,
+                        %(summary)s,
+                        %(verdict)s,
+                        %(narration_source)s,
+                        %(market_cap_used)s,
+                        %(trailing_cap_used)s,
+                        %(market_data_provider)s
+                    )
+                    ON CONFLICT (symbol, filing_date)
+                    DO UPDATE SET
+                        is_compliant = EXCLUDED.is_compliant,
+                        ratios = EXCLUDED.ratios,
+                        summary = EXCLUDED.summary,
+                        verdict = EXCLUDED.verdict,
+                        narration_source = EXCLUDED.narration_source,
+                        market_cap_used = EXCLUDED.market_cap_used,
+                        trailing_cap_used = EXCLUDED.trailing_cap_used,
+                        market_data_provider = EXCLUDED.market_data_provider,
+                        evaluated_at = NOW()
+                    """,
+                    {
+                        **key,
+                        "is_compliant": final_is_compliant,
+                        "ratios": Json(ratios),
+                        "summary": final_summary,
+                        "verdict": final_verdict,
+                        "narration_source": narration_source,
+                        "market_cap_used": market_cap_used,
+                        "trailing_cap_used": trailing_cap_used,
+                        "market_data_provider": market_data_provider,
+                    },
+                )
+                conn.commit()
+        return {
+            "verdict": final_verdict,
+            "is_compliant": final_is_compliant,
+            "summary": final_summary,
+            "quality_issues": quality.issue_texts(issues),
+            "issue_types": quality.issue_types(issues),
+        }
 
     def record_quality_issue(
         self, symbol: str, filing_date: datetime, issue_type: str, details: str
     ) -> None:
-        """Persist or update a data-quality issue for a filing."""
+        """Open (or update) a data-quality issue and mask the filing's published result.
 
+        Same lock and transaction as publication, so a blocker recorded while an
+        evaluation is being published can never leave a conclusive row behind.
+        """
+
+        key = {"symbol": symbol, "filing_date": filing_date}
+        review_verdict, _, review_summary = quality.publish(None, None, None, [issue_type])
         with self.get_connection() as conn:
             with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+                self._lock_filing(cursor, symbol, filing_date)
                 cursor.execute(
                     """
                     INSERT INTO data_quality_issues (
@@ -570,12 +692,21 @@ class BSEDatabaseManager:
                         resolved_at = NULL,
                         created_at = NOW()
                     """,
-                    {
-                        "symbol": symbol,
-                        "filing_date": filing_date,
-                        "issue_type": issue_type,
-                        "details": details,
-                    },
+                    {**key, "issue_type": issue_type, "details": details},
+                )
+                # evaluated_at is kept: this masks, it does not re-evaluate, and
+                # a newer snapshot or override must still make the filing due.
+                cursor.execute(
+                    """
+                    UPDATE filing_evaluations
+                       SET verdict = %(verdict)s,
+                           is_compliant = NULL,
+                           summary = %(summary)s
+                     WHERE symbol = %(symbol)s
+                       AND filing_date = %(filing_date)s
+                       AND verdict IS DISTINCT FROM %(verdict)s
+                    """,
+                    {**key, "verdict": review_verdict, "summary": review_summary},
                 )
                 conn.commit()
 
@@ -585,13 +716,18 @@ class BSEDatabaseManager:
         filing_date: datetime,
         issue_types: Optional[List[str]] = None,
     ) -> None:
-        """Mark open data-quality issues as resolved."""
+        """Mark open data-quality issues as resolved.
+
+        Resolution alone never restores a verdict: a stored needs-review stays
+        until a new evaluation goes through publish_filing_evaluation.
+        """
 
         with self.get_connection() as conn:
             with conn.cursor() as cursor:
+                self._lock_filing(cursor, symbol, filing_date)
                 params = {"symbol": symbol, "filing_date": filing_date}
                 if issue_types:
-                    params["issue_types"] = issue_types
+                    params["issue_types"] = list(issue_types)
                     cursor.execute(
                         """
                         UPDATE data_quality_issues
@@ -616,28 +752,17 @@ class BSEDatabaseManager:
                     )
                 conn.commit()
 
-    def get_quality_issues(self, symbol: str, filing_date: datetime) -> List[str]:
-        """Return unresolved quality issues for a filing."""
+    def get_open_quality_issues(self, symbol: str, filing_date: datetime) -> List[Dict]:
+        """Unresolved issues for a filing as {issue_type, details}, oldest first."""
 
         with self.get_connection() as conn:
             with conn.cursor(cursor_factory=RealDictCursor) as cursor:
-                cursor.execute(
-                    """
-                    SELECT issue_type, details
-                      FROM data_quality_issues
-                     WHERE symbol = %(symbol)s
-                       AND filing_date = %(filing_date)s
-                       AND resolved_at IS NULL
-                     ORDER BY created_at ASC
-                    """,
-                    {"symbol": symbol, "filing_date": filing_date},
-                )
-                rows = cursor.fetchall()
-        return [
-            (row["details"] or row["issue_type"]).strip()
-            for row in rows
-            if (row.get("details") or row.get("issue_type"))
-        ]
+                return self._open_issue_rows(cursor, symbol, filing_date)
+
+    def get_quality_issues(self, symbol: str, filing_date: datetime) -> List[str]:
+        """Return unresolved quality issues for a filing (display text)."""
+
+        return quality.issue_texts(self.get_open_quality_issues(symbol, filing_date))
 
     def insert_feedback(
         self,

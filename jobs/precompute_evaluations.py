@@ -5,21 +5,20 @@ from __future__ import annotations
 
 import argparse
 import logging
-from dataclasses import asdict
 from datetime import datetime
 from typing import Optional
 
 from config.logging_config import configure_logging
 from database import BSEDatabaseManager
+from evaluation import quality
 from jobs.backfill_evaluations import (
-    _clear_market_failure,
     _enrich_snapshot_with_indian_api,
     _lookup_market_data,
     _record_market_failure,
     _snapshot_from_record,
     engine,
 )
-from ratio_engine import MarketDataInput, build_summary
+from ratio_engine import MarketDataInput
 
 logger = logging.getLogger("evaluation_precompute")
 
@@ -68,7 +67,8 @@ def run_precompute(*, limit: int = 200, lookback_days: int = 365) -> int:
                 _record_market_failure(snapshot.symbol, filing_dt, db)
                 continue
 
-            _clear_market_failure(snapshot.symbol, filing_dt, db)
+            # A stored cap proves nothing about a market-data issue: only a live
+            # lookup inside _lookup_market_data resolves one (scoped by type).
             evaluation = engine.evaluate(
                 snapshot,
                 MarketDataInput(
@@ -78,20 +78,11 @@ def run_precompute(*, limit: int = 200, lookback_days: int = 365) -> int:
                     provider=provider or "manual",
                 ),
             )
-
-            ratios_payload = {
-                name: asdict(comp) for name, comp in evaluation.ratios.items()
-            }
-            verdict = evaluation.verdict
-            summary = build_summary(evaluation)
-
-            db.upsert_filing_evaluation(
-                symbol=snapshot.symbol,
+            quality.publish_evaluation(
+                db,
+                snapshot,
+                evaluation,
                 filing_date=filing_dt,
-                is_compliant=evaluation.is_compliant,
-                ratios=ratios_payload,
-                summary=summary,
-                verdict=verdict,
                 narration_source="precompute",
                 market_cap_used=market_cap,
                 trailing_cap_used=trailing_cap,
