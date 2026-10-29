@@ -27,6 +27,13 @@ torch (CUDA index), langchain, langchain-ollama, ollama, playwright, firecrawl-p
 ## Added on 2026-10-27
 None. `ratio_engine/amounts.py` uses only the standard library (`decimal`, `math`).
 
+## UI stack (`ui/package.json`, upgraded 2026-10-29)
+| Package | Why | Note |
+|---|---|---|
+| next 16.4.2, react / react-dom 19.3.1 | dashboard framework, static export (`output: "export"`) | Upgraded together from Next 14 / React 18: Next 14.2.35 had fixable CRITICAL advisories (CVE-2026-75604, GHSA-2464-fhr4-w9xw, GHSA-2xp9-vwfh-vxw4); the runtime image never shipped Next (v0.5.2), the build stage did. Majors stay ignored by Dependabot and move together. |
+| eslint 9.39.5, eslint-config-next 16.4.2 | lint (`eslint .`, flat config `ui/eslint.config.mjs`) | Next 16 removed `next lint`. ESLint 10 is not used yet (the Next plugin set targets 9). `react-hooks/set-state-in-effect` (new) is a warning for 7 existing components until they are rewritten. |
+| @types/jest 29.5.14 | types for the Jest 29 tests | New: without it the test files failed `tsc` (70 errors), and Next 16's build type-checks them. |
+
 ## External services
 - Cloudflare R2: filing PDF storage in production (D-016), reached through the `minio` SDK's S3 API. Free tier 10 GB, free egress.
 

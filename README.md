@@ -17,7 +17,7 @@
 | **Explain-Why**        | Rule-based by default. An optional LLM narrator (`NARRATOR_MODE=llm`) is used only for conclusive verdicts and only if its text passes a best-effort consistency check; the badge and ratio table always show the engine's verdict. Unknown results are always narrated by the rule-based narrator. |
 | **Alerts**             | File-backed watchlists and a compliance-flip engine; email delivery through SMTP. `/alerts/check` (paid) reads the stored verdict of the newest filing and checks only the caller's watchlist; the file store needs a single API worker (see [Known limitations](#known-limitations)).              |
 | **Filings ingestion**  | BSE announcements crawler, PDF capture in MinIO, Camelot tables plus XBRL/JSON parsing, Indian Stock API and Bhavcopy market data.                                                                                                                                                                  |
-| **API + UI**           | FastAPI service (`/docs` lists every route) and a Next.js 14 static-export dashboard.                                                                                                                                                                                                               |
+| **API + UI**           | FastAPI service (`/docs` lists every route) and a Next.js 16 static-export dashboard.                                                                                                                                                                                                               |
 | **Accounts + billing** | Email/password and Google SSO, hashed opaque session tokens, Razorpay orders with idempotent webhooks, trials.                                                                                                                                                                                      |
 
 Not built: GCC or mutual-fund coverage, NSE crawling (`crawler/nse_ann.py` exists but nothing calls it), RAG/vLLM serving, SES/Celery alert delivery, and the Flutter app's Dart source (`halallens-mobile/` is a platform scaffold with no `lib/`, so it cannot build).
@@ -215,7 +215,7 @@ ratio_engine/     ratio math, verdict, summary, amount coercion
 scripts/          run_migrations.sh and helpers
 tests/            pytest suite
 tools/            preflight, probes, metrics inspector, load test
-ui/               Next.js 14 dashboard (static export) and jest tests
+ui/               Next.js 16 dashboard (static export) and jest tests
 ```
 
 ## Contributing

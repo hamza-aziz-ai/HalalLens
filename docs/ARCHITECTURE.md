@@ -13,7 +13,7 @@ One page. Trust boundaries are marked **[B]**. Deeper docs: [FLOW.md](FLOW.md), 
 | `crawler/`, `etl/`, `jobs/`     | BSE announcements -> PDF/XBRL parsing -> Postgres + MinIO; schedulers                                                                   |
 | `market_data/`                  | Indian Stock API and Bhavcopy market caps                                                                                               |
 | `database/`                     | `schema.sql`, `database_manager.py`, dated migrations                                                                                   |
-| `ui/`                           | Next.js 14 static export, calls the API from the browser                                                                                |
+| `ui/`                           | Next.js 16 static export, calls the API from the browser                                                                                |
 
 ## Data flow
 
