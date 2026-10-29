@@ -3,11 +3,11 @@
 
 from __future__ import annotations
 
-import functools
 import json
 import logging
 import math
 import os
+import time
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, Optional, Tuple, List
@@ -134,13 +134,29 @@ def fetch_market_quote(
     return snapshot.market_cap, snapshot.share_price
 
 
-@functools.lru_cache(maxsize=256)
+_PAYLOAD_TTL_SECONDS = 6 * 3600
+_PAYLOAD_CACHE_SIZE = 256
+_payload_cache: Dict[str, Tuple[float, Dict]] = {}
+
+
 def _get_stock_payload(symbol: str, *, timeout: float) -> Optional[Dict]:
-    return _request_json(
-        "/stock",
-        {"name": symbol},
-        timeout=timeout,
-    )
+    """Vendor payload for ``symbol``, cached for six hours.
+
+    Only successful responses are cached: a timeout or error is retried on the
+    next call instead of hiding the symbol for the life of the process, and
+    prices stay at most six hours old. The monthly quota still bounds retries.
+    """
+
+    now = time.monotonic()
+    cached = _payload_cache.get(symbol)
+    if cached and cached[0] > now:
+        return cached[1]
+    payload = _request_json("/stock", {"name": symbol}, timeout=timeout)
+    if payload is not None:
+        if len(_payload_cache) >= _PAYLOAD_CACHE_SIZE:
+            _payload_cache.pop(min(_payload_cache, key=lambda k: _payload_cache[k][0]))
+        _payload_cache[symbol] = (now + _PAYLOAD_TTL_SECONDS, payload)
+    return payload
 
 
 _quota_warned_month: Optional[str] = None

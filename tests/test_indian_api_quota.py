@@ -65,3 +65,32 @@ def test_exhausted_quota_makes_no_request(monkeypatch, tmp_path):
     monkeypatch.setattr(indian_api, "INDIAN_API_QUOTA_FILE", str(path))
     assert indian_api._request_json("/stock", {"name": "ABC"}, timeout=5) is None
     session.get.assert_not_called()
+
+
+def test_failures_are_not_cached_and_successes_are(monkeypatch):
+    indian_api._payload_cache.clear()
+    answers = [None, {"companyName": "ABC"}]
+    calls = []
+
+    def fake_request(path, params, *, timeout):
+        calls.append(params["name"])
+        return answers.pop(0) if answers else {"companyName": "stale?"}
+
+    monkeypatch.setattr(indian_api, "_request_json", fake_request)
+    assert indian_api._get_stock_payload("ABC", timeout=5) is None
+    assert indian_api._get_stock_payload("ABC", timeout=5) == {"companyName": "ABC"}
+    assert indian_api._get_stock_payload("ABC", timeout=5) == {"companyName": "ABC"}
+    assert calls == ["ABC", "ABC"]  # the failure was retried; the success was cached
+
+
+def test_cached_payload_expires(monkeypatch):
+    indian_api._payload_cache.clear()
+    clock = [1000.0]
+    monkeypatch.setattr(indian_api.time, "monotonic", lambda: clock[0])
+    calls = []
+    monkeypatch.setattr(
+        indian_api, "_request_json", lambda path, params, *, timeout: calls.append(1) or {"n": len(calls)}
+    )
+    assert indian_api._get_stock_payload("ABC", timeout=5) == {"n": 1}
+    clock[0] += indian_api._PAYLOAD_TTL_SECONDS + 1
+    assert indian_api._get_stock_payload("ABC", timeout=5) == {"n": 2}
