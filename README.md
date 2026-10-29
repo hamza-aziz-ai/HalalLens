@@ -19,7 +19,7 @@ flowchart TB
 
   subgraph API["`**FastAPI**`"]
     direction TB
-    REQ["`**1. GET /api/filings/SYMBOL**: rate limit, route tier`"]
+    REQ["`**1. GET /api/filings/SYMBOL**: route tier check`"]
     LOAD["`**2. Gather inputs**: newest filing snapshot with governance overrides applied, market cap`"]
     ENG["`**3. RatioEngine**: five ratios against their caps in exact Decimal; the only verdict owner`"]
     QI{"`**4. Open data-quality issues?**`"}
@@ -75,7 +75,7 @@ flowchart TB
 
 Key: blue is the way in, green the steps the API runs, amber a decision, purple an outcome the visitor sees, grey data and outside services. Read top to bottom; the numbers match the notes below.
 
-1. The dashboard asks for a symbol's screen. Cloudflare carries it over HTTPS through a tunnel to Caddy, which sends `/api/` to FastAPI; the API applies the per-IP rate limit and the route's tier (public for a cached filing, paid for a refresh).
+1. The dashboard asks for a symbol's screen. Cloudflare carries it over HTTPS through a tunnel to Caddy, which sends `/api/` to FastAPI; the API checks the route's tier (public for a cached filing, paid for a refresh). Per-IP rate limits apply to computing and account routes such as `/halal-score`, `/narrate` and sign-in, not to filing lookups.
 2. The API loads the newest filing's figures from `financial_snapshots`, with any admin governance override applied, and the market cap from its cache, the Indian Stock API or, as a fallback, the BSE Bhavcopy.
 3. `RatioEngine` computes the five ratios and compares each with its cap (30% debt, 30% cash, 5% non-permissible income, 67% receivables, 49% liquid assets) in exact Decimal. It is the only place a verdict is decided; an unknown input gives `insufficient-data`, never an assumed zero.
 4. If the filing has open data-quality issues the API overlays `needs-review` and returns `is_compliant = null`; otherwise it returns the engine's verdict. For a stored filing, the result is saved in `filing_evaluations` with the same status.
