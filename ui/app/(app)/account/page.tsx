@@ -72,14 +72,17 @@ export default function AccountPage() {
   // against that one: with Annual then Starter queued, Starter is "Extend".
   const lastPaid = entitlement?.segments[entitlement.segments.length - 1] ?? null;
   const currentRank = lastPaid ? billingPlans.find((p) => p.code === lastPaid.plan_code)?.rank ?? 0 : 0;
-  // While a timed plan runs, a purchase made now starts when the paid time
-  // already bought runs out (the API's next_purchase_starts).
+  // While a timed plan runs, a timed purchase made now starts when the paid
+  // time already bought runs out (the API's next_purchase_starts). Lifetime
+  // never queues: it takes effect when paid (D-024 amendment).
   const startsLater = running?.end && entitlement ? entitlement.next_purchase_starts : null;
+  const startsLaterFor = (plan: BillingPlan) => (plan.interval_days > 0 ? startsLater : null);
 
   const handleUpgrade = async (plan: BillingPlan) => {
     if (!user) return;
     setUpgradeLoading(true);
     setUpgradeMessage(null);
+    const planStartsLater = startsLaterFor(plan);
     try {
       await loadRazorpayScript();
       const order = await createRazorpayOrder(plan.code);
@@ -142,8 +145,8 @@ export default function AccountPage() {
       await refresh();
       await loadEntitlement();
       setUpgradeMessage(
-        startsLater
-          ? `Payment received. ${plan.name} starts on ${formatDate(startsLater)}, when your current plan ends.`
+        planStartsLater
+          ? `Payment received. ${plan.name} starts on ${formatDate(planStartsLater)}, when your current plan ends.`
           : `Payment received. Welcome to ${plan.name}!`,
       );
     } catch (err: any) {
@@ -298,9 +301,10 @@ export default function AccountPage() {
         {billingError && <p className="mt-2 text-xs text-rose-300">{billingError}</p>}
         <div className="mt-4 grid gap-4 md:grid-cols-3">
           {billingPlans.map((plan) => {
-            // Lifetime active or scheduled covers every plan (the API refuses the order).
+            // An unrefunded Lifetime covers every plan (the API refuses the order).
             const isLifetimeUser = Boolean(entitlement?.purchases_blocked);
             const extendsLastPlan = lastPaid?.plan_code === plan.code;
+            const planStartsLater = startsLaterFor(plan);
             const showTrial = plan.trial_days > 0 && trialEligible;
             const isAnnual = plan.interval_days >= 365 && plan.interval_days > 0;
             const disableUpgrade = upgradeLoading || billingLoading || isLifetimeUser;
@@ -364,9 +368,9 @@ export default function AccountPage() {
                         >
                           {label}
                         </button>
-                        {startsLater && (
+                        {planStartsLater && (
                           <p className={clsx("text-[11px]", mutedTextClass)}>
-                            {extendsLastPlan ? "Adds to your plan; " : ""}starts {formatDate(startsLater)}
+                            {extendsLastPlan ? "Adds to your plan; " : ""}starts {formatDate(planStartsLater)}
                           </p>
                         )}
                       </>

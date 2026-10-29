@@ -46,11 +46,62 @@ def test_purchase_after_a_gap_starts_at_payment():
     ]
 
 
-def test_lifetime_bought_during_a_timed_period_follows_it_and_ends_the_chain():
-    assert spans([grant(1, "annual", 0, 365), grant(2, "lifetime", 10, None), grant(3, "starter", 20, 30)]) == [
-        ("annual", 0, 365),
-        ("lifetime", 365, None),
-    ]
+def test_lifetime_bought_during_annual_takes_effect_at_settlement():
+    grants = [grant(1, "annual", 0, 365), grant(2, "lifetime", 10, None)]
+    assert spans(grants) == [("annual", 0, 365), ("lifetime", 10, None)]
+    assert project(grants, T0 + 10 * DAY - timedelta(seconds=1))["plan"] == "annual"
+    at_settlement = project(grants, T0 + 10 * DAY)  # exact boundary: now == allocated_at
+    assert at_settlement == {
+        "plan": "lifetime",
+        "subscription_status": "active",
+        "subscription_renewal": None,
+        "plan_started_at": T0 + 10 * DAY,
+    }
+    assert [s.plan_code for s in upcoming(fold(grants), T0 + 11 * DAY)] == ["lifetime"]
+    assert project(grants, T0 + 400 * DAY)["plan"] == "lifetime"
+
+
+def test_trial_then_lifetime_takes_effect_at_settlement():
+    grants = [grant(1, "starter", 0, 14, source="trial"), grant(2, "lifetime", 3, None)]
+    assert project(grants, T0 + 3 * DAY)["plan"] == "lifetime"
+    assert project(grants, T0 + 3 * DAY)["subscription_status"] == "active"
+
+
+def test_lifetime_after_the_annual_expired_starts_at_settlement():
+    grants = [grant(1, "annual", 0, 365), grant(2, "lifetime", 400, None)]
+    assert spans(grants) == [("annual", 0, 365), ("lifetime", 400, None)]
+    assert project(grants, T0 + 399 * DAY)["plan"] == "free"
+    assert project(grants, T0 + 400 * DAY)["plan"] == "lifetime"
+
+
+def test_lifetime_refunded_mid_annual_reveals_the_annual_with_its_original_end():
+    grants = [grant(1, "annual", 0, 365), grant(2, "lifetime", 10, None, revoked_day=50)]
+    assert spans(grants) == [("annual", 0, 365), ("lifetime", 10, 50)]
+    # Before the refund the (refunded) Lifetime still covered: a finite end is not "timed".
+    assert project(grants, T0 + 49 * DAY)["plan"] == "lifetime"
+    after = project(grants, T0 + 50 * DAY)  # exact boundary: now == revoked_at
+    assert after["plan"] == "annual" and after["subscription_renewal"] == T0 + 365 * DAY
+    assert [s.plan_code for s in upcoming(fold(grants), T0 + 60 * DAY)] == ["annual"]
+    assert not lifetime_held(grants)
+    assert purchase_start(grants, T0 + 60 * DAY) == T0 + 365 * DAY
+
+
+def test_lifetime_refunded_after_the_annual_expired_leaves_free():
+    grants = [grant(1, "annual", 0, 365), grant(2, "lifetime", 10, None, revoked_day=400)]
+    assert project(grants, T0 + 399 * DAY)["plan"] == "lifetime"
+    assert project(grants, T0 + 400 * DAY)["plan"] == "free"
+    assert upcoming(fold(grants), T0 + 400 * DAY) == []
+
+
+def test_queued_timed_grants_keep_their_dates_under_lifetime():
+    grants = [grant(1, "annual", 0, 365), grant(2, "starter", 20, 30), grant(3, "lifetime", 30, None)]
+    assert spans(grants) == [("annual", 0, 365), ("lifetime", 30, None), ("starter", 365, 395)]
+    assert purchase_start(grants, T0 + 40 * DAY) == T0 + 395 * DAY  # Lifetime never moves the timed chain
+    assert project(grants, T0 + 370 * DAY)["plan"] == "lifetime"
+    refunded = grants[:2] + [grant(3, "lifetime", 30, None, revoked_day=370)]
+    assert spans(refunded) == [("annual", 0, 365), ("lifetime", 30, 370), ("starter", 365, 395)]
+    after = project(refunded, T0 + 370 * DAY)
+    assert after["plan"] == "starter" and after["subscription_renewal"] == T0 + 395 * DAY
 
 
 def test_refund_of_the_current_grant_ends_it_and_the_next_starts_at_full_length():

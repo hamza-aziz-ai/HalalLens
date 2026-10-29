@@ -198,18 +198,58 @@ def test_extend_adds_to_the_end_instead_of_resetting(fake):
     assert _entitlement(fake).segments[-1].end == end + timedelta(days=365)
 
 
-def test_lifetime_bought_during_annual_starts_when_annual_ends_and_blocks_purchases(fake, monkeypatch):
+def test_lifetime_bought_during_annual_takes_effect_now_and_blocks_purchases(fake, monkeypatch):
+    fake.add_order("o1", "annual")
+    _pay(fake, "o1", "pay_annual1")
+    annual_end = fake.users[42]["subscription_renewal"]
+    fake.advance(1)
+    fake.add_order("o2", "lifetime")
+    _pay(fake, "o2", "pay_life1")
+    assert fake.users[42]["plan"] == "lifetime" and fake.users[42]["subscription_renewal"] is None
+    view = _entitlement(fake)
+    assert (view.plan, view.subscription_status) == ("lifetime", "active")
+    assert [(s.plan_code, s.start, s.end) for s in view.segments] == [("lifetime", fake.now, None)]
+    assert view.purchases_blocked is True
+    assert view.next_purchase_starts == annual_end  # timed chain only; the UI never shows it for Lifetime
+    with pytest.raises(HTTPException) as excinfo:
+        _run(api_module.create_razorpay_order(api_module.RazorpayOrderRequest(plan_code="starter"), authorization="t"))
+    assert excinfo.value.status_code == 409
+
+
+def test_refunding_lifetime_mid_annual_returns_the_annual_with_its_original_end(fake):
     fake.add_order("o1", "annual")
     _pay(fake, "o1", "pay_annual1")
     annual_end = fake.users[42]["subscription_renewal"]
     fake.add_order("o2", "lifetime")
     _pay(fake, "o2", "pay_life1")
+    fake.advance(10)
+    assert _refund(fake, "o2", "rfnd_l") == {"status": "revoked"}
+    assert fake.users[42]["plan"] == "annual" and fake.users[42]["subscription_renewal"] == annual_end
     view = _entitlement(fake)
-    assert [(s.plan_code, s.end) for s in view.segments] == [("annual", annual_end), ("lifetime", None)]
-    assert view.purchases_blocked is True
-    with pytest.raises(HTTPException) as excinfo:
-        _run(api_module.create_razorpay_order(api_module.RazorpayOrderRequest(plan_code="starter"), authorization="t"))
-    assert excinfo.value.status_code == 409
+    assert [(s.plan_code, s.end) for s in view.segments] == [("annual", annual_end)]
+    assert view.purchases_blocked is False and view.next_purchase_starts == annual_end
+
+
+def test_refunding_lifetime_after_the_annual_ended_leaves_free(fake):
+    fake.add_order("o1", "annual")
+    _pay(fake, "o1", "pay_annual1")
+    fake.add_order("o2", "lifetime")
+    _pay(fake, "o2", "pay_life1")
+    fake.advance(400)
+    assert api_module._subscription_active(_session(fake)) is True
+    assert _refund(fake, "o2", "rfnd_l") == {"status": "revoked"}
+    assert fake.users[42]["plan"] == "free"
+    assert api_module._subscription_active(_session(fake)) is False
+
+
+def test_a_partial_refund_keeps_lifetime(fake):
+    fake.add_order("o1", "annual")
+    _pay(fake, "o1", "pay_annual1")
+    fake.add_order("o2", "lifetime")  # 200000 paise
+    _pay(fake, "o2", "pay_life1")
+    assert _refund(fake, "o2", "rfnd_l", amount=50000) == {"status": "partial"}
+    assert fake.users[42]["plan"] == "lifetime"
+    assert _entitlement(fake).purchases_blocked is True
 
 
 def test_a_payment_that_lands_after_lifetime_is_kept_for_refund_not_granted(fake):
