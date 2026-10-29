@@ -101,17 +101,23 @@
     </div>
     <div class="actions">
       <button type="button" onclick="location.reload()">Try again</button>
-      <div class="status"><span class="dot" aria-hidden="true"></span><span id="countdown">This page retries by itself every 30 seconds.</span></div>
+      <div class="status"><span class="dot" aria-hidden="true"></span><span id="countdown">This page returns to HalalLens by itself as soon as it is back.</span></div>
     </div>
   </main>
   <script>
-    // Visible countdown; the meta refresh above still reloads without JavaScript.
+    // Check every 5 s in the background and come back the moment the site
+    // answers; the meta refresh above still reloads every 30 s without JavaScript.
     (function () {
-      var left = 30, el = document.getElementById("countdown");
-      setInterval(function () {
-        left = left > 1 ? left - 1 : 30;
-        el.textContent = "Retrying automatically in " + left + "s";
-      }, 1000);
+      var el = document.getElementById("countdown"), checks = 0;
+      function check() {
+        fetch(location.href, { cache: "no-store", headers: { "Cache-Control": "no-cache" } })
+          .then(function (res) {
+            if (res.ok) { location.reload(); return; }
+            el.textContent = "Still updating. Checking again in a few seconds (" + (++checks) + ")";
+          })
+          .catch(function () { el.textContent = "Waiting for the connection to come back"; });
+      }
+      setInterval(check, 5000);
     })();
   </script>
 </body>

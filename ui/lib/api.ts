@@ -1,5 +1,6 @@
 import { AnalysisPayload, AnalysisResponse, HalalScoreResponse, NarrationResponse } from "./types";
 import { logClientEvent } from "./logger";
+import { isOutageResponse, reportOutage } from "./outage";
 
 const API_BASE = process.env.NEXT_PUBLIC_HALAL_API_BASE_URL || "http://localhost:8001";
 
@@ -24,6 +25,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       ...init,
     });
   } catch (error) {
+    // No answer at all (connection dropped, DNS, tunnel): show the overlay,
+    // which checks /health itself before claiming an outage.
+    reportOutage();
     logClientEvent("error", "api.request_failed", {
       path,
       error: error instanceof Error ? error.message : String(error),
@@ -31,6 +35,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     throw error;
   }
   if (!response.ok) {
+    if (isOutageResponse(response.status, response.headers.get("Retry-After"))) reportOutage();
     const message = await response.text();
     logClientEvent("error", "api.response_error", {
       path,
