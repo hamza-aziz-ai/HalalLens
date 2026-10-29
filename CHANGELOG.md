@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.17.0](https://github.com/hamza-aziz-ai/HalalLens/compare/v0.16.0...v0.17.0) (2026-10-29)
+
+
+### Features
+
+* **billing:** automatic refunds of duplicate and Lifetime-conflict payments, and a reconciler heartbeat ([#207](https://github.com/hamza-aziz-ai/HalalLens/issues/207)) ([b074c05](https://github.com/hamza-aziz-ai/HalalLens/commit/b074c057fbe7d6eafd59b4050a0c57039f53ece2))
+
 ## [0.16.0](https://github.com/hamza-aziz-ai/HalalLens/compare/v0.15.1...v0.16.0) (2026-10-29)
 
 
