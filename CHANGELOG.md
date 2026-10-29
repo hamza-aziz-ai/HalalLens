@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.14.0](https://github.com/hamza-aziz-ai/HalalLens/compare/v0.13.0...v0.14.0) (2026-10-29)
+
+
+### Features
+
+* **ops:** a Cloudflare Worker maintenance page for when the origin itself is down ([#194](https://github.com/hamza-aziz-ai/HalalLens/issues/194)) ([3e4dca7](https://github.com/hamza-aziz-ai/HalalLens/commit/3e4dca7e6b761140faf2f6ef838eecc4b8ddb427))
+
+
+### Bug Fixes
+
+* **auth:** a failed Google sign-in returns to the login page with a message, never a raw JSON error ([#195](https://github.com/hamza-aziz-ai/HalalLens/issues/195)) ([daaa919](https://github.com/hamza-aziz-ai/HalalLens/commit/daaa9194743cd72cc9c6874f4ac117bac7ea30d8))
+
 ## [0.13.0](https://github.com/hamza-aziz-ai/HalalLens/compare/v0.12.0...v0.13.0) (2026-10-29)
 
 
