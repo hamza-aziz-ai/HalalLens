@@ -1,115 +1,296 @@
-# DEFENSE: HalalLens screening
-
-Agent draft (2026-10-30, Claude Opus 5.5) of updates written on the maintainer's behalf; the maintainer reviews and rewrites in their own words.
+# DEFENSE: HalalLens Screening
 
 ## What HalalLens Does
 
-HalalLens helps users check whether a BSE-listed company meets Islamic financial screening criteria by calculating five financial ratios against predefined thresholds and returning one of three results: `compliant`, `non-compliant`, or `insufficient-data`, along with an explanation in plain English. It's designed to help people make informed investment decisions, not to replace a scholar's judgment or issue a fatwa.
+HalalLens helps people check whether companies listed on the Bombay Stock Exchange (BSE) meet Islamic financial screening criteria.
+
+It calculates five financial ratios and compares them against predefined limits. Based on those calculations, it returns one of three results: `compliant`, `non-compliant`, or `insufficient-data`. Each result also comes with a plain-English explanation.
+
+The idea is to give investors a clearer picture of a company's financial compliance, not to issue a fatwa or replace the judgment of a qualified Islamic scholar.
 
 ## How It Works
 
-The process starts with collecting company filings and market-cap data through the crawler, ETL pipeline, and market-data resolver. If a figure can't be established from the filing, I leave it missing rather than guess. Once the data is ready, it goes to `ratio_engine`, which is the only component responsible for deciding the verdict.
+The process starts with collecting company filings and market-cap data. The crawler fetches the filings, the ETL pipeline processes them, and the market-data resolver provides the information needed for the calculations.
 
-Every result, whether the API or a scheduled job computes it, is then saved through one publication path. If there's an unresolved data-quality issue, the result is published as `needs-review` instead, so users know the result may need another look. That flag only hides the verdict; it never decides one.
+One rule I've tried to follow throughout the project is that **missing information should stay missing**. If I can't reliably identify a figure from a filing, I don't substitute something that looks close enough.
 
-For explanations, I kept things simple and reliable. By default, HalalLens uses rule-based explanations. For conclusive results, it can optionally use an LLM (`gpt-oss:120b-cloud` via Ollama, with temperature set to 0) to generate more natural explanations. Since LLMs can sometimes contradict themselves, there's a guard in place that falls back to the rule-based explanation when the AI-generated text looks questionable. The guard is best-effort: a paraphrase it doesn't recognise can still slip through, which is why the verdict itself always comes from `ratio_engine`.
+Once the inputs are ready, they go to `ratio_engine`. This is the only component allowed to calculate and decide a compliance verdict.
 
-Subscribers can watch companies. When a stored verdict flips, the evaluation scheduler emails them at their own verified address.
+Whether an evaluation comes from an API request or a scheduled job, it goes through the same process before being saved. That process also checks for unresolved data-quality issues. If there is one, the result is published as `needs-review` instead of exposing the underlying verdict. This doesn't change the calculation; it prevents users from relying on a result when there's a known problem with the data.
 
-For payments, I use Razorpay. Paid plans are one-time purchases, and each purchase creates an access grant rather than a recurring subscription. Lifetime starts as soon as it's paid, and its price is reduced by the unused time the buyer already paid for.
+For explanations, I use a rule-based system by default. When a result is conclusive, HalalLens can also use an LLM (`gpt-oss:120b-cloud` through Ollama, with temperature set to 0) to make the explanation easier to understand.
 
-More details are available in [FLOW.md](../FLOW.md) and [ARCHITECTURE.md](../ARCHITECTURE.md).
+I didn't want the LLM making compliance decisions, though. It can produce an explanation that sounds convincing while contradicting the actual result. So I added a guard that checks the generated text and falls back to the rule-based explanation if something looks wrong.
+
+That guard isn't perfect. An unexpected paraphrase could still get through, which is another reason the model never gets to decide the verdict itself.
+
+I also added company watchlists for subscribers. When a stored compliance verdict changes, the evaluation scheduler can email the people watching that company, using their verified email addresses.
+
+For payments, I use Razorpay. Paid plans are one-time purchases rather than recurring subscriptions. Each payment creates an access grant, which makes it easier to handle extensions, upgrades, and refunds without losing track of what someone has paid for.
+
+Lifetime access starts immediately after payment. If someone already has unused paid access, that remaining value is credited toward their Lifetime purchase.
+
+The overall flow is documented in [FLOW.md](../FLOW.md) and [ARCHITECTURE.md](../ARCHITECTURE.md).
 
 ## Key Design Decisions
 
-A few decisions shaped how I built the system:
+Several parts of HalalLens work the way they do because of problems I encountered while building it or edge cases I wanted to handle properly.
 
-- **Three possible results instead of just true or false (D-001):** I didn't want missing data to automatically mean a company had failed the screening. Sometimes the correct answer is simply that there isn't enough information to decide.
+### 1. Three results instead of a simple yes or no (D-001)
 
-- **All five ratios must be available (D-002):** I'd rather return `insufficient-data` than incorrectly tell someone a company is compliant. Deciding whether fewer ratios are acceptable is something I'd leave to a qualified scholar.
+I didn't think it made sense to treat missing information as a compliance failure.
 
-- **Exact decimal calculations with no tolerance (D-003):** Small differences matter, especially when a company is right at the threshold. I wanted the calculations to be precise and predictable.
+A company might meet the criteria, but if I don't have enough financial data to verify that, I shouldn't call it compliant or non-compliant.
 
-- **AI explains the result but never decides it (D-010, D-022):** Even when an LLM produces an explanation, the actual verdict always comes from `ratio_engine`. If the explanation seems inconsistent, the system falls back to its predefined rules. AI-generated explanations are also clearly labeled in the UI.
+That's why I introduced `insufficient-data` as a separate result. It makes the system more honest about what it knows.
 
-- **Purchase-based access instead of a single renewal date (D-024):** Each payment creates its own access grant. These grants are applied one after another, which means upgrading or extending a plan doesn't waste time someone has already paid for. If a payment is refunded, only the access associated with that purchase is removed.
+### 2. All five ratios are required (D-002)
 
-- **Lifetime takes effect when paid (D-024 amendment):** At first a Lifetime purchase queued behind an existing Annual plan, so someone could pay for Lifetime and only get it a year later. Now Lifetime applies immediately, and any timed plan keeps running underneath on its own dates. If the Lifetime is refunded, whatever timed access is left comes back.
+I chose not to give a company a compliant result unless all five required ratios can be calculated.
 
-- **Payment-specific refunds and reconciliation (D-025):** Refunds are tied to their original payments. I also built a reconciler to handle missed webhooks and automatically refund duplicate payments. For now, everything runs with Razorpay test keys.
+This does mean more results end up as `insufficient-data`, but I'd rather have that than give someone false confidence based on incomplete numbers.
 
-- **One publication path for every result (D-027):** Originally only the API applied the `needs-review` check, while the scheduled jobs saved verdicts without it. Now every writer goes through one function that reads the open data-quality issues and saves the result in the same transaction, under a database lock that anything recording an issue also takes. A filing with an open issue is never published as compliant or non-compliant, and if the issues can't be read, the API returns an error instead of a verdict.
+Whether a screening can legitimately use fewer ratios is a decision I'd leave to a qualified scholar, not something I'd quietly assume in code.
 
-- **Missing is better than guessed (D-028):** Some mappings filled inputs with figures that weren't really those inputs, like current assets used as liquid assets, or "Other, Net" and a regex that also matched "interest income" used as prohibited income. I removed them, so a figure I can't establish now stays missing. The consequence is significant: no filing can reach `compliant` from automated extraction alone, because the prohibited-income base has to come from an admin override.
+### 3. Exact calculations without tolerance (D-003)
 
-- **Postgres 17 by dump and restore (D-029):** Postgres 14 reaches end of life on 12 November 2026. Because the database is small, I dumped it and restored it into a new volume running Postgres 17, keeping the old volume untouched as an instant rollback. A guard now stops the migrations from creating a fresh schema on an empty database in production, so a wrong volume fails loudly instead of starting an empty site.
+I use exact decimal calculations and don't add a tolerance around the thresholds.
 
-- **Upgrade credit at checkout (D-030):** Someone upgrading to Lifetime gets a discount for the unused part of what they already paid, instead of a refund. The price is calculated on the server, stored on the order, and checked again when the payment arrives; the quoted price holds for a payment started within 15 minutes, judged by Razorpay's own timestamp. If a plan that gave credit is refunded after the upgrade, I get an alert rather than the system taking Lifetime away automatically. Trials and older pre-ledger purchases don't earn credit.
+If a company's ratio is just over the limit, the system should treat it as over the limit. I don't want rounding or an arbitrary margin to change the outcome.
 
-- **Alerts go to the subscriber (D-031):** Compliance-flip emails used to go to a single operator address, and only when someone called the alerts endpoint. Now the evaluation scheduler sends them to each subscriber's own verified email, only while they have paid access and haven't opted out, with retries and a switch to turn sending off. Delivery is at least once, so a crash at the wrong moment can send the same email twice.
+These borderline cases are precisely where accuracy matters most.
 
-- **Continuous Delivery rather than Continuous Deployment (D-018):** Builds, tests, and security scans happen automatically, but I deliberately kept production deployment as a manual approval step. I want to review what goes live rather than having every successful build automatically reach production.
+### 4. AI can explain a result, but it cannot decide one (D-010, D-022)
 
-## Data Structures
+I wanted the explanations to be understandable without making the system dependent on an LLM.
 
-I kept the data model focused on separating financial inputs, screening results, and billing.
+The `ratio_engine` always produces the actual verdict. The LLM only explains it.
 
-Each company filing gets one record in `filing_evaluations`, uniquely identified by `(symbol, filing_date)`. The record stores the verdict, a nullable `is_compliant` field, and the calculated ratios in JSONB format. It's written only through the publication path described above.
+If the generated explanation seems inconsistent with that result, HalalLens falls back to the predefined rules. I also label AI-generated explanations in the interface so users know where the text came from.
 
-The original financial inputs live in `financial_snapshots`. A value that can't be established is stored as missing, not as a stand-in. If something needs correcting, an administrator can apply an override through `governance_overrides` without changing the underlying source data; the prohibited-income base can only come from there.
+The check is best-effort, so I don't treat it as a guarantee that every misleading explanation will be caught.
 
-For billing, `subscription_grants` is the source of truth for user access. The `users.plan` field is just a convenient representation of that access, updated in the same database transaction to keep everything consistent. A Lifetime grant sits on top of any timed grants instead of queuing behind them. Each order also stores its pricing terms (list price, credit, the 15-minute price window and the evidence behind the credit), so the price can be checked later. Refunds are stored separately in `payment_refunds`, with one record per refund.
+### 5. Access is based on individual purchases (D-024)
 
-Watchlists live in `watchlist_entries`. Each row also works as the alert mailbox: it remembers the latest verdict seen and the one the subscriber was last told about, so a pending alert can't outlive the watch itself.
+Instead of storing one subscription renewal date and continuously changing it, I record each purchase as a separate access grant.
 
-The full schema is documented in [DATA.md](../DATA.md).
+The timed grants are arranged so that extending or changing plans doesn't discard time someone has already paid for.
 
-## Security Risks I Considered
+Refunds are also easier to reason about because each refund affects the grant associated with its original purchase.
 
-I also looked at how someone might deliberately misuse the system.
+### 6. Lifetime access starts immediately (D-024 amendment)
 
-For example, an attacker could try sending unusual inputs like booleans, `NaN`, or number strings that underflow (such as `"1e-400"`) to `/halal-score` in an attempt to trick the API into returning a compliant result.
+I found a problem with the original approach: Lifetime access could end up waiting behind an existing Annual plan.
 
-Payments introduce their own risks. Someone could forge or replay a Razorpay webhook, start two checkouts at nearly the same time, or manipulate refunds to get extra access or interfere with another user's plan. The upgrade credit adds more: changing the price in the browser, keeping a cheap quote open and paying much later, or taking credit for a plan and then refunding that plan.
+That meant someone could pay for Lifetime today but not actually receive it until their Annual subscription expired, possibly a year later.
 
-Alert emails could be abused to make HalalLens email someone else, or to keep emailing someone after their access ends.
+That wasn't the behavior I wanted.
 
-Admin overrides are particularly sensitive because changing financial inputs could affect the verdict shown to every user, and they're now the only source of the prohibited-income base. Crafted filing content and abusive API sessions are also concerns, especially when they could consume paid vendor resources.
+I changed it so Lifetime takes effect as soon as the payment is completed. Any existing timed grants keep their own dates underneath it.
 
-I've documented the controls I've implemented, along with the risks that still need work, in [THREAT.md](../THREAT.md).
+If the Lifetime purchase is refunded, the user's remaining timed access becomes available again.
 
-## Known Limitations and How I Monitor Them
+### 7. Refunds are tied to specific payments (D-025)
 
-The biggest limitation right now is data availability.
+Payments and refunds can become complicated when webhooks are delayed, duplicated, or missed.
 
-BSE blocks requests from the production server, which means the crawler can't reliably fetch and store new filings. Even when filings are available, extracting the required financial information isn't always straightforward. Interest income and dividend income, in particular, are often missing, and the prohibited-income base is never extracted, so most evaluations will end up as `insufficient-data` and none can be `compliant` without an admin override. More filings also show `needs-review` now, because every open data-quality issue blocks the verdict.
+To handle this, each refund is associated with the payment it belongs to. I also built a reconciler that checks for missed payment events and handles duplicate payments, including automatic refunds.
 
-There are a few operational limitations as well. Previously stored results don't automatically update when inputs change. The rate limiter works per process, so it won't provide a shared limit across multiple API workers. And if a payment webhook is missed, the system has to wait for the reconciler to detect and resolve it. Alert emails are delivered at least once, and there's no one-click unsubscribe yet.
+For now, this is running with Razorpay test keys. I haven't enabled the live-money refund flow yet.
 
-To catch problems, I use `/ops/metrics`, operational alerts, the `missing_inputs` field in API responses, and an uptime workflow that checks `/api/health` and the billing heartbeat. The reconciler also raises alerts when it discovers a missed webhook, a refund of a plan that gave upgrade credit raises a credit-conflict alert, and the evaluation scheduler logs and alerts with counts of the alert emails it sent or failed to send.
+### 8. Every screening result follows the same publication process (D-027)
 
-If the application or server becomes unavailable, visitors see a maintenance page rather than a raw error.
+Originally, the API checked for unresolved data-quality issues before returning a verdict, but the scheduled jobs didn't apply the same check when saving results.
 
-These scenarios are covered in [FAILURE.md](../FAILURE.md).
+That meant two parts of the system could handle the same filing differently.
+
+I fixed this by moving publication into one shared function. It checks open data-quality issues and saves the evaluation in a single transaction.
+
+I also use a database lock shared with the code that records those issues. This prevents a result from being published as compliant or non-compliant while a known issue is being recorded.
+
+If the issue check fails, the API returns an error rather than potentially showing a misleading verdict.
+
+### 9. Missing data is better than misleading data (D-028)
+
+This was an important correction to the financial extraction process.
+
+Some earlier mappings used numbers that weren't actually the values I needed. For example, current assets were being used as liquid assets. Another mapping used "Other, Net" and a regex that could even mistake "interest income" for prohibited income.
+
+Those shortcuts could produce calculations that looked complete but weren't based on the right figures.
+
+I removed them.
+
+Now, if the extractor can't establish a value reliably, it leaves that input missing.
+
+The trade-off is substantial: automated extraction alone currently cannot produce a `compliant` result because the prohibited-income base must come from an administrator's override.
+
+That's restrictive, but I think it's better than claiming certainty I don't have.
+
+### 10. Migrating PostgreSQL before end of life (D-029)
+
+PostgreSQL 14 reaches end of life on November 12, 2026, so I moved the database to PostgreSQL 17.
+
+The database was small enough that a dump-and-restore migration was practical. I restored the data into a new PostgreSQL 17 volume and left the old volume untouched as a rollback option.
+
+I also added a production safeguard for migrations.
+
+Previously, pointing the application at an empty database volume could cause it to create a fresh schema, potentially making the site appear as though all its data had disappeared.
+
+Now production fails explicitly in that situation instead of quietly starting with an empty database.
+
+### 11. Giving users credit when they upgrade (D-030)
+
+I didn't want someone upgrading to Lifetime to lose the value of an Annual plan they'd already purchased.
+
+So I added a checkout credit based on their unused eligible paid time. Instead of refunding the old purchase, the system deducts that value from the Lifetime price.
+
+The calculation happens on the server, not in the browser. I also store the pricing details on the order and validate them again when payment arrives.
+
+To avoid problems with stale prices, an order started within a 15-minute window keeps its quoted price. I use Razorpay's timestamp to check that window.
+
+There's another edge case here: someone could receive upgrade credit and later refund the original plan that earned them that credit.
+
+For now, that situation triggers an alert rather than automatically revoking their Lifetime access. I'd rather investigate it than risk taking away access incorrectly.
+
+Trials and older purchases made before the grant ledger was introduced don't qualify for upgrade credit.
+
+### 12. Sending alerts to the actual subscribers (D-031)
+
+The first version of the alert system wasn't particularly useful. Compliance-change emails went to one operator address, and sending depended on someone calling the alerts endpoint.
+
+I changed that so the evaluation scheduler handles notifications and sends them to the subscribers watching each company.
+
+The system checks that the recipient has a verified email, still has paid access, and hasn't opted out.
+
+I also added retries and a switch to disable sending if necessary.
+
+One limitation is that delivery is *at least once*, not exactly once. If the process crashes after sending an email but before recording it as sent, that email could be delivered again.
+
+I accept that trade-off for now, but it's something worth improving as usage grows.
+
+### 13. Continuous Delivery, not automatic production deployment (D-018)
+
+I automated the build, test, and security scanning process, but I kept production deployment behind a manual approval.
+
+That gives me a chance to review a release before it goes live.
+
+Especially for a system that deals with financial screening and paid access, I prefer having that final checkpoint instead of deploying every successful build automatically.
+
+## How I Structured the Data
+
+I tried to keep the financial data, screening results, user access, and notifications separate so each part has a clear responsibility.
+
+For screening, `filing_evaluations` stores one result per `(symbol, filing_date)`. Each record contains the verdict, a nullable `is_compliant` field, and the calculated ratios stored as JSONB.
+
+These records are written through the shared publication process, so the data-quality checks can't be bypassed by a different writer.
+
+The financial inputs are stored in `financial_snapshots`. If the source doesn't provide a reliable value, it remains missing.
+
+For corrections, I use `governance_overrides`, which only administrators can modify. This lets me apply reviewed values without changing the original financial snapshot. The prohibited-income base is particularly sensitive because it can currently only be supplied through an override.
+
+For billing, `subscription_grants` is the source of truth for access. The `users.plan` field reflects the current access state, and both are updated in the same transaction to avoid inconsistencies.
+
+Lifetime grants take effect immediately rather than waiting behind timed grants.
+
+Each order also stores its pricing terms, including the original price, any upgrade credit, the 15-minute quote window, and the evidence used to calculate the credit.
+
+That makes it possible to check later why someone was charged a particular amount.
+
+Refunds live in `payment_refunds`, with a separate row for each refund.
+
+For watchlists, I use `watchlist_entries`. These rows also help track notifications by recording the latest observed verdict and the last verdict the subscriber was notified about.
+
+Keeping that state with the watchlist entry means a pending notification doesn't continue existing after the watch itself is removed.
+
+The complete data model is documented in [DATA.md](../DATA.md).
+
+## Security Risks I've Considered
+
+I tried to think beyond the normal user flow and look at how someone might deliberately exploit the application.
+
+One obvious target is `/halal-score`.
+
+An attacker might send unexpected values, such as booleans, `NaN`, or extremely small number strings like `"1e-400"`, hoping to exploit input validation or numerical conversion and get an incorrect compliant result.
+
+The payment system has a different set of risks. Someone could try forging or replaying Razorpay webhooks, running overlapping checkouts, or manipulating refund events to obtain extra access or affect another user's subscription.
+
+The upgrade-credit feature introduces more possibilities. For example, someone could try modifying the checkout price in their browser, paying an old discounted order much later, or refunding a purchase after using its remaining value as upgrade credit.
+
+Notifications also need protection. I don't want someone using the watchlist system to send emails to arbitrary addresses or continuing to receive notifications after their paid access ends.
+
+Administrator overrides are another sensitive area. Since an override can affect the financial inputs used for screening, a bad or unauthorized change could alter the verdict shown to every user. This matters even more now that the prohibited-income base depends on admin-supplied values.
+
+I also considered malicious filing content, repeated API requests, and attempts to consume vendor quota through abusive sessions.
+
+The controls I've implemented, along with the risks I haven't fully addressed, are documented in [THREAT.md](../THREAT.md).
+
+## Known Limitations and How I Detect Problems
+
+The biggest problem I still need to solve is getting reliable financial data.
+
+BSE blocks requests from the production server, so I can't consistently fetch new filings through the existing crawler.
+
+Even with filings available, extracting the right figures is difficult. Interest and dividend income aren't consistently identified, and the prohibited-income base isn't automatically extracted at all.
+
+As a result, many filings return `insufficient-data`. With the current design, a filing cannot reach `compliant` through automated extraction alone; it needs an administrator-provided prohibited-income base.
+
+I also expect more results to show `needs-review` now that unresolved data-quality issues block publication consistently across the API and scheduled jobs.
+
+There are some operational gaps too.
+
+Stored evaluations don't automatically refresh whenever their underlying inputs change. The API rate limiter is process-local, which means it won't enforce a shared limit if I run multiple workers. Missed payment webhooks are handled by the reconciler, but that means there can be a delay before the payment state is corrected.
+
+Email alerts use at-least-once delivery, so duplicates are possible, and I haven't added one-click unsubscribe links yet.
+
+To detect problems, I use several monitoring mechanisms:
+
+- `/ops/metrics` for operational metrics and application alerts.
+- `missing_inputs` in API responses to show which financial values prevented a conclusive result.
+- An uptime workflow that checks `/api/health` and the billing heartbeat.
+- Reconciler alerts when payment webhooks were missed.
+- Credit-conflict alerts when a purchase that contributed upgrade credit is later refunded.
+- Evaluation-scheduler logs and alerts showing how many notification emails succeeded or failed.
+
+If the application or server is unavailable, visitors see a maintenance page rather than an unhandled application error.
+
+I've documented these failure scenarios in [FAILURE.md](../FAILURE.md).
 
 ## What I'd Improve With More Time
 
-My first priority would be fixing the data pipeline. I'd work on getting a reliable, permitted source of BSE filings, either through written permission or a licensed provider.
+**My first priority would be the data pipeline.**
 
-Next, I'd improve financial data extraction. I've already removed the mappings that guessed (the regex that read "interest income" as prohibited income, and `liquid_assets` taken from current assets), so the problem now is the opposite: many inputs are missing. Interest and dividend income aren't consistently captured, the extractor doesn't read XBRL contexts and periods yet, and data stored before that change still needs the reviewed repair.
+I need a dependable and permitted way to obtain BSE filings. Ideally, that would mean getting written permission for the existing approach or moving to a licensed financial-data provider.
 
-Another important improvement would be building the admin-confirmed line-item mapping workflow described in D-023, so questionable mappings can be reviewed before they affect screening results.
+After that, I'd focus on improving extraction quality.
 
-On the screening side, I'd want a qualified scholar to validate the 67% and 49% thresholds. If those rules aren't justified, I'd remove or revise them rather than keep them just because they're already implemented.
+I've already removed the mappings that were making unsafe assumptions, such as treating current assets as liquid assets or misidentifying interest income as prohibited income.
 
-For scalability, I'd move rate limiting to Redis before running multiple API workers. For alerts, I'd add a one-click unsubscribe link once the volume calls for it.
+That fixed one problem but exposed another: many important values are now missing.
 
-Finally, I'd decide when it's appropriate to enable automatic refunds using Razorpay live keys, after validating the payment and reconciliation flows thoroughly.
+I'd improve extraction for interest and dividend income, add proper handling of XBRL contexts and reporting periods, and review and repair older stored data affected by the previous mappings.
+
+I'd also build the admin-confirmed line-item mapping workflow described in D-023. That would let questionable financial mappings be reviewed before their values are used in a screening result.
+
+Another priority is validating the screening thresholds with a qualified Islamic scholar.
+
+In particular, I'd want the 67% and 49% limits independently reviewed. If I can't justify those thresholds, I'd rather change or remove them than continue using them simply because they're already in the code.
+
+On the infrastructure side, I'd move rate limiting to Redis before scaling beyond a single API worker.
+
+For notifications, I'd add a one-click unsubscribe flow and improve delivery handling as the number of subscribers increases.
+
+For billing, I'd finish validating the reconciliation and refund flows before enabling automatic refunds with live Razorpay keys.
+
+The overall goal would be to improve reliability without weakening the safeguards I've put in place just to produce more conclusive screening results.
 
 ## Whiteboard Preparation
 
-Before considering myself ready for Lane B, I want to be able to explain the system without relying on documentation.
+Before I consider myself ready for Lane B, I want to make sure I can explain the system clearly without depending on the documentation.
 
-The plan is to go through all 12 questions in the field guide out loud, without notes. If I can confidently answer at least 10, I'll consider myself ready.
+I'll go through the 12 questions in the field guide out loud, without notes. My target is to answer at least 10 of them confidently.
 
-The goal isn't just to remember how the code works. It's to be able to explain **why I made these decisions, what trade-offs I accepted, where the system can fail, and what I'd improve next.**
+I don't just want to remember which function does what.
+
+I want to be able to explain why I chose this architecture, what alternatives I considered, which trade-offs I made, what could go wrong, and how I'd improve the system if I had more time.
+
+For me, being ready means understanding the decisions well enough to defend them, including the ones that didn't work out the first time.
