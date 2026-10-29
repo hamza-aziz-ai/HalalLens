@@ -114,7 +114,7 @@ If the issue check fails, the API returns an error rather than potentially showi
 
 This was an important correction to the financial extraction process.
 
-Some earlier mappings used numbers that weren't actually the values I needed. For example, current assets were being used as liquid assets. Another mapping used "Other, Net" and a regex that could even mistake "interest income" for prohibited income.
+Some earlier mappings used numbers that weren't actually the values I needed. For example, current assets were being used as liquid assets. Prohibited income came from the market-data vendor's "Other, Net" line and from a regex that could even mistake "interest income" for prohibited income.
 
 Those shortcuts could produce calculations that looked complete but weren't based on the right figures.
 
@@ -146,7 +146,7 @@ So I added a checkout credit based on their unused eligible paid time. Instead o
 
 The calculation happens on the server, not in the browser. I also store the pricing details on the order and validate them again when payment arrives.
 
-To avoid problems with stale prices, an order started within a 15-minute window keeps its quoted price. I use Razorpay's timestamp to check that window.
+To avoid problems with stale prices, a quote holds for 15 minutes: a payment attempt started within that window keeps the quoted price, even if it completes later. I check the window with the time Razorpay records for the payment attempt.
 
 There's another edge case here: someone could receive upgrade credit and later refund the original plan that earned them that credit.
 
