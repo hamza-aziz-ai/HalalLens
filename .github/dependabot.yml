@@ -49,9 +49,10 @@ updates:
       - dependency-name: "@types/node"
         update-types: ["version-update:semver-major"]
       # Majors of the framework stack move together in one deliberate upgrade
-      # (after the Playwright smoke test exists, docs/TESTING.md step 6):
-      # Next 14 requires React 18, eslint-config-next pins eslint, and the test
-      # tooling tracks React. Single bumps fail CI or break peers.
+      # (the last one: Next 14 -> 16, React 18 -> 19, ESLint 8 -> 9 flat
+      # config, 2026-10-29): Next pins React, eslint-config-next needs a
+      # matching ESLint, and the test tooling tracks React. Single bumps fail
+      # CI or break peers.
       - dependency-name: "next"
         update-types: ["version-update:semver-major"]
       - dependency-name: "eslint-config-next"

@@ -1,6 +1,6 @@
 # HalalLens – agent guide
 
-Read-only Shariah (AAOIFI-inspired) screening of BSE-listed Indian equities, explain-why narration and compliance-flip alerts (no GCC, mutual-fund or NSE coverage). Python FastAPI backend + Next.js 14 dashboard (static export). The Flutter app is a scaffold only (see Layout). Product/ops detail lives in `README.md`, `README_ops.md`, `README_ingestion.md`, `Documentations/`; the paper trail (handover, decisions, threat, failure, rollback) lives in `docs/`. Don't duplicate either here. **Current state and next steps live in `docs/HANDOVER.md`, not in this file.**
+Read-only Shariah (AAOIFI-inspired) screening of BSE-listed Indian equities, explain-why narration and compliance-flip alerts (no GCC, mutual-fund or NSE coverage). Python FastAPI backend + Next.js 16 dashboard (static export). The Flutter app is a scaffold only (see Layout). Product/ops detail lives in `README.md`, `README_ops.md`, `README_ingestion.md`, `Documentations/`; the paper trail (handover, decisions, threat, failure, rollback) lives in `docs/`. Don't duplicate either here. **Current state and next steps live in `docs/HANDOVER.md`, not in this file.**
 
 ## Project stance (maintainer, 2026-10-28)
 
