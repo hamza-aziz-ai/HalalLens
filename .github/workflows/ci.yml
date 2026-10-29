@@ -10,10 +10,14 @@ on:
 permissions:
   contents: read
 
-# A newer push to the same PR/branch supersedes the running one.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # PRs: one group per branch, and a newer push supersedes the running one.
+  # main: one group per commit, so no run is ever cancelled or dropped as a
+  # pending duplicate. The image publish gate waits for CI on the release
+  # commit; a cancelled run there blocked v0.10.0 when a merge landed seconds
+  # after the release.
+  group: ci-${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # Actions are pinned by commit SHA (public repo); Dependabot keeps them fresh.
 jobs:
