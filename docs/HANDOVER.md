@@ -2,9 +2,12 @@
 
 Read first: [ARCHITECTURE.md](ARCHITECTURE.md), [CONSTRAINTS.md](CONSTRAINTS.md). Newest entry on top. Update last, every session.
 
-## Latest session: 2026-10-29, afternoon (model: Claude Opus 5.5, `claude-opus-5-5`): email, auth hardening, watchlists in Postgres, Next 16
+## Latest session: 2026-10-29, afternoon (model: Claude Opus 5.5, `claude-opus-5-5`): email, auth hardening, watchlists in Postgres, Next 16, payments
 
-**Done** (production runs **v0.8.0** on the Oracle VM)
+**Done** (production runs **v0.9.0** on the Oracle VM)
+- Payments (Razorpay **test** keys only): order, checkout, signature verification and webhook proven end to end in production (a test Annual purchase granted the plan until 2027-10-29; one webhook event recorded). #178 handles checkout dismissal and shows Razorpay's failure reason. The maintainer's Razorpay account is KYC-verified; a ₹100 live test through razorpay.me was refunded (that path never touches the app).
+- `/products/` page (plans read live from `/billing/plans`, "information and education only, not investment advice") and a site footer linking every policy page (#178). Support mailbox `support@halallens.in` via Cloudflare Email Routing to the maintainer's Gmail, shown on the policy pages from `SUPPORT_EMAIL` (no hardcoded address). SPF is merged (`_spf.mx.cloudflare.net` + Oracle); Cloudflare's checker still reports "misconfigured" because it expects its exact string, while routing works.
+- Pull-only deploys: `scripts/deploy.sh vX.Y.Z` in the repo; with `IMAGE_REPOSITORY` in `.env` it pulls the CI-published images for the tag instead of building on the server. The publish workflow bakes the repository variable `SUPPORT_EMAIL` into the UI image.
 - Email: OCI Email Delivery (Mumbai, free tier about 3,000 a month), sender `no-reply@halallens.in`; SPF, DMARC (`p=none`) and the DKIM CNAME are in Cloudflare and the DKIM key is ACTIVE. SMTP settings are in the server `.env` (credential never displayed).
 - Auth hardening (#172, D-020, design agreed with Codex): email-first sign-up, set-password/reset links, sessions only for verified emails, admin from `ADMIN_EMAILS` only after the mailbox is proven, Google matched by subject only with `email_verified=true`; reset and login share a row lock. #173 (D-021): browser-bound single-use Google flows (`oauth_flows`, `hl_oauth` cookie) and explicit "Link Google account" on the account page. Verified in production: a new account signed up, verified and linked Google; the maintainer's admin was restored by a fresh Google sign-in.
 - Watchlists in Postgres (#163, D-019) with seed-first conditional updates (Codex caught the flip-first race; the real-Postgres test fails 20/20 with flip-first).
@@ -14,7 +17,7 @@ Read first: [ARCHITECTURE.md](ARCHITECTURE.md), [CONSTRAINTS.md](CONSTRAINTS.md)
 
 **In progress / next**
 - BSE announcements data source: maintainer decides later (permission request or licensed feed). Until then production stores no filings.
-- Razorpay test keys and webhook: being set up with the maintainer (`/api/webhooks/razorpay`).
+- Switch production to pull mode: set `IMAGE_REPOSITORY` in `.env.production`, deploy the next release with `scripts/deploy.sh`; test a refund in Razorpay Test Mode (should end the plan through the webhook).
 - Candidates: pull-only deploy from the published images, rewrite the 7 `set-state-in-effect` components, a monthly backup-restore test, a separate R2 bucket for backups.
 
 **Broken or risky**

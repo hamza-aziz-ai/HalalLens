@@ -8,6 +8,9 @@ name: Publish images
 # per-architecture tags, then the version tag, then `latest` last and only for
 # the newest release. An existing version tag is never overwritten.
 #
+# The dashboard's support address is baked in at build time from the
+# repository variable SUPPORT_EMAIL (empty shows "our support team").
+#
 # Docker Hub: repository variable DOCKERHUB_NAMESPACE (the account name) and
 # DOCKERHUB_TOKEN in the `publish` environment. Without them only GHCR is used.
 on:
@@ -124,6 +127,7 @@ jobs:
               --label org.opencontainers.image.revision="$SHA" \
               --label org.opencontainers.image.version="$TAG" \
               --label org.opencontainers.image.licenses=MIT \
+              --build-arg "NEXT_PUBLIC_SUPPORT_EMAIL=${{ vars.SUPPORT_EMAIL }}" \
               --load -t "halallens-$img:candidate" .
           done
 
@@ -177,6 +181,7 @@ jobs:
               --label org.opencontainers.image.revision="$SHA" \
               --label org.opencontainers.image.version="$TAG" \
               --label org.opencontainers.image.licenses=MIT \
+              --build-arg "NEXT_PUBLIC_SUPPORT_EMAIL=${{ vars.SUPPORT_EMAIL }}" \
               --provenance=mode=max --sbom=true --push "${tags[@]}" .
           done
 
