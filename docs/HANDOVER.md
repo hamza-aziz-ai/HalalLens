@@ -2,7 +2,27 @@
 
 Read first: [ARCHITECTURE.md](ARCHITECTURE.md), [CONSTRAINTS.md](CONSTRAINTS.md). Newest entry on top. Update last, every session.
 
-## Latest session: 2026-10-29, evening (model: Claude Opus 5.5, `claude-opus-5-5`): LLM live, pull-only deploys, refund fix, maintenance and 404 pages, restore drill
+## Latest session: 2026-10-29, night (model: Claude Opus 5.5, `claude-opus-5-5`): billing ledger, reconciliation, automatic refunds, maintenance pages that come and go on their own
+
+**Done** (production runs **v0.17.1** on the Oracle VM, deployed from the published images)
+- Billing ledger (#196, D-024): purchases queue behind paid time (Switch / Extend / Upgrade by plan rank, "starts on" dates, "No automatic renewal"); Lifetime covers every plan; settlement is one transaction under a per-user lock; verify grants only a captured payment matching the order. #199: a payment finished on the bank's page is found by polling the order after the checkout closes; labels follow the last queued plan. Proven in production (Test Mode): a Starter bought on top of Annual queued to 29/10/2027, granted by the `payment.captured` webhook.
+- Refunds and reconciliation (D-025, three PRs, each designed with Codex and run to agreement): #203 refunds apply only to the payment they refund (a duplicate's refund used to revoke the valid plan) and are summed per refund id; #205 the `billing-reconcile` service sweeps Razorpay payments and refunds every 15 min from a checkpoint (first run linked the pre-ledger Annual to its payment); #207 automatic full refunds of duplicate and `refund_due` payments (TEST keys only, request stored before sending, `X-Refund-Idempotency`), and `GET /api/health/billing` checked by the uptime workflow with `BILLING_EXPECTED=true` (set by the maintainer; a manual run passed).
+- Maintenance: Cloudflare Worker `halallens-maintenance` live in front of the site (routes `halallens.in/*` fail open, `halallens.in/api/*` none), serving the same page as Caddy (#194, #201); the page and a dashboard overlay appear and disappear on their own (#201). Outage tests on production: dashboard container down and tunnel down (530 behind the Worker), and the overlay appeared and reloaded by itself; #209 fixed see-through backgrounds (a Tailwind class compiled to an invalid `background-color`, also on 9 pages).
+- Google sign-in failures redirect with a message instead of raw JSON, and uvicorn's access log (which recorded OAuth codes) is off (#195). LLM narration uses high reasoning effort at temperature 0 (#190). The first DMARC report was clean (Oracle mail DKIM-aligned once the key went active).
+- Councils with Codex now always run to agreement (`max_rounds: 0`, maintainer's default, in CLAUDE.md).
+
+**In progress / next**
+- Refund test of the queued Starter (`pay_TtiiAAmu32yhEb`) in Razorpay Test Mode: the last unverified piece of the refund path (ASSUMPTIONS #19 refund half, #21, #22).
+- README restructure like Medical-ChatBot's (short front page with System Design and Solution Architecture diagrams, details in `docs/guides/`): in a separate PR.
+- DMARC to `p=quarantine` after about a week of clean reports (around 2026-11-05).
+- BSE data source (maintainer); known input-mapping defects to the council.
+
+**Broken or risky**
+- Automatic refunds are TEST-only by code; live payments need a reviewed change to enable them.
+- Reconciliation is best effort over Razorpay's list APIs; completeness beyond the 30-minute overlap and the one-day audit is unverified.
+- Uptime detection of a stopped reconciler is nominal (60-90 min); GitHub can delay scheduled runs.
+
+## Session: 2026-10-29, evening (model: Claude Opus 5.5, `claude-opus-5-5`): LLM live, pull-only deploys, refund fix, maintenance and 404 pages, restore drill
 
 **Done** (production runs **v0.12.0** on the Oracle VM, deployed from the published GHCR images)
 - LLM narration live (#181, D-022): `ollama` service signed in to the maintainer's ollama.com account, `gpt-oss:120b-cloud`, temperature 0 and high reasoning effort at the maintainer's request (#190, measured 1.1 to 1.9 s per explanation). Rule-based text stays the fallback; the verdict still comes only from `RatioEngine`.

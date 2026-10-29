@@ -7,9 +7,11 @@ One page. Trust boundaries are marked **[B]**. Deeper docs: [FLOW.md](FLOW.md), 
 | Module                          | Owns                                                                                                                                    |
 |---------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------|
 | `api/app.py`, `api/security.py` | HTTP routes (public / authenticated / paid / admin), auth, billing, rate limiting                                                       |
+| `api/billing.py`, `api/razorpay_client.py` | Paid access derived from `subscription_grants` (D-024); Razorpay REST access shared by the API and the reconciler                  |
+| `jobs/reconcile_payments.py`    | Payment reconciler (D-025): settles payments the webhook missed, applies refunds made elsewhere, automatic refunds (TEST keys only)    |
 | `ratio_engine/`                 | The five ratios and the **only** verdict derivation (`engine.py`), `summary.py`, `amounts.py`                                           |
 | `narrator/`                     | Explain-why text: rule-based by default; optional LLM text for conclusive verdicts behind a best-effort guard (`narrator/explainer.py`) |
-| `alerts/`                       | File-backed watchlists, flip detection, SMTP notifier                                                                                   |
+| `alerts/`                       | Watchlists in Postgres, flip detection, SMTP notifier                                                                                   |
 | `crawler/`, `etl/`, `jobs/`     | BSE announcements -> PDF/XBRL parsing -> Postgres + MinIO; schedulers                                                                   |
 | `market_data/`                  | Indian Stock API and Bhavcopy market caps                                                                                               |
 | `database/`                     | `schema.sql`, `database_manager.py`, dated migrations                                                                                   |
@@ -55,7 +57,7 @@ graph TD
 
 1. **Public HTTP** (`/halal-score`, `/filings/recent`, auth, feedback, webhook): anyone; validated by Pydantic models (`extra="forbid"`, no booleans or under-flowing strings as amounts) and rate-limited per IP.
 2. **Authenticated/paid/admin HTTP**: opaque session token (SHA-256 digest stored), tier checked per route.
-3. **Razorpay webhook**: signature-verified, idempotent on `(provider, event_id)`.
+3. **Razorpay webhook and API**: the webhook is signature-verified and idempotent on `(provider, event_id)`; a grant needs a captured payment matching the order's amount and currency; refunds apply only to the payment they refund. The reconciler trusts only what it fetches from Razorpay with the account's keys.
 4. **Filings and PDFs from BSE**: untrusted documents parsed by Camelot/pdfminer/lxml.
 5. **Vendor and market APIs**: untrusted numbers; every value passes `coerce_amount` and the engine's own validation.
 6. **Operators**: admin routes (governance overrides, feedback triage) change inputs behind every user's verdict.
@@ -66,4 +68,4 @@ graph TD
 
 ## Deployment
 
-Docker Compose (`api`, `ui`, `ingestion`, `evaluation`, `preflight`, optional Caddy) against an external or bundled Postgres and an S3-compatible bucket for filing PDFs (MinIO locally, Cloudflare R2 in production, D-016). No repository workflow deploys anything (the GitHub Pages workflow was removed on 2026-10-28, D-011); there is no API deployment workflow (external triggers unverified).
+Docker Compose (`caddy`, `api`, `ui`, `postgres`, `migrations`, `ingestion`, `evaluation`, `backup`, `billing-reconcile`, optional `ollama` and `cloudflared`) against Postgres and an S3-compatible bucket (MinIO locally, Cloudflare R2 in production for filing PDFs and backups, D-016). Continuous Delivery, not Continuous Deployment: every release is built, tested, scanned and published automatically (`publish-images.yml`), and production changes only when the maintainer approves `scripts/deploy.sh vX.Y.Z` on the VM (pull mode). In front: Cloudflare Tunnel, and the `halallens-maintenance` Worker that shows the maintenance page when the origin is unreachable (`/api/*` bypasses it). The uptime workflow probes `/api/health` and `/api/health/billing`.
