@@ -230,6 +230,35 @@ GOLDEN = [
     ("nan-base", {"non_permissible_income": NAN}, {}, "insufficient-data", {"non_permissible_income": "invalid"}),
     # Net interest expense is known and contributes zero.
     ("negative-interest-is-known", {"interest_income": -5_000_000.0}, {}, "compliant", {}),
+    # D-028: inputs the mappers now leave missing do not hide a known failure.
+    (
+        "failure-despite-unmapped-inputs",
+        {
+            "total_debt": 60_000_001,
+            "liquid_assets": None,
+            "interest_income": None,
+            "non_permissible_income": None,
+            "non_halal_income": None,
+        },
+        {},
+        "non-compliant",
+        {"liquid_assets": "missing", "interest_income": "missing", "non_permissible_income": "missing"},
+    ),
+    # D-028: a complete verified set (explicit liquid assets, gross interest,
+    # explicit zero dividend and a supplied zero base) is compliant.
+    (
+        "complete-verified-inputs",
+        {
+            "liquid_assets": 40_000_000,
+            "interest_income": 1_000_000,
+            "dividend_income": 0.0,
+            "non_permissible_income": 0.0,
+            "non_halal_income": None,
+        },
+        {},
+        "compliant",
+        {},
+    ),
 ]
 
 

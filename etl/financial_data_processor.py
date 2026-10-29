@@ -84,7 +84,6 @@ class FinancialDataProcessor:
         ],
         'interest_income': [
             'interestincome',
-            'financeincome',
         ],
         'dividend_income': [
             'dividendincome',
@@ -95,15 +94,32 @@ class FinancialDataProcessor:
             'accountsreceivable',
             'sundrydebtors',
         ],
+        # Only an explicit liquid-assets aggregate. Current assets, net current
+        # assets or cash alone are not liquid assets, and no composition formula
+        # is guessed (D-028; a reviewed mapping is D-023's job).
         'liquid_assets': [
-            'currentassets',
-            'netcurrentassets',
+            'liquidassets',
         ],
-        'non_halal_income': [
-            'nonpermissibleincome',
-            'impermissibleincome',
-            'haramincome',
-        ],
+        # non_halal_income has no alias on purpose (D-028): the engine adds
+        # interest and dividend income to this base, and no label in a filing
+        # ("non-permissible", "impermissible", "haram", "prohibited" income) shows
+        # that it excludes them. It stays missing unless a governance override
+        # supplies it.
+    }
+
+    # Income and liquid-asset fields where an ambiguous figure must abstain: a
+    # second, different value for the same field (another context, period,
+    # column or statement) removes it, and a label containing one of the
+    # EXCLUDED_LABEL_PARTS (matched on the label's lowercase alphanumerics)
+    # maps to nothing instead of falling through to another field.
+    STRICT_METRICS = frozenset({'interest_income', 'dividend_income', 'liquid_assets'})
+    EXCLUDED_LABEL_PARTS = {
+        # Gross interest income only: not "interest income, net", "net
+        # interest", "interest income/(expense)" or an aggregate that includes it.
+        'interest_income': ('net', 'expens', 'includ'),
+        # Dividends received only, never paid, payable, proposed or declared.
+        'dividend_income': ('paid', 'payable', 'propos', 'declar', 'includ'),
+        'liquid_assets': ('net',),
     }
 
     def __init__(
@@ -117,7 +133,8 @@ class FinancialDataProcessor:
         self.download_dir.mkdir(exist_ok=True)
         self.cache_dir.mkdir(exist_ok=True)
         self.db = db_manager or BSEDatabaseManager()
-        self.metric_cache_version = "v4"
+        # v5 (D-028): metrics cached by v4 can hold rejected mappings.
+        self.metric_cache_version = "v5"
 
         self.session = requests.Session()
         self.session.headers.update({
@@ -221,17 +238,10 @@ class FinancialDataProcessor:
                 'sundry debtors',
                 'bills receivable'
             ],
+            # See STRUCTURED_ALIASES: explicit aggregate only; no
+            # non_halal_income keywords (D-028).
             'liquid_assets': [
-                'liquid assets',
-                'current assets',
-                'net current assets',
-                'cash and bank balances'
-            ],
-            'non_halal_income': [
-                'non permissible income',
-                'non-permissible income',
-                'impermissible income',
-                'haram income'
+                'liquid assets'
             ],
         }
 
@@ -597,7 +607,6 @@ class FinancialDataProcessor:
             text_scale = self._detect_scale(text)
             effective_hint = max(scale_hint, text_scale)
             governance_note = self._extract_governance_notes(text)
-            non_halal_from_text = self._extract_non_halal_from_text(text)
 
             tables = self._read_pdf_tables(temp_path)
             if not tables:
@@ -605,36 +614,28 @@ class FinancialDataProcessor:
                 metrics = {}
                 if governance_note:
                     metrics["governance_notes"] = governance_note
-                if non_halal_from_text is not None:
-                    metrics["non_halal_income"] = non_halal_from_text
                 return metrics
 
             metrics = {}
+            conflicts: set = set()
 
+            # Every table is read: a strict metric repeated with another value
+            # in a later table must still be caught.
             for table in tables:
                 table_df = getattr(table, 'df', None)
                 if table_df is None:
                     continue
 
                 try:
-                    table_metrics = self._parse_table_for_metrics(
-                        table_df, metrics, scale_hint=effective_hint
+                    self._parse_table_for_metrics(
+                        table_df, metrics, conflicts, scale_hint=effective_hint
                     )
-                    metrics.update(table_metrics)
                 except Exception as table_err:
                     logger.debug(f"Table parsing skipped for {minio_path}: {table_err}")
                     continue
 
-                if len(metrics) == len(self.metric_patterns):
-                    break
-
             if governance_note:
                 metrics.setdefault("governance_notes", governance_note)
-            if (
-                non_halal_from_text is not None
-                and not metrics.get("non_halal_income")
-            ):
-                metrics["non_halal_income"] = non_halal_from_text
 
             self._store_cached_metrics(cache_key, metrics)
             return metrics
@@ -675,12 +676,21 @@ class FinancialDataProcessor:
             return {}
 
     def _parse_table_for_metrics(
-        self, dataframe, existing_metrics: Dict[str, float], scale_hint: float = 1.0
-    ) -> Dict[str, float]:
-        """Parse Camelot dataframe to capture financial metrics"""
-        metrics = {}
+        self,
+        dataframe,
+        metrics: Dict[str, float],
+        conflicts: set,
+        scale_hint: float = 1.0,
+    ) -> None:
+        """Record a Camelot table's metrics into `metrics` (see _record_metric).
+
+        A row belongs to the first metric whose keyword it contains; an
+        excluded label abstains. A strict metric's row with more than one
+        distinct number (several periods or columns) abstains too: the
+        rightmost number is not known to be the filing's own period.
+        """
         if dataframe.empty:
-            return metrics
+            return
 
         header_rows = min(2, len(dataframe))
         header_text = ' '.join(
@@ -705,29 +715,65 @@ class FinancialDataProcessor:
             scale = effective_scale if effective_scale > 1.0 else 1.0
             scaled_value = value * scale
 
-            for metric, keywords in self.metric_patterns.items():
-                if metric in existing_metrics or metric in metrics:
-                    continue
-                if any(keyword in row_text for keyword in keywords):
-                    metrics[metric] = scaled_value
-                    break
+            metric = next(
+                (
+                    name
+                    for name, keywords in self.metric_patterns.items()
+                    if any(keyword in row_text for keyword in keywords)
+                ),
+                None,
+            )
+            if metric is None or self._excluded_label(metric, row_text):
+                continue
+            if metric in self.STRICT_METRICS and len(self._row_numbers(cells)) > 1:
+                metrics.pop(metric, None)
+                conflicts.add(metric)
+                continue
+            self._record_metric(metrics, conflicts, metric, scaled_value)
 
-            if len(metrics) + len(existing_metrics) == len(self.metric_patterns):
-                break
+    @staticmethod
+    def _clean_number_text(cell: str) -> str:
+        return (
+            cell.replace(',', "")
+            .replace("₹", "")
+            .replace("rs.", "")
+            .replace("Rs.", "")
+            .replace("−", "-")
+        )
 
-        return metrics
+    def _row_numbers(self, cells: List[str]) -> set:
+        """Distinct numbers in a row (any cell, label included)."""
+        return {
+            float(match)
+            for cell in cells
+            for match in self.numeric_pattern.findall(self._clean_number_text(cell))
+        }
+
+    @classmethod
+    def _excluded_label(cls, metric: str, label: str) -> bool:
+        normalized = cls._normalize_tag(label)
+        return any(part in normalized for part in cls.EXCLUDED_LABEL_PARTS.get(metric, ()))
+
+    @classmethod
+    def _record_metric(
+        cls, metrics: Dict[str, float], conflicts: set, metric: str, value: float
+    ) -> None:
+        """First value wins, except for a strict metric seen again with a
+        different value: that is ambiguous, so the metric is removed and stays
+        missing (an explicit 0 is a value like any other)."""
+        if metric in conflicts:
+            return
+        if metric not in metrics:
+            metrics[metric] = value
+        elif metric in cls.STRICT_METRICS and metrics[metric] != value:
+            del metrics[metric]
+            conflicts.add(metric)
 
     def _extract_numeric_value(self, cells: List[str]) -> tuple[Optional[float], float]:
         """Extract numeric value and scale hints from table row cells"""
         detected_scale = 1.0
         for cell in reversed(cells):
-            normalized = (
-                cell.replace(',', "")
-                .replace("₹", "")
-                .replace("rs.", "")
-                .replace("Rs.", "")
-                .replace("−", "-")
-            )
+            normalized = self._clean_number_text(cell)
             cell_scale = self._detect_scale(cell)
             if cell_scale > 1.0:
                 detected_scale = max(detected_scale, cell_scale)
@@ -750,57 +796,6 @@ class FinancialDataProcessor:
             if pattern.search(text):
                 return scale
         return 1.0
-
-    @staticmethod
-    def _scale_from_unit(unit: str) -> float:
-        key = (unit or "").strip().lower()
-        mapping = {
-            "crore": 10_000_000,
-            "cr": 10_000_000,
-            "million": 1_000_000,
-            "mn": 1_000_000,
-            "billion": 1_000_000_000,
-            "bn": 1_000_000_000,
-            "lakh": 100_000,
-            "lac": 100_000,
-            "thousand": 1_000,
-            "k": 1_000,
-        }
-        return mapping.get(key, 1.0)
-
-    @classmethod
-    def _extract_non_halal_from_text(cls, text: str) -> Optional[float]:
-        if not text:
-            return None
-        pattern = re.compile(
-            r"(non[\s-]?permissible income|impermissible income|haram income|prohibited income|interest income)"
-            r"(?:(?:fy\s*\d{2,4})|(?:q\d+\s*fy\s*\d{2,4})|[^\d])*?"
-            r"(?:inr|rs\.?|₹)?\s*([\d,]+(?:\.\d+)?)\s*(crore|cr|million|mn|billion|bn|lakh|lac|thousand|k)?",
-            re.IGNORECASE,
-        )
-        matches = list(pattern.finditer(text))
-        if not matches:
-            return None
-        selected = None
-        for match in matches:
-            snippet = match.group(0).lower()
-            if "inr" in snippet or "rs" in snippet or "₹" in snippet:
-                selected = match
-                break
-        if selected is None:
-            selected = matches[-1]
-        raw_value = selected.group(2).replace(",", "")
-        try:
-            value = float(raw_value)
-        except ValueError:
-            return None
-        unit = selected.group(3) or ""
-        scale = cls._scale_from_unit(unit)
-        if scale > 1:
-            return value * scale
-        surrounding = selected.group(0)
-        inferred_scale = cls._detect_scale(surrounding)
-        return value * max(1.0, inferred_scale)
 
     @staticmethod
     def _extract_governance_notes(text: str) -> Optional[str]:
@@ -842,6 +837,10 @@ class FinancialDataProcessor:
             logger.warning("Invalid XBRL payload: %s", exc)
             return metrics
 
+        # ponytail: contexts and units are not read, so a strict metric reported
+        # for several periods abstains instead of picking one (D-023 captures
+        # contexts).
+        conflicts: set = set()
         for element in root.iter():
             try:
                 tag = etree.QName(element).localname
@@ -849,17 +848,20 @@ class FinancialDataProcessor:
                 tag = element.tag
             normalized = cls._normalize_tag(tag)
             metric = cls._match_structured_metric(normalized)
-            if not metric or metric in metrics:
+            if not metric:
                 continue
             numeric = cls._coerce_numeric(element.text)
             if numeric is None:
                 continue
-            metrics[metric] = cls._apply_structured_scale(numeric, scale_hint)
+            cls._record_metric(
+                metrics, conflicts, metric, cls._apply_structured_scale(numeric, scale_hint)
+            )
         return metrics
 
     @classmethod
     def _parse_structured_json(cls, payload, scale_hint: float = 1.0) -> Dict[str, float]:
         metrics: Dict[str, float] = {}
+        conflicts: set = set()
 
         def walk(node, prefix: str = ""):
             if isinstance(node, dict):
@@ -870,12 +872,17 @@ class FinancialDataProcessor:
                     else:
                         normalized = cls._normalize_tag(combined)
                         metric = cls._match_structured_metric(normalized)
-                        if not metric or metric in metrics:
+                        if not metric:
                             continue
                         numeric = cls._coerce_numeric(value)
                         if numeric is None:
                             continue
-                        metrics[metric] = cls._apply_structured_scale(numeric, scale_hint)
+                        cls._record_metric(
+                            metrics,
+                            conflicts,
+                            metric,
+                            cls._apply_structured_scale(numeric, scale_hint),
+                        )
             elif isinstance(node, list):
                 for item in node:
                     walk(item, prefix)
@@ -893,7 +900,7 @@ class FinancialDataProcessor:
             return None
         for metric, aliases in cls.STRUCTURED_ALIASES.items():
             if any(alias in normalized_tag for alias in aliases):
-                return metric
+                return None if cls._excluded_label(metric, normalized_tag) else metric
         return None
 
     @staticmethod

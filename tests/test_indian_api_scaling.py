@@ -23,7 +23,8 @@ def test_currency_metrics_scaled_to_rupees():
     assert metrics["revenue"] == 50.0 * indian_api.INR_CRORE
     assert metrics["interest_income"] == 1.0 * indian_api.INR_CRORE
     assert "dividend_income" not in metrics
-    assert metrics["non_halal_income"] == 0.25 * indian_api.INR_CRORE
+    # D-028: "Other, Net" is not prohibited income.
+    assert "non_halal_income" not in metrics
 
 
 def test_market_cap_scaled_from_crore():
