@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.6.3](https://github.com/hamza-aziz-ai/HalalLens/compare/v0.6.2...v0.6.3) (2026-10-29)
+
+
+### Bug Fixes
+
+* **crawler:** fetch every page of a company's BSE announcements ([#159](https://github.com/hamza-aziz-ai/HalalLens/issues/159)) ([0d881a6](https://github.com/hamza-aziz-ai/HalalLens/commit/0d881a68c3acb256b9221d1e4d53f5744dd4d345))
+* **market-data:** stop caching Indian Stock API failures for the life of the process ([#156](https://github.com/hamza-aziz-ai/HalalLens/issues/156)) ([ad60ede](https://github.com/hamza-aziz-ai/HalalLens/commit/ad60ede5ff868fed82d5cb36272778aa5dc7c893))
+
 ## [0.6.2](https://github.com/hamza-aziz-ai/HalalLens/compare/v0.6.1...v0.6.2) (2026-10-29)
 
 
