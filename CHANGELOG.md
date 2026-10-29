@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.17.3](https://github.com/hamza-aziz-ai/HalalLens/compare/v0.17.2...v0.17.3) (2026-10-29)
+
+
+### Bug Fixes
+
+* **evaluations:** publish every verdict through one locked quality overlay ([#222](https://github.com/hamza-aziz-ai/HalalLens/issues/222)) ([09154ee](https://github.com/hamza-aziz-ai/HalalLens/commit/09154ee97f8af3118b740ad9b456dba732f7c927))
+
 ## [0.17.2](https://github.com/hamza-aziz-ai/HalalLens/compare/v0.17.1...v0.17.2) (2026-10-29)
 
 
