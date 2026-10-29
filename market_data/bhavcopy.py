@@ -38,12 +38,21 @@ class BSEBhavRecord:
     isin: str
     close: Optional[float]
     company_name: str
+    ticker: str = ""
 
 
 class BhavcopyClient:
     """Fetch BSE equity bhavcopy and NSE market-cap files."""
 
+    # Current BSE file (UDiFF common format, since 2024); day = YYYYMMDD.
+    BSE_UDIFF_URL = (
+        "https://www.bseindia.com/download/BhavCopy/Equity/"
+        "BhavCopy_BSE_CM_0_0_0_{day}_F_0000.CSV"
+    )
+    # Legacy BSE file names, kept as fallbacks; day = DDMMYY.
     BSE_URL = "https://www.bseindia.com/download/BhavCopy/Equity/EQ_ISINCODE_{day}.zip"
+    # NSE's daily price report zip holds mcapDDMMYYYY.csv; day = DDMMYY.
+    NSE_PR_URL = "https://nsearchives.nseindia.com/archives/equities/bhavcopy/pr/PR{day}.zip"
     NSE_URL = "https://archives.nseindia.com/content/equities/mcap/mcap{day}.csv"
     BSE_PAGE = "https://www.bseindia.com/markets/MarketInfo/BhavCopy.aspx"
     HIDDEN_FIELDS = [
@@ -115,20 +124,34 @@ class BhavcopyClient:
         multiplier = self._infer_multiplier(cap_field)
         has_isin_col = any("isin" in name.lower() for name in fieldnames)
         name_lookup = self._build_company_lookup() if not has_isin_col else None
+        ticker_lookup = (
+            {r.ticker.upper(): r for r in self._last_bse_records.values() if r.ticker}
+            if not has_isin_col
+            else {}
+        )
 
-        mapping: Dict[str, float] = {}
+        # Exact matches (an ISIN column, or the NSE symbol equal to the BSE
+        # ticker) always win over a fuzzy company-name match, which can point
+        # at a different company and would then give it the wrong market cap.
+        exact: Dict[str, float] = {}
+        fuzzy: Dict[str, float] = {}
         for row in reader:
-            isin = self._extract_isin_from_row(row)
-            if not isin and name_lookup:
-                isin = self._match_company_to_isin(row, name_lookup)
-            if not isin:
-                continue
             value = _parse_float(row.get(cap_field))
             if value is None:
                 continue
-            mapping[isin] = value * multiplier
+            isin = self._extract_isin_from_row(row)
+            target = exact
+            if not isin:
+                record = ticker_lookup.get((row.get("Symbol") or "").strip().upper())
+                isin = record.isin if record else None
+            if not isin and name_lookup:
+                isin = self._match_company_to_isin(row, name_lookup)
+                target = fuzzy
+            if not isin:
+                continue
+            target[isin] = value * multiplier
 
-        return mapping
+        return {**fuzzy, **exact}
 
     def _extract_csv_from_archive(self, archive: zipfile.ZipFile) -> str:
         csv_name = next((name for name in archive.namelist() if name.lower().endswith(".csv")), None)
@@ -140,7 +163,8 @@ class BhavcopyClient:
         reader = csv.DictReader(io.StringIO(raw))
         results: Dict[str, BSEBhavRecord] = {}
         for row in reader:
-            code = (row.get("SC_CODE") or row.get("SC CODE") or "").strip()
+            # Legacy EQ_ISINCODE columns first, then the UDiFF names.
+            code = (row.get("SC_CODE") or row.get("SC CODE") or row.get("FinInstrmId") or "").strip()
             if not code:
                 continue
             isin = (
@@ -150,13 +174,16 @@ class BhavcopyClient:
                 or row.get("ISIN_CODE")
                 or ""
             ).strip()
-            close = _parse_float(row.get("CLOSE") or row.get("LAST") or row.get("TD_CLOSING"))
-            company = (row.get("SC_NAME") or "").strip()
+            close = _parse_float(
+                row.get("CLOSE") or row.get("LAST") or row.get("TD_CLOSING") or row.get("ClsPric")
+            )
+            company = (row.get("SC_NAME") or row.get("FinInstrmNm") or "").strip()
             results[code] = BSEBhavRecord(
                 symbol=code,
                 isin=isin,
                 close=close,
                 company_name=company,
+                ticker=(row.get("TckrSymb") or "").strip(),
             )
         if not results:
             raise BhavcopyError(f"BSE bhavcopy {day_label} produced no rows")
@@ -167,6 +194,14 @@ class BhavcopyClient:
             return None
         day = as_of.strftime("%d%m%y")
         prefix = f"EQ_ISINCODE_{day}"
+        udiff = sorted(
+            self.bse_local_dir.glob(f"BhavCopy_BSE_CM_0_0_0_{as_of:%Y%m%d}_F_*.[cC][sS][vV]")
+        )
+        for candidate in udiff:
+            csv_data = candidate.read_text(encoding="utf-8", errors="replace")
+            if not self._is_csv_empty(csv_data):
+                LOGGER.debug("Using local BSE UDiFF csv %s", candidate)
+                return csv_data
         # Prefer ZIP files
         for candidate in sorted(self.bse_local_dir.glob(f"{prefix}*.zip")):
             try:
@@ -193,6 +228,7 @@ class BhavcopyClient:
     def _download_direct_bse_csv(self, as_of: date) -> Optional[str]:
         day = as_of.strftime("%d%m%y")
         urls = [
+            self.BSE_UDIFF_URL.format(day=as_of.strftime("%Y%m%d")),
             self.BSE_URL.format(day=day),
             f"https://www.bseindia.com/download/BhavCopy/Equity/EQ_ISINCODE_{day}_T0.zip",
             f"https://www.bseindia.com/download/BhavCopy/Equity/EQ_ISINCODE_{day}_T0.CSV",
@@ -293,6 +329,19 @@ class BhavcopyClient:
         return None
 
     def _download_nse_market_caps(self, day: str) -> str:
+        # day is DDMMYYYY; the price report zip is named with DDMMYY.
+        try:
+            response = self.session.get(self.NSE_PR_URL.format(day=day[:4] + day[6:]), timeout=60)
+            if response.status_code != 404:
+                response.raise_for_status()
+                with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+                    name = next(
+                        (n for n in archive.namelist() if n.lower() == f"mcap{day}.csv"), None
+                    )
+                    if name:
+                        return archive.read(name).decode("utf-8", errors="replace")
+        except (requests.RequestException, zipfile.BadZipFile) as exc:
+            LOGGER.debug("NSE price report unavailable for %s: %s", day, exc)
         urls = [
             self.NSE_URL.format(day=day),
             f"https://archives.nseindia.com/content/equities/mcap/MCAP{day}.csv",
