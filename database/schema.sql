@@ -297,4 +297,15 @@ CREATE TABLE IF NOT EXISTS bhavcopy_quotes (
 CREATE INDEX IF NOT EXISTS idx_bhavcopy_quotes_trade_date
     ON bhavcopy_quotes (trade_date);
 
+-- Watchlists (migration 20261029_watchlist_entries.sql); alerts/storage.py.
+CREATE TABLE IF NOT EXISTS watchlist_entries (
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    symbol TEXT NOT NULL,
+    trigger TEXT NOT NULL DEFAULT 'compliance_flip',
+    last_is_compliant BOOLEAN,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (user_id, symbol, trigger)
+);
+
 COMMIT;

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import asdict
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
@@ -28,7 +29,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from alerts import AlertEngine, AlertEvent, WatchEntry, WatchlistStorage, EmailNotifier
+from alerts import AlertEngine, AlertEvent, WatchEntry, WatchlistStorage, EmailNotifier, owner_key
 from config import (
     LLM_API_KEY,
     LLM_ENDPOINT,
@@ -479,7 +480,9 @@ narrator_config = NarratorConfig(
     max_tokens=LLM_MAX_TOKENS,
     timeout=LLM_TIMEOUT,
 )
-watch_storage = WatchlistStorage(Path("cache/watchlists.json"))
+# Watchlists live in PostgreSQL; the lambda defers to _get_db (defined below,
+# 503 when the database is unavailable) at call time.
+watch_storage = WatchlistStorage(lambda: _get_db())
 alert_engine = AlertEngine(watch_storage)
 try:
     DB_MANAGER: Optional[BSEDatabaseManager] = BSEDatabaseManager()
@@ -2997,10 +3000,23 @@ async def razorpay_webhook(request: Request) -> Dict[str, str]:
     return {"status": "ok"}
 
 
-def _watchlist_owner(session: Dict[str, Any]) -> str:
-    """Watchlist key derived from the session, never from the request body."""
+def _watchlist_owner(session: Dict[str, Any]) -> int:
+    """Watchlist owner (the session's user id), never taken from the request."""
 
-    return f"user:{session['user_id']}"
+    return int(session["user_id"])
+
+
+@contextmanager
+def _watchlist_storage_errors(action: str):
+    """Watchlist storage failures are 503, never a silent empty result."""
+
+    try:
+        yield
+    except HTTPException:
+        raise
+    except Exception:
+        api_logger.exception("Watchlist storage failed during %s", action)
+        raise HTTPException(status_code=503, detail="Watchlist storage unavailable")
 
 
 @app.post("/watchlist", response_model=WatchlistEntryPayload)
@@ -3012,15 +3028,16 @@ async def add_watchlist(
 
     session = _require_paid_feature(authorization, "Watchlist alerts")
     owner = _watchlist_owner(session)
-    watch_storage.upsert(
-        WatchEntry(
-            user_id=owner,
-            symbol=entry.symbol.strip().upper(),
-            trigger=entry.trigger,
+    with _watchlist_storage_errors("add"):
+        watch_storage.add(
+            WatchEntry(
+                user_id=owner,
+                symbol=entry.symbol.strip().upper(),
+                trigger=entry.trigger,
+            )
         )
-    )
     return WatchlistEntryPayload(
-        user_id=owner,
+        user_id=owner_key(owner),
         symbol=entry.symbol.strip().upper(),
         trigger=entry.trigger,
     )
@@ -3040,17 +3057,12 @@ async def list_watchlist(
 
     session = _require_paid_feature(authorization, "Watchlist alerts")
     owner = _watchlist_owner(session)
-    entries = watch_storage.list(user_id=owner)
-    sanitized = []
-    for entry in entries:
-        data = asdict(entry)
-        filtered = {
-            "user_id": data["user_id"],
-            "symbol": data["symbol"],
-            "trigger": data.get("trigger", "compliance_flip"),
-        }
-        sanitized.append(WatchlistEntryPayload(**filtered))
-    return sanitized
+    with _watchlist_storage_errors("list"):
+        entries = watch_storage.list(owner)
+    return [
+        WatchlistEntryPayload(user_id=owner_key(owner), symbol=entry.symbol, trigger=entry.trigger)
+        for entry in entries
+    ]
 
 
 @app.post("/alerts/check", response_model=List[AlertEventPayload])
@@ -3066,16 +3078,17 @@ async def check_alerts(
 
     session = _require_paid_feature(authorization, "Watchlist alerts")
     owner = _watchlist_owner(session)
-    _enforce_rate_limit("metered", owner)
+    _enforce_rate_limit("metered", owner_key(owner))
     symbol = payload.symbol.strip().upper()
     if not symbol:
         raise HTTPException(status_code=422, detail="symbol is required")
 
     is_compliant = _stored_alert_verdict(symbol)
     # Only the caller's own entries are read or moved (alerts/engine.py).
-    events: List[AlertEvent] = alert_engine.process_verdict(
-        symbol, is_compliant, user_id=owner
-    )
+    with _watchlist_storage_errors("alert check"):
+        events: List[AlertEvent] = alert_engine.process_verdict(
+            symbol, is_compliant, user_id=owner
+        )
     # Best-effort: the baseline is already updated and send() swallows SMTP
     # errors, so there is no exactly-once delivery.
     for event in events:

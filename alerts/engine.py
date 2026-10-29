@@ -6,7 +6,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import List, Optional
 
-from alerts.storage import WatchEntry, WatchlistStorage
+from alerts.storage import COMPLIANCE_FLIP, WatchlistStorage, owner_key, require_user_id
 
 
 @dataclass
@@ -26,50 +26,34 @@ class AlertEngine:
         self.storage = storage
 
     def process_verdict(
-        self, symbol: str, is_compliant: Optional[bool], *, user_id: str
+        self, symbol: str, is_compliant: Optional[bool], *, user_id: int
     ) -> List[AlertEvent]:
-        """Check one user's watch entries for the symbol and fire alerts on flip.
+        """Record one user's verdict for the symbol and return an alert on a flip.
 
-        `user_id` is required and must be non-empty: WatchlistStorage.list()
-        treats a falsy id as "every user", and processing every user's entries
-        let one caller move everyone's baseline.
+        Only the given user's entry is read or moved; `user_id` must be a
+        positive integer (the session's user id).
 
         None (insufficient data / under review) is not a verdict: it neither
         alerts nor moves the stored baseline, so True -> None -> False still
-        flips exactly once.
+        flips exactly once. The storage decides baseline vs flip atomically and
+        has committed before an event is returned.
         """
 
-        if not user_id or not user_id.strip():
-            raise ValueError("user_id is required")
+        require_user_id(user_id)
         if is_compliant is None:
             return []
 
-        events: List[AlertEvent] = []
-        for entry in self.storage.list(user_id=user_id):
-            if entry.symbol != symbol or entry.trigger != "compliance_flip":
-                continue
-
-            if entry.last_is_compliant is None:
-                entry.last_is_compliant = is_compliant
-                self.storage.update_state(entry)
-                continue
-
-            if entry.last_is_compliant != is_compliant:
-                message = (
-                    f"{symbol} compliance flipped to {'Halal' if is_compliant else 'Non-Halal'}."
-                )
-                events.append(
-                    AlertEvent(
-                        user_id=entry.user_id,
-                        symbol=symbol,
-                        trigger=entry.trigger,
-                        message=message,
-                    )
-                )
-                entry.last_is_compliant = is_compliant
-                self.storage.update_state(entry)
-
-        return events
+        outcome = self.storage.transition(user_id, symbol, COMPLIANCE_FLIP, is_compliant)
+        if outcome != "flip":
+            return []
+        return [
+            AlertEvent(
+                user_id=owner_key(user_id),
+                symbol=symbol,
+                trigger=COMPLIANCE_FLIP,
+                message=f"{symbol} compliance flipped to {'Halal' if is_compliant else 'Non-Halal'}.",
+            )
+        ]
 
 
 __all__ = ["AlertEngine", "AlertEvent"]
