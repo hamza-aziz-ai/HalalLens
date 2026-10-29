@@ -308,8 +308,11 @@ def _ensure_date(value: Optional[datetime | date]) -> Optional[date]:
     return None
 
 
-def _flatten_entry(entry: Dict[str, any]) -> Dict[str, float]:
-    flattened: Dict[str, float] = {}
+def _flatten_entry(entry: Dict[str, any]) -> Dict[str, Optional[float]]:
+    """Normalized key -> value. A key reported again with a different value
+    (another statement or row) maps to None: ambiguous, so it abstains instead
+    of keeping whichever row came last."""
+    flattened: Dict[str, Optional[float]] = {}
     if not entry:
         return flattened
     for rows in (entry.get("stockFinancialMap") or {}).values():
@@ -319,7 +322,10 @@ def _flatten_entry(entry: Dict[str, any]) -> Dict[str, float]:
             key = row.get("key") or row.get("displayName")
             value = _to_float(row.get("value"))
             if key and value is not None:
-                flattened[_normalize_key(key)] = value
+                name = _normalize_key(key)
+                if name in flattened and flattened[name] != value:
+                    value = None
+                flattened[name] = value
     return flattened
 
 
@@ -332,6 +338,12 @@ def _build_metrics(flat: Dict[str, float]) -> Dict[str, float]:
                 return flat[cand]
         return None
 
+    # D-028: no field is guessed. Interest income is the gross figure only (not
+    # "Interest Inc.(Exp.), Net"); "Other, Net" is not prohibited income, and
+    # no vendor key shows that a non-permissible figure excludes interest and
+    # dividends, so non_halal_income is never set here; liquid assets come
+    # only from an explicit aggregate, never cash + receivables + short-term
+    # investments; dividends paid are not dividend income.
     currency_fields = {
         "total_debt": ["totaldebt"],
         "cash_equiv": ["cashequivalents", "cash", "cashandbankbalances"],
@@ -341,8 +353,7 @@ def _build_metrics(flat: Dict[str, float]) -> Dict[str, float]:
             "tradereceivables",
         ],
         "revenue": ["totalrevenue", "revenue"],
-        "interest_income": ["interestincexpnetnonoptotal", "interestincome"],
-        "non_halal_income": ["othernet", "nonpermissibleincome"],
+        "interest_income": ["interestincome"],
         "liquid_assets": ["liquidassets"],
     }
 
@@ -351,21 +362,7 @@ def _build_metrics(flat: Dict[str, float]) -> Dict[str, float]:
         if value is not None:
             metrics[field] = _scale_currency(value)
 
-    short_term = pick("shortterminvestments")
-    if short_term is not None:
-        short_term = _scale_currency(short_term)
-
-    receivables = metrics.get("accounts_receivable") or 0.0
-    cash_equiv = metrics.get("cash_equiv") or 0.0
-    liquid_assets = metrics.get("liquid_assets")
-    if liquid_assets is None:
-        liquid_assets = cash_equiv + receivables + (short_term or 0.0)
-        metrics["liquid_assets"] = liquid_assets if liquid_assets else None
-
-    if metrics.get("dividend_income") is not None:
-        metrics["dividend_income"] = abs(metrics["dividend_income"])
-
-    return {key: value for key, value in metrics.items() if value is not None}
+    return metrics
 
 
 def _parse_date(value: Optional[str]) -> Optional[date]:
