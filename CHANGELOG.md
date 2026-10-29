@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.17.2](https://github.com/hamza-aziz-ai/HalalLens/compare/v0.17.1...v0.17.2) (2026-10-29)
+
+
+### Bug Fixes
+
+* **db:** run Postgres 17 (14 reaches end of life on 2026-11-12) ([#221](https://github.com/hamza-aziz-ai/HalalLens/issues/221)) ([99508e8](https://github.com/hamza-aziz-ai/HalalLens/commit/99508e836fc4dd3e70ca47a040e8065e6652262a))
+
 ## [0.17.1](https://github.com/hamza-aziz-ai/HalalLens/compare/v0.17.0...v0.17.1) (2026-10-29)
 
 
