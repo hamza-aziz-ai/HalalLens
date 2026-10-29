@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.12.0](https://github.com/hamza-aziz-ai/HalalLens/compare/v0.11.2...v0.12.0) (2026-10-29)
+
+
+### Features
+
+* **ui:** a maintenance page during restarts, a 404 page, and readable API errors ([#191](https://github.com/hamza-aziz-ai/HalalLens/issues/191)) ([7e52587](https://github.com/hamza-aziz-ai/HalalLens/commit/7e52587ea548fac358ad6edff2b9093a32f84bff))
+
+
+### Bug Fixes
+
+* **narrator:** ask the Ollama model for high reasoning effort on financial explanations ([#190](https://github.com/hamza-aziz-ai/HalalLens/issues/190)) ([7cfe58b](https://github.com/hamza-aziz-ai/HalalLens/commit/7cfe58b42dfbddc9ed2c6aa2204625dab12795e9))
+
 ## [0.11.2](https://github.com/hamza-aziz-ai/HalalLens/compare/v0.11.1...v0.11.2) (2026-10-29)
 
 
