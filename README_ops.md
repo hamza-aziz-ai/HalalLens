@@ -254,6 +254,15 @@ SELECT fe.symbol, fe.filing_date, fe.verdict, array_agg(q.issue_type) AS open_is
 
 Then take the dump, run the dry run with `--limit` at least the number of evaluated filings (`SELECT count(*) FROM filing_evaluations WHERE ratios IS NOT NULL AND ratios <> '{}'`), check that every inventoried row appears in the CSV with `new_verdict = needs-review`, review the other transitions (a resolved stale anomaly can turn `needs-review` back into the engine's pair), and only then run `--write` with a new report. Resolving an issue never restores a verdict by itself: after an operator resolves issues, the next evaluation or this recompute does. Do not run it against production without the maintainer.
 
+### Stored data repair (D-028)
+
+D-028 stopped the mappers from guessing `liquid_assets`, the prohibited-income base, net interest and dividends paid, but it changes only new extractions. Rows written before it can still hold those values, and `--recompute` re-reads them as they are, so repairing them is a separate, reviewed step. There is no tool for it yet; nothing below has been run against production, and each step needs the maintainer's review.
+
+1. **Inventory.** List what may carry a rejected mapping: `financial_snapshots` rows with `liquid_assets`, `non_halal_income` or `interest_income` set; the PDF metric cache objects under `metrics/v4/` in the filing bucket (new runs use `metrics/v5/`, so the old ones are no longer read but still exist); `cache/` JSON written by `--save-cache`; and every `governance_overrides` row (some were written by the vendor enrichment, `"Structured governance metrics from Indian API"`).
+2. **Re-extract from retained evidence.** For each affected filing, run the current extractor on the same retained artifact (the stored PDF or structured attachment) and compare field by field. Set a field the current rules no longer produce to NULL; never keep the old value because nothing replaces it. Where no artifact was retained, invalidate the affected fields (NULL) instead of trusting them.
+3. **Review overrides.** Overrides win over snapshots on read (`COALESCE`), so a vendor-written `non_halal_income` ("Other, Net") or derived `liquid_assets` survives a snapshot repair. Remove or confirm each one by hand; keep a record of what changed.
+4. **Preview, then recompute.** Take a `pg_dump` of `financial_snapshots`, `governance_overrides` and `filing_evaluations`, then run `python -m jobs.backfill_evaluations --recompute --report repair_dry_run.csv` and review it (expect many `insufficient-data` verdicts) before `--recompute --report repair_write.csv --write`. Recompute uses the stored market caps, so the only change is the repaired inputs.
+
 ## 4. Logs & monitoring
 
 - Files reside under `logs/<component>/<Year>/<MonthName>/component.log`. Rotations include the date suffix.

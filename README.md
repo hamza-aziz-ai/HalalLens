@@ -203,7 +203,7 @@ The `docs/` folder is the engineering record, kept in the "Defend What You Ship"
 ## Known limitations
 
 - **No filings in production yet.** BSE answers 403 to the production server for announcements, so production ingestion stores no filings; a permitted data source (written permission or a licensed feed) is the maintainer's decision, and the blocking is not worked around.
-- **Inputs are weak evidence.** The PDF extractor's prohibited-income regex also matches "interest income", the vendor maps "Other, Net" to non-permissible income and its interest is net, `liquid_assets` is mapped from "current assets", and governance overrides carry no declared contract. The receivables (67%) and liquid-assets (49%) gates are not backed by AAOIFI SS21 but are required for `compliant`, and evaluations stored by an older engine keep their verdicts until recomputed.
+- **Inputs are weak evidence.** Inputs the mappers cannot establish stay missing (D-028), so the prohibited-income base comes only from a governance override (which carries no declared contract) and many filings screen as `insufficient-data`; extraction does not read XBRL contexts or know which PDF column is the filing's period. The receivables (67%) and liquid-assets (49%) gates are not backed by AAOIFI SS21 but are required for `compliant`, and evaluations stored by an older engine keep their verdicts until recomputed.
 - **Single-host pilot.** Everything runs on one VM with one API worker; the rate limiter keeps its counters in process memory, so more workers multiply every limit and a restart resets them. Move it to Redis before scaling out.
 
 The full list is in [Screening method](docs/guides/SCREENING.md#known-limitations).
