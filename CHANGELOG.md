@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.19.0](https://github.com/hamza-aziz-ai/HalalLens/compare/v0.18.1...v0.19.0) (2026-10-29)
+
+
+### Features
+
+* **billing:** credit unused paid time when upgrading to Lifetime ([#232](https://github.com/hamza-aziz-ai/HalalLens/issues/232)) ([68e70f7](https://github.com/hamza-aziz-ai/HalalLens/commit/68e70f7bb924e5d88bbba78949f83d9a3f587ab4))
+
 ## [0.18.1](https://github.com/hamza-aziz-ai/HalalLens/compare/v0.18.0...v0.18.1) (2026-10-29)
 
 
