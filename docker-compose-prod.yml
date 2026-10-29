@@ -259,6 +259,36 @@ services:
       timeout: 10s
       retries: 3
 
+  backup:
+    # Nightly pg_dump to the object store (R2), 14-day retention; see README_ops.
+    image: halal-lens-api
+    build:
+      context: .
+      dockerfile: api.Dockerfile
+    env_file:
+      - .env
+    environment:
+      POSTGRES_HOST: ${POSTGRES_HOST:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      MINIO_HOST: ${MINIO_HOST:?set in .env}
+      MINIO_PORT: ${MINIO_PORT:-443}
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:?set in .env}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:?set in .env}
+      MINIO_SECURE: ${MINIO_SECURE:-true}
+      MINIO_REGION: ${MINIO_REGION:-auto}
+      MINIO_BUCKET: ${MINIO_BUCKET:-bse-pdfs}
+      BACKUP_INTERVAL_HOURS: ${BACKUP_INTERVAL_HOURS:-24}
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-14}
+    depends_on:
+      migrations:
+        condition: service_completed_successfully
+    volumes:
+      - logs_data:/app/logs
+    entrypoint: ["python3", "-m", "jobs.backup_postgres", "--loop"]
+    restart: unless-stopped
+
 volumes:
   api_cache:
   postgres_data:
