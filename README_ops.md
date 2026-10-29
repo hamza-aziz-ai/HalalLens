@@ -107,7 +107,7 @@ Deploy once from the Cloudflare dashboard (no token needed):
 3. **Websites → halallens.in → Workers Routes → Add route:** `halallens.in/api/*` with Worker **None**, so API calls and Razorpay webhooks never pass through the Worker.
 4. Check: `curl -sI https://halallens.in/` still returns 200, and `/api/health` 200. The real test is the next time the tunnel is down (the page should show instead of Cloudflare's).
 
-The page is a copy of `caddy/maintenance.html` (a dashboard Worker cannot import files): change both together and paste the Worker again.
+The page is an exact copy of `caddy/maintenance.html` (a dashboard Worker cannot import files), so visitors see the same page whether a container restarts or the whole origin is down; `tests/test_maintenance_page.py` fails when the copies differ. After changing the page, paste the Worker again.
 
 ### Published images
 
