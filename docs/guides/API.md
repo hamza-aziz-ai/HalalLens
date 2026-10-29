@@ -22,6 +22,8 @@ Boundaries worth knowing:
 - `/market-data` requires a session because a cache miss spends vendor quota.
 - Session tokens are SHA-256 digests; passwords are PBKDF2-HMAC-SHA256 at 600k iterations (older hashes are re-hashed on next login).
 - Razorpay webhooks are idempotent through the unique `(provider, event_id)` index on `payment_events`.
+- Plans are one-time purchases on a ledger of grants (D-024): a purchase made while paid time runs queues behind it, nothing renews, and `/billing/cancel` changes nothing (it returns the current state for old clients). Refunds touch only the payment they refund (D-025).
+- Upstream failures (Razorpay, Google) answer 503, never 502, because Cloudflare replaces an origin 502 with its own page. A failed Google sign-in redirects to `/login#error=<code>` instead of returning JSON.
 
 Rate limits (per worker process, see the caveat):
 
@@ -30,7 +32,7 @@ RATE_LIMIT_ENABLED=true
 RATE_LIMIT_LOGIN_PER_MINUTE=10       # per IP
 RATE_LIMIT_REGISTER_PER_HOUR=5       # per IP, also throttles trial farming
 RATE_LIMIT_PUBLIC_PER_MINUTE=60      # per IP, /halal-score
-RATE_LIMIT_METERED_PER_MINUTE=30     # per user, /narrate + /market-data
+RATE_LIMIT_METERED_PER_MINUTE=30     # per user, /narrate + /market-data + /alerts/check
 RATE_LIMIT_WRITE_PER_HOUR=30         # per IP, /feedback + /client-logs
 TRUST_PROXY_HEADERS=false            # true only behind a proxy you control
 ALLOWED_ORIGIN_REGEX=                # opt-in; matched with fullmatch, not a prefix

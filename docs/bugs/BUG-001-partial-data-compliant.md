@@ -22,3 +22,4 @@ Engine-owned three-state verdict (`REQUIRED_RATIOS`, strict income), exact Decim
 
 ## Log
 - 2026-10-27: found while reading the code for the CI/release plan; fixed in PR #87 (draft); stored rows still stale until PR-B.
+- 2026-10-29: PR #87 merged 2026-10-28; PR-B landed as PR #91 (`jobs.backfill_evaluations --recompute`, dry run by default). Stored rows stay stale until someone runs it with `--write`; production holds no filings yet (BSE blocks the server).

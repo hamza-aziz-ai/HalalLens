@@ -3,13 +3,14 @@
 How to undo a change. The risky ones first.
 
 ## Last known good
-- `main` before the verdict fix: commit `63432a2` (a Dependabot update on top of PR #75). Tags: none yet (release-please creates `v0.x` on the first release PR).
+- `main` before the verdict fix: commit `63432a2` (a Dependabot update on top of PR #75).
+- Releases are tagged `vX.Y.Z` by release-please and published as images (D-018); the release running in production is recorded in `docs/HANDOVER.md`. Roll back a deploy with `scripts/deploy.sh <previous tag>` (README_ops.md); migrations are forward-only, so check the table below first.
 - Note the commit/tag before every risky deploy.
 
 ## Rolling back the verdict-engine change (PR #87)
 **Code:** revert the squash commit on `main` (`git revert <sha>`, via a PR), rebuild images, redeploy. There is no schema change in #87, so no down-migration.
 
-**Data (the real risk):** the new engine does not rewrite stored evaluations by itself, but new evaluations (ingestion, `/filings/{symbol}`) use the new logic. After PR-B's recompute runs, rows are overwritten in place (`filing_evaluations` is keyed by `(symbol, filing_date)`).
+**Data (the real risk):** the new engine does not rewrite stored evaluations by itself, but new evaluations (ingestion, `/filings/{symbol}`) use the new logic. After a `--recompute --write` run (PR #91), rows are overwritten in place (`filing_evaluations` is keyed by `(symbol, filing_date)`).
 1. Before any recompute: export `filing_evaluations` with `pg_dump --table` (the CSV is evidence, not a backup) and run the dry run `python -m jobs.backfill_evaluations --recompute --report dry_run.csv`. The CSV holds the old and new verdicts, missing inputs, row status and the inputs and caps used.
 2. To go back after a recompute: restore the table from that export.
 3. Re-check afterwards: `GET /filings/{symbol}` for a few symbols, the dashboard badges, `/ops/metrics`.

@@ -6,15 +6,15 @@ This guide captures day‑to‑day operations for running HalalLens in a pilot o
 
 | Variable                                | Purpose                                                                                                                                                                                                                                                      |
 |-----------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `POSTGRES_*`                            | Database host, db name, user, password. Use external Postgres; Docker compose connects via `host.docker.internal`.                                                                                                                                           |
-| `MINIO_*`                               | MinIO credentials if you override defaults from `jobs/ingest_bse.py`.                                                                                                                                                                                        |
+| `POSTGRES_*`                            | Database host, db name, user, password. `docker-compose.yml` connects to an external Postgres via `host.docker.internal`; `docker-compose-prod.yml` bundles a `postgres` service.                                                                          |
+| `MINIO_*`                               | S3-compatible store for filing PDFs and backups (MinIO locally, Cloudflare R2 in production): host, port, keys, bucket, TLS, region.                                                                                                                       |
 | `INDIAN_API_BASE_URL`, `INDIAN_API_KEY` | Indian Stock Market API endpoint + token for live market data/metrics.                                                                                                                                                                                       |
-| `OPS_*`                                 | Ops alerting (SMTP + Slack). See README for full list.                                                                                                                                                                                                       |
+| `OPS_*`                                 | Ops alerting (SMTP + Slack). `.env.example` lists them all.                                                                                                                                                                                                  |
 | `HALAL_LOG_ROOT`                        | Where component logs live (default `./logs`).                                                                                                                                                                                                                |
 | `LOG_LEVEL`                             | `DEBUG` / `INFO`. Set globally or per service.                                                                                                                                                                                                               |
 | `NARRATOR_*`, `LLM_*`                   | Narrator configuration. Default `NARRATOR_MODE=rule_based`. In `llm` mode the model is asked only about conclusive verdicts and its text is best-effort (UI marks it AI-generated); `tools/preflight.py` requires the endpoint to be reachable in that mode. |
 
-Store secrets in a `.env` file, Docker secrets, or whichever secret manager your platform provides. Rotate them periodically; when rotating DB passwords, restart API + ingestion containers to pick up the new values.
+Store secrets in a `.env` file, Docker secrets, or whichever secret manager your platform provides. Rotate them periodically; when rotating DB passwords, recreate every service that reads them (`docker compose up -d --force-recreate`; a plain `restart` keeps the old environment).
 
 ### Deployment quick-start
 
@@ -33,11 +33,11 @@ Store secrets in a `.env` file, Docker secrets, or whichever secret manager your
    curl http://<api-host>:8001/ops/metrics   # admin session required
    ```
 
-5. Start the ingestion scheduler (systemd or `docker compose run --rm ingestion`). Watch `/ops/metrics` and the ingestion heartbeat for failures.
+5. The `ingestion` and `evaluation` schedulers start with the stack (outside Docker, run `jobs.schedule_ingestion` under systemd or similar). Watch `/ops/metrics` and the ingestion heartbeat for failures.
 
 ### Uptime check
 
-`.github/workflows/uptime.yml` requests `<UPTIME_URL>/api/health` every 30 minutes (three tries, 20 s apart). A failure opens one issue labelled `uptime`, or comments on the open one, which notifies the repository's watchers; the next success closes it. Set the repository variable `UPTIME_URL` (e.g. `https://halallens.in`) to turn it on; without it the job is skipped. GitHub disables scheduled workflows after 60 days without repository activity, so re-enable it under Actions if that happens. It checks only that the site answers, not that ingestion or backups ran: read those in the service logs.
+`.github/workflows/uptime.yml` requests `<UPTIME_URL>/api/health` every 30 minutes (three tries, 20 s apart). A failure opens one issue labelled `uptime`, or comments on the open one, which notifies the repository's watchers; the next success closes it. Set the repository variable `UPTIME_URL` (e.g. `https://halallens.in`) to turn it on; without it the job is skipped. GitHub disables scheduled workflows after 60 days without repository activity, so re-enable it under Actions if that happens. It checks that the site answers and, through `/api/health/billing`, that the payment reconciler runs (see Billing below); it does not check that ingestion or backups ran: read those in the service logs.
 
 ### PostgreSQL backups and restore
 
@@ -46,7 +46,7 @@ The `backup` service in `docker-compose-prod.yml` runs `jobs.backup_postgres` on
 - Back up now: `docker compose -f docker-compose-prod.yml exec -T backup python -m jobs.backup_postgres` (one run inside the running service; `run backup ...` would append to its `--loop` entrypoint).
 - **Use the API image's `pg_restore`, not the Postgres container's.** The dumps are written by the API image's `pg_dump` (17); Postgres 14's own `pg_restore` refuses them with `unsupported version (1.16) in file header`. One error during a restore is expected and harmless: `unrecognized configuration parameter "transaction_timeout"` (a 17-only setting).
 - Restore: download a `.dump` from the bucket (Cloudflare dashboard, or any S3 client) into `/opt/halallens/halallens.dump`, then stop the writers and restore into the running Postgres:
-  1. `docker compose -f docker-compose-prod.yml stop api ingestion evaluation backup`
+  1. `docker compose -f docker-compose-prod.yml stop api ingestion evaluation backup billing-reconcile`
   2. `docker compose -f docker-compose-prod.yml run --rm --no-deps -T -v "$PWD/halallens.dump:/tmp/restore.dump:ro" --entrypoint sh backup -c 'PGPASSWORD="$POSTGRES_PASSWORD" pg_restore --clean --if-exists --no-owner -h "$POSTGRES_HOST" -U "$POSTGRES_USER" -d "$POSTGRES_DB" /tmp/restore.dump'`
   3. `docker compose -f docker-compose-prod.yml up -d`
 - Restore drill: restore the newest dump into a throwaway `postgres:14` container started with `--network none`, run the API image's `pg_restore` inside its network namespace (`docker run --network container:<throwaway> --entrypoint pg_restore <api image> ... -h 127.0.0.1`), and compare `count(*)` per table with live. Last drill 2026-10-29: 20 of 20 tables matched, including 34,959 `market_data_snapshots` rows. Repeat monthly and after any Postgres or API base-image upgrade.
@@ -56,9 +56,9 @@ The `backup` service in `docker-compose-prod.yml` runs `jobs.backup_postgres` on
 Plans are one-time Razorpay Orders; nothing renews automatically. Each paid order, trial and pre-ledger period is a row in `subscription_grants`, and access is derived from them (D-024): a purchase made while paid time runs starts when it ends, a refund removes only its own purchase's time.
 
 - **Before deploying the first release with D-024**, apply `database/migrations/20261029_subscription_grants.sql` (it is idempotent, and creates a legacy grant that keeps each current subscriber's exact end date). Rehearsed on a restored production copy on 2026-10-29.
-- **Refund due:** if a payment lands while Lifetime already covers the user (two checkouts were open), the order gets status `refund_due`, nothing is granted, and the API logs `REFUND DUE`. Refund it in the Razorpay dashboard: `SELECT order_id, user_id, amount, payment_id FROM razorpay_orders WHERE status = 'refund_due';`
+- **Refund due:** if a payment lands while Lifetime already covers the user (two checkouts were open), the order gets status `refund_due`, nothing is granted, and the API logs `REFUND DUE`. Under TEST keys the reconciler refunds it automatically (see Automatic refunds below); otherwise refund it in the Razorpay dashboard: `SELECT order_id, user_id, amount, payment_id FROM razorpay_orders WHERE status = 'refund_due';`
 - **Refunds that match no grant** (refund-due orders, or old orders the migration could not link) are logged `matches no grant: review by hand`; adjust access by hand only after checking the user's grants.
-- **Reconciler** (`billing-reconcile` service, `jobs/reconcile_payments.py`, every 15 min): sweeps Razorpay refunds, then payments, created since its checkpoint (from the first order; at most 7 days per run) and re-sweeps one older day per run; settles captured payments the webhook missed (alert: "a Razorpay webhook was missed"; check that the webhook is still enabled, Razorpay disables it after 24 h of failures), applies refunds made in the dashboard, links pre-ledger purchases to their payment when exactly one attempt ever succeeded, and keeps everything else in `billing_tracked` until resolved: `pending` (re-checked by id, daily after a week, never retired by age), `duplicate` and `refund_due` (money to refund; automatic refunds come in a later PR), `mismatch`, `legacy_review`, `failed_refund`, `lookup_error`. Alerts go through the ops notifier on first sight, then daily. Open items: `SELECT kind, provider_id, order_id, reason, last_status, first_seen FROM billing_tracked WHERE resolved_at IS NULL;` After handling one by hand, set `resolved_at = NOW()`. State and last error: `SELECT * FROM billing_reconcile_state;` Run once by hand: `docker compose -f docker-compose-prod.yml run --rm --no-deps --entrypoint python3 billing-reconcile -m jobs.reconcile_payments`. Discovery is best effort over Razorpay's list APIs; completeness beyond the overlap and the audit is not guaranteed.
+- **Reconciler** (`billing-reconcile` service, `jobs/reconcile_payments.py`, every 15 min): sweeps Razorpay refunds, then payments, created since its checkpoint (from the first order; at most 7 days per run) and re-sweeps one older day per run; settles captured payments the webhook missed (alert: "a Razorpay webhook was missed"; check that the webhook is still enabled, Razorpay disables it after 24 h of failures), applies refunds made in the dashboard, links pre-ledger purchases to their payment when exactly one attempt ever succeeded, and keeps everything else in `billing_tracked` until resolved: `pending` (re-checked by id, daily after a week, never retired by age), `duplicate` and `refund_due` (money to refund; refunded automatically under TEST keys, see below), `mismatch`, `legacy_review`, `failed_refund`, `lookup_error`. Alerts go through the ops notifier on first sight, then daily. Open items: `SELECT kind, provider_id, order_id, reason, last_status, first_seen FROM billing_tracked WHERE resolved_at IS NULL;` After handling one by hand, set `resolved_at = NOW()`. State and last error: `SELECT * FROM billing_reconcile_state;` Run once by hand: `docker compose -f docker-compose-prod.yml run --rm --no-deps --entrypoint python3 billing-reconcile -m jobs.reconcile_payments`. Discovery is best effort over Razorpay's list APIs; completeness beyond the overlap and the audit is not guaranteed.
 - **Automatic refunds** (TEST keys only, by code; live refunds need their own reviewed change): the reconciler refunds a proven `duplicate` payment or a `refund_due` payment in full. The request (amount, body, `X-Refund-Idempotency` key) is stored in `refund_actions` before it is sent; a retry first looks for a refund carrying that key in its notes, then re-sends the identical request. A partial or pending refund already on the payment, a parameter-mismatch 409 or any other refusal means no automatic refund: the action is `blocked` and you are alerted; refund by hand in the dashboard and the reconciler closes the obligation (any processed refunds reaching the full amount count). `SELECT payment_id, reason, amount, state, provider_refund_id, last_error, obligation_settled_at FROM refund_actions;`
 - **Heartbeat:** `GET /api/health/billing` (public: status and age only) reports `ok` when the reconciler succeeded within 60 minutes, else `stale` / `never`, or `disabled` without Razorpay keys. The uptime workflow checks it with `/api/health` and keeps its issue open until both pass; set the repository variable `BILLING_EXPECTED=true` so `disabled` also fails. `ok` means the job runs, not that no item is open.
 - Refunds are recorded once per refund id against the payment they refund (D-025). Partial refunds keep access until the funding payment's refunds reach the order amount; refunding another payment attempt on the same order never touches access; refunds of pre-ledger purchases are logged `funding payment unknown, review by hand`.
@@ -121,7 +121,7 @@ The page is an exact copy of `caddy/maintenance.html` (a dashboard Worker cannot
 
 ### Images and volume ownership
 
-One Python image (`api.Dockerfile`) runs every Python role: the API by default, and preflight, migrations and both schedulers through the commands in the compose files. It runs as the unprivileged user `10001:10001` and can write only to `cache/`, `downloads/`, `logs/`, `logs_runtime/` and `/tmp`. New named volumes mounted there take that ownership automatically. A volume created by an older image that ran as root keeps root ownership; fix it once with `docker run --rm --user 0 -v <volume>:/v halal-lens-api chown -R 10001:10001 /v`. The development compose file bind-mounts the working tree and runs these services as root on purpose.
+One Python image (`api.Dockerfile`) runs every Python role: the API by default, and preflight, migrations, both schedulers, the backup and the payment reconciler through the commands in the compose files. It runs as the unprivileged user `10001:10001` and can write only to `cache/`, `downloads/`, `logs/`, `logs_runtime/` and `/tmp`. New named volumes mounted there take that ownership automatically. A volume created by an older image that ran as root keeps root ownership; fix it once with `docker run --rm --user 0 -v <volume>:/v halal-lens-api chown -R 10001:10001 /v`. The development compose file bind-mounts the working tree and runs these services as root on purpose.
 
 ### Exposing the site: Caddy TLS or Cloudflare Tunnel
 
@@ -172,7 +172,7 @@ pipenv run python -m jobs.ingest_bse --from-date 20251009 --to-date 20251009 --s
 - Ship logs to S3/Vector via your preferred agent; prune older months with `find logs -type f -mtime +90 -delete`.
 - Ops notifications: configure `OPS_SMTP_*`, `OPS_EMAIL_*`, and/or `OPS_SLACK_WEBHOOK`. Failures produce “ERROR” emails/Slack messages with tracebacks; recoveries emit “INFO” alerts. Set `OPS_EVENT_HISTORY` (default 40) to control how many recent alert records are retained/returned by the API.
 - Metrics (JSONL) can be ingested by Promtail/Vector for dashboards (success/failure counts, duration). The API also aggregates these into `GET /ops/metrics`, which surfaces the most recent ingestion runs, market-data alert history, and LLM narration failures—ideal for Grafana tables/cards without scraping raw files.
-  - `monitoring/notifier.py` drives the alerts. To test, run `python -m monitoring.notifier` after exporting the `OPS_*` variables or call `OpsNotifier("api").notify("INFO", "testing")` from a REPL.
+  - `monitoring/notifier.py` drives the alerts. To test, export the `OPS_*` variables and call `OpsNotifier("api").notify("INFO", "testing")` from a REPL (the module has no command-line entry point).
   - The ingestion scheduler writes JSON lines to `logs/metrics/ingestion_metrics.jsonl`. Quickly summarize them with:
 
     ```bash
@@ -194,15 +194,15 @@ pipenv run python -m jobs.ingest_bse --from-date 20251009 --to-date 20251009 --s
 
 ## 5. Manual data quality review
 
-- Use the dashboard “Feedback queue” to triage reports. Reviewers add notes and mark entries resolved (see README).
+- Use the dashboard “Feedback queue” to triage reports. Reviewers (admins) add notes and mark entries resolved.
 - If you need to suppress a filing temporarily, set `verdict=null` in `filing_evaluations` and re-run the ingestion/backfill for that symbol once corrections exist.
 - Record manual overrides/notes in `feedback_reports.review_notes` to keep an audit trail.
 - For AAOIFI-specific fixes (receivables/liquid/non-halal income), leverage the “Governance overrides” card in the dashboard or call `/governance/overrides` via API. Overrides live in the `governance_overrides` table and are applied before ratios execute.
 
 ## 6. Realtime symbol lookups (Indian API fallback)
 
-- Populate `INDIAN_API_BASE_URL` and `INDIAN_API_KEY` in `.env`. Without these the API can only rely on cached BSE filings.
-- When a user hits `GET /filings/{symbol}?refresh=true` and no local filing exists, FastAPI will:
+- Populate `INDIAN_API_BASE_URL` and `INDIAN_API_KEY` in `.env`. Without these the API can only rely on stored filings and a realtime BSE fetch.
+- When a paid user hits `GET /filings/{symbol}?refresh=true` (or the symbol has no usable stored filing), FastAPI first tries a realtime BSE fetch; if that yields no filing, it will:
   1. Grab company metadata + financial statements from the Indian Stock Market API.
   2. Persist the synthetic filing to `announcements`, `financial_snapshots`, `market_data_snapshots`, and `indianapi_snapshots`.
   3. Immediately compute AAOIFI ratios so subsequent `/filings/{symbol}` calls read from Postgres like any other entry.
@@ -214,7 +214,7 @@ pipenv run python -m jobs.ingest_bse --from-date 20251009 --to-date 20251009 --s
       "SELECT symbol, filing_date, confidence FROM announcements ORDER BY filing_date DESC LIMIT 3;"
   ```
 
-- Failures are logged under `logs/api/YYYY/Month/api.log` with the prefix `Indian API snapshot`. Re-run the refresh request once the upstream API recovers or you adjust the API key/rate limits.
+- Failures are logged under `logs/api/YYYY/Month/api.log` (e.g. `Failed to persist Indian API snapshot for <symbol>`). Re-run the refresh request once the upstream API recovers or you adjust the API key/rate limits.
 
 ## 7. Disaster recovery
 
@@ -243,7 +243,7 @@ pipenv run python -m jobs.ingest_bse --from-date 20251009 --to-date 20251009 --s
 1. Store all sensitive values in your vault of choice (1Password, Vault, AWS SM, etc.). Never edit `.env` directly on production hosts.
 2. When a credential changes (Indian API key, SMTP password, DB user):
    - Update the vault and regenerate the `.env` from template (`cp .env.example .env && edit`).
-   - Restart API/UI/scheduler containers so they pick up the new env values (`docker compose restart api ui ingestion`).
+   - Recreate the containers so they pick up the new env values (`docker compose up -d --force-recreate`; `docker compose restart` keeps the old environment).
    - Confirm `GET /health` and the ingestion heartbeat update.
 3. Record the change in your ops log and destroy/rotate the old secret if applicable.
 
@@ -251,7 +251,7 @@ Keep this runbook alongside `README.md`; update both whenever operational requir
 
 ## 9. Troubleshooting checklist
 
-- `GET /health` returns `{"status": "ok"}` – verifies FastAPI + DB connectivity.  
+- `GET /health` returns `{"status": "ok"}` – liveness only: it does not touch the database. With Razorpay configured, `GET /health/billing` answers 503 when the database is unreachable.  
 - Scheduler heartbeat: check `/tmp/ingestion_heartbeat.txt` timestamp (or your custom path).  
 - Persistent Indian API failures: inspect `logs/market_data/` and consider adjusting API rate limits, refreshing the key, or falling back to Bhavcopy-only mode temporarily.  
 - `preflight` fails with an LLM endpoint error: the LLM endpoint is unreachable while `NARRATOR_MODE=llm`. Fix the endpoint or set `NARRATOR_MODE=rule_based`. Narration errors fall back to the rule-based narrator and show up in `/ops/metrics`.

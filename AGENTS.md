@@ -16,7 +16,7 @@ HalalLens is a public, MIT-licensed portfolio showcase for now; the maintainer p
 
 | Path                        | What                                                                                                                                                                                 |
 |-----------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `api/app.py`                | The whole FastAPI app (~3.8k lines): routes, auth, billing, rate limiting wiring. `api/security.py` holds password/session-token hashing and `SlidingWindowRateLimiter`; `api/mailer.py` sends sign-up and reset email; `api/billing.py` derives paid access from `subscription_grants` (D-024); `api/razorpay_client.py` is the Razorpay REST client shared with the reconciler.             |
+| `api/app.py`                | The whole FastAPI app (~4.3k lines): routes, auth, billing, rate limiting wiring. `api/security.py` holds password/session-token hashing and `SlidingWindowRateLimiter`; `api/mailer.py` sends sign-up and reset email; `api/billing.py` derives paid access from `subscription_grants` (D-024); `api/razorpay_client.py` is the Razorpay REST client shared with the reconciler.             |
 | `ratio_engine/`             | Five ratios + the ONLY verdict derivation (`engine.py`, exact Decimal), `summary.py`, `amounts.py` (`coerce_amount`). 30% debt/cash, 5% income per SS21; 67%/49% gates are not SS21. |
 | `narrator/`                 | Explain-why text: rule-based by default; optional LLM (`NARRATOR_MODE=llm`) only for conclusive verdicts behind a best-effort guard.                                                 |
 | `alerts/`                   | Watchlist storage, compliance-flip engine, email notifier.                                                                                                                           |
@@ -26,7 +26,7 @@ HalalLens is a public, MIT-licensed portfolio showcase for now; the maintainer p
 | `ui/`                       | Next.js dashboard (`app/`, `components/`, `lib/`), Jest tests in `ui/__tests__/`.                                                                                                    |
 | `halallens-mobile/`         | Flutter scaffold only: platform runners + pubspec + template test. **No `lib/` Dart source exists** (never in git history), so it cannot build.                                      |
 | `tests/`                    | Pytest suite (API, security, ratio engine golden table, narrator, ETL, jobs, amounts, market data).                                                                                  |
-| `docs/`                     | Field-guide paper trail: HANDOVER, DECISIONS, ALTERNATIVES, ARCHITECTURE, FLOW, CONSTRAINTS, THREAT, FAILURE, DATA, TESTING, ROLLBACK, ASSUMPTIONS, DEPENDENCIES, bugs/, defense/.   |
+| `docs/`                     | Field-guide paper trail: HANDOVER, DECISIONS, ALTERNATIVES, ARCHITECTURE, FLOW, CONSTRAINTS, THREAT, FAILURE, DATA, TESTING, ROLLBACK, ASSUMPTIONS, DEPENDENCIES, bugs/, defense/; `guides/` holds the product guides and `dockerhub/` the Docker Hub pages. |
 
 ## Commands
 
@@ -36,12 +36,12 @@ pipenv run pytest                          # backend tests; same command CI runs
 pipenv run uvicorn api.app:app --reload --port 8001
 cd ui && npm install && npm test           # jest --runInBand
 cd ui && npm run lint && npm run build
-docker compose up --build                  # API + UI + ingestion against an external Postgres/MinIO
+docker compose up --build                  # API + UI + ingestion and evaluation schedulers against an external Postgres/MinIO
 ```
 
 ## Rules that are easy to break
 
-- **Schema changes = new file in `database/migrations/`** named `YYYYMMDD_<name>.sql`, *and* update `database/schema.sql`. Migrations are applied by hand/`scripts/run_migrations.sh`; the backend assumes the schema is current.
+- **Schema changes = new file in `database/migrations/`** named `YYYYMMDD_<name>.sql`, *and* update `database/schema.sql`. Migrations are applied by `scripts/run_migrations.sh` (the `migrations` service in `docker-compose-prod.yml` runs it before the API starts) or by hand; the backend assumes the schema is current.
 - **Keep the Python minor version in sync** across `Pipfile [requires]`, `.github/workflows/ci.yml` and the Dockerfiles, or `pipenv install --deploy` fails. Never add `python_full_version`: `python:3.14-slim` moves patch releases and `--deploy` then aborts the image build. `Pipfile` lists only imported packages; add a package only with a real import, then re-lock (`pipenv lock`).
 - **Every route has a tier** (public / authenticated / paid / admin); see the route-tier table in `docs/guides/API.md`. New routes must pick one deliberately. Governance overrides and feedback triage are admin-only; watchlists (Postgres `watchlist_entries`) are keyed off the session's user id, never a client-supplied `user_id`; reviewer identity comes from the session.
 - **Never store or log raw session tokens** (SHA-256 digests only; use `redact_token`). Passwords go through `api/security.py` (PBKDF2, 600k). Google SSO returns tokens in the URL *fragment*, and redirects must match `FRONTEND_BASE_URL` or the `halallens://` scheme.
@@ -50,7 +50,7 @@ docker compose up --build                  # API + UI + ingestion against an ext
 - **Rate limiter is per-process memory.** Fine for the pilot; don't claim multi-worker correctness without moving it to Redis.
 - **New env vars go in `.env.example`.** Never commit secrets, keys or CSVs of keys (a `rzp-key.csv` was already removed once).
 - Changing ratio logic? Add/adjust a row in the golden table in `tests/test_ratio_engine.py`. Verdicts come ONLY from `RatioEngine` (`RatioEvaluation.verdict`: `compliant` / `non-compliant` / `insufficient-data`; `is_compliant` is True/False/None); never re-derive them in API, jobs or UI. `needs-review` is an API-level overlay. historical repair uses `--recompute` (current stored inputs and caps, no vendor calls, dry run by default, `--write` requires a new `--report`). The plain backfill skips rows that have ratios (`has_ratios` from `get_recent_filings`); unevaluated filings belong to `jobs.precompute_evaluations`.
-- Tests must not need live Postgres/MinIO/LLM/vendor APIs; `tests/conftest.py` resets the rate limiter between tests. The only exceptions are the opt-in real-Postgres tests (`tests/test_watchlist_postgres.py`, `tests/test_auth_postgres.py`), skipped unless `HALALLENS_TEST_PG_DSN` points at a throwaway database; run them when the locking SQL changes.
+- Tests must not need live Postgres/MinIO/LLM/vendor APIs; `tests/conftest.py` resets the rate limiter between tests. The only exceptions are the opt-in real-Postgres tests (`tests/test_watchlist_postgres.py`, `tests/test_auth_postgres.py`, `tests/test_billing_postgres.py`), skipped unless `HALALLENS_TEST_PG_DSN` points at a throwaway database; run them when the locking SQL changes.
 - **Auth invariants (D-020, D-021):** every session belongs to a verified email; `ADMIN_EMAILS` grants admin only when the mailbox is proven (sign-up link, reset link or Google), never because an address was typed; Google accounts are matched by Google subject only and linked explicitly from the account page; emailed and OAuth proofs are single-use, stored as SHA-256 digests and carried in URL fragments or HttpOnly cookies.
 
 ## Pull requests and releases
