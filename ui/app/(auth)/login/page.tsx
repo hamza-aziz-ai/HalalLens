@@ -13,6 +13,7 @@ import {
 } from "@/lib/auth";
 import { useAuth } from "@/providers/AuthProvider";
 import { API_BASE } from "@/lib/api";
+import SiteFooter from "@/components/site-footer";
 
 type Mode = "signin" | "signup" | "forgot";
 
@@ -251,6 +252,7 @@ export default function LoginPage() {
           </div>
         </div>
       </div>
+      <SiteFooter />
     </div>
   );
 }
