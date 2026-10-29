@@ -34,9 +34,9 @@ def test_ollama_native_request_and_answer():
                                             "thinking": "reasoning is ignored"}})
     assert client.complete([{"role": "user", "content": "hi"}], temperature=0.0, max_tokens=400) == '{"ok": 1}'
     payload = session.post.call_args.kwargs["json"]
-    assert payload["stream"] is False and payload["think"] == "low"
+    assert payload["stream"] is False and payload["think"] == "high"
     # num_predict must cover reasoning plus answer.
-    assert payload["options"]["num_predict"] == 1024 and payload["options"]["temperature"] == 0.0
+    assert payload["options"]["num_predict"] == 4096 and payload["options"]["temperature"] == 0.0
     assert "Authorization" not in (session.post.call_args.kwargs.get("headers") or {})
 
 
