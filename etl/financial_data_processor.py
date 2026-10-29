@@ -47,6 +47,18 @@ logging.getLogger("pdfminer.image").setLevel(logging.ERROR)
 
 
 # noinspection PyTypeChecker
+# Unit words as whole words only (a digit may come first: "5cr", "10k"), so
+# "description", "column" or "bank " no longer scale a value by 1e7/1e6/1e3.
+# Checked in this order; the first match wins.
+_SCALE_WORDS = [
+    (re.compile(r"(?<![a-z])(?:crores?|crs?)(?![a-z])"), 10_000_000),
+    (re.compile(r"(?<![a-z])(?:billions?|bn)(?![a-z])"), 1_000_000_000),
+    (re.compile(r"(?<![a-z])(?:millions?|mn)(?![a-z])"), 1_000_000),
+    (re.compile(r"(?<![a-z])(?:lakhs?|lacs?)(?![a-z])"), 100_000),
+    (re.compile(r"(?<![a-z])(?:thousands?|k)(?![a-z])"), 1_000),
+]
+
+
 class FinancialDataProcessor:
     """Realistic processor for BSE financial announcements"""
 
@@ -734,16 +746,9 @@ class FinancialDataProcessor:
             return 1.0
 
         text = text.lower()
-        if 'crore' in text or 'cr' in text:
-            return 10_000_000
-        if 'billion' in text or 'bn' in text:
-            return 1_000_000_000
-        if 'million' in text or 'mn' in text:
-            return 1_000_000
-        if 'lakh' in text or 'lac' in text:
-            return 100_000
-        if 'thousand' in text or 'k ' in text:
-            return 1_000
+        for pattern, scale in _SCALE_WORDS:
+            if pattern.search(text):
+                return scale
         return 1.0
 
     @staticmethod
