@@ -117,19 +117,21 @@ class LLMClient:
 
         Used for cloud models such as gpt-oss:120b-cloud through a signed-in
         daemon. Reasoning comes back separately in message.thinking and is
-        ignored; num_predict must cover reasoning plus answer, so it is never
-        below 1024. Output schemas are not relied on: the caller validates.
+        ignored. Reasoning effort is high (financial explanations; measured
+        1-2 s on gpt-oss:120b-cloud) and temperature comes from LLM_TEMPERATURE
+        (default 0). num_predict must cover reasoning plus answer, so it is
+        never below 4096. Output schemas are not relied on: the caller validates.
         """
 
         payload = {
             "model": self.model,
             "messages": list(messages),
             "stream": False,
-            "think": "low",
+            "think": "high",
             "options": {
                 "temperature": temperature,
                 "seed": 7,
-                "num_predict": max(max_tokens or 0, 1024),
+                "num_predict": max(max_tokens or 0, 4096),
             },
         }
         timeout = self.timeout if self.timeout and self.timeout > 0 else None
