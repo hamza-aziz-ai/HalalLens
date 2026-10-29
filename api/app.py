@@ -1081,6 +1081,9 @@ def _create_razorpay_order(
     """
 
     _ensure_razorpay_enabled()
+    if quote and not quote["credit_amount"]:
+        # No credit: an ordinary Lifetime order, with no 15-minute price window.
+        quote = None
     list_paise = int(plan["price_inr"]) * 100
     amount_paise = int(quote["amount"]) if quote else list_paise
     # Unique per call (two checkouts in one second must not share a receipt);

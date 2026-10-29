@@ -3130,8 +3130,10 @@ class BSEDatabaseManager:
                 # clawed back (maintainer decision, D-030): open an item for a human.
                 cursor.execute(
                     "SELECT order_id FROM razorpay_orders WHERE user_id = %(u)s AND credit_version IS NOT NULL "
-                    "AND status = 'paid' AND credit_detail -> 'sources' @> %(src)s ORDER BY order_id",
-                    {"u": user_id, "src": Json([{"payment_id": funding}])},
+                    "AND status = 'paid' AND jsonb_path_exists(credit_detail, "
+                    "'$.sources[*] ? (@.payment_id == $p && @.credit > 0)', jsonb_build_object('p', %(p)s::text)) "
+                    "ORDER BY order_id",
+                    {"u": user_id, "p": funding},
                 )
                 conflicts = [row["order_id"] for row in cursor.fetchall()]
                 if conflicts:

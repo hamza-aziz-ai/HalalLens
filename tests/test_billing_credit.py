@@ -355,6 +355,31 @@ def test_a_refunded_source_after_settlement_is_tracked_and_alerted_not_clawed_ba
     assert _refund(fake, annual, "rfnd_a") == {"status": "duplicate"} and len(alerts) == 1
 
 
+def test_a_lifetime_without_credit_is_an_ordinary_order_with_no_price_window(fake, rzp_orders):
+    order = _buy(fake, "lifetime")
+    stored = fake.orders[order.order_id]
+    assert (order.amount, order.credit_amount) == (LIST, 0)
+    assert stored["credit_version"] is None and stored["price_valid_until"] is None
+    fake.advance(1)  # paid a day later: no window to miss
+    assert _pay_at(order.order_id, "pay_life1", fake, None) == {"status": "granted"}
+
+
+def test_refunding_a_source_that_gave_no_credit_raises_no_conflict(fake, rzp_orders):
+    annual = _buy(fake, "annual")
+    _pay_at(annual.order_id, "pay_annual1", fake, _epoch(fake.now))
+    fake.advance(400)  # the Annual has expired: it gives 0 credit
+    starter = _buy(fake, "starter")
+    _pay_at(starter.order_id, "pay_start1", fake, _epoch(fake.now))
+    fake.advance(10)
+    order = _buy(fake, "lifetime")
+    assert order.credit_amount > 0
+    _pay_at(order.order_id, "pay_life1", fake, _epoch(fake.now))
+    _refund(fake, annual.order_id, "rfnd_old")
+    assert ("credit_conflict", "rfnd_old") not in fake.tracked
+    _refund(fake, starter.order_id, "rfnd_start")
+    assert ("credit_conflict", "rfnd_start") in fake.tracked
+
+
 def test_full_lifetime_refund_returns_the_charge_and_later_upgrades_are_priced_fresh(fake, rzp_orders):
     _annual_bought_100_days_ago(fake, rzp_orders)
     order = _buy(fake, "lifetime")
