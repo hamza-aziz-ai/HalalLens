@@ -177,7 +177,7 @@ export default function AnalysisPage() {
     setLoading(true);
     setError(null);
     try {
-      const result = await callAnalysis(payload);
+      const result = await callAnalysis(payload, hasPaidAccess);
       setResponse(result);
     } catch (err: any) {
       setError(err.message ?? "Unable to compute ratios.");
@@ -439,7 +439,9 @@ export default function AnalysisPage() {
             <ExplainPanel narration={response.narration} theme={theme} />
           ) : (
             <article className={clsx(cardClass, "text-sm", mutedTextClass)}>
-              Explain-Why narration is unavailable for this filing.
+              {hasPaidAccess
+                ? "Explain-Why narration is unavailable for this filing."
+                : "Explain-Why narration is included in the paid plans."}
             </article>
           )}
         </section>
