@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.17.1](https://github.com/hamza-aziz-ai/HalalLens/compare/v0.17.0...v0.17.1) (2026-10-29)
+
+
+### Bug Fixes
+
+* **ui:** page backgrounds and the maintenance overlay render again ([#209](https://github.com/hamza-aziz-ai/HalalLens/issues/209)) ([19e3ff6](https://github.com/hamza-aziz-ai/HalalLens/commit/19e3ff6b0787077b2899719165d7dbddd6177af2))
+
 ## [0.17.0](https://github.com/hamza-aziz-ai/HalalLens/compare/v0.16.0...v0.17.0) (2026-10-29)
 
 
