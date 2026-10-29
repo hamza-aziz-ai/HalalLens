@@ -51,6 +51,15 @@ The `backup` service in `docker-compose-prod.yml` runs `jobs.backup_postgres` on
   3. `docker compose -f docker-compose-prod.yml up -d`
 - Restore drill: restore the newest dump into a throwaway `postgres:14` container started with `--network none`, run the API image's `pg_restore` inside its network namespace (`docker run --network container:<throwaway> --entrypoint pg_restore <api image> ... -h 127.0.0.1`), and compare `count(*)` per table with live. Last drill 2026-10-29: 20 of 20 tables matched, including 34,959 `market_data_snapshots` rows. Repeat monthly and after any Postgres or API base-image upgrade.
 
+### Billing (Razorpay, one-time purchases)
+
+Plans are one-time Razorpay Orders; nothing renews automatically. Each paid order, trial and pre-ledger period is a row in `subscription_grants`, and access is derived from them (D-024): a purchase made while paid time runs starts when it ends, a refund removes only its own purchase's time.
+
+- **Before deploying the first release with D-024**, apply `database/migrations/20261029_subscription_grants.sql` (it is idempotent, and creates a legacy grant that keeps each current subscriber's exact end date). Rehearsed on a restored production copy on 2026-10-29.
+- **Refund due:** if a payment lands while Lifetime already covers the user (two checkouts were open), the order gets status `refund_due`, nothing is granted, and the API logs `REFUND DUE`. Refund it in the Razorpay dashboard: `SELECT order_id, user_id, amount, payment_id FROM razorpay_orders WHERE status = 'refund_due';`
+- **Refunds that match no grant** (refund-due orders, or old orders the migration could not link) are logged `matches no grant: review by hand`; adjust access by hand only after checking the user's grants.
+- Partial refunds keep access until refunds reach the full order amount.
+
 ### Docker Hub pages
 
 The Docker Hub descriptions of `halallens-api` and `halallens-ui` come from `docs/dockerhub/*.md` (full description) and `.github/workflows/dockerhub-description.yml` (short description). The workflow runs when those change on `main`, or by hand (Actions, Docker Hub descriptions, Run workflow). It uses `DOCKERHUB_NAMESPACE` and `DOCKERHUB_TOKEN` from the `publish` environment; updating a description needs a token with Read, Write, Delete access. Categories (up to three per repository) can only be set in Docker Hub's repository settings, not through the API.

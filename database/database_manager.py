@@ -10,7 +10,7 @@ with proper connection pooling, error handling, and transaction management.
 import logging
 import json
 from contextlib import contextmanager
-from datetime import datetime, date, timezone
+from datetime import datetime, date, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import pandas as pd
@@ -2540,10 +2540,10 @@ class BSEDatabaseManager:
             with conn.cursor() as cursor:
                 cursor.execute(
                     """
-                    SELECT code, name, price_inr, interval_days, trial_days, features, is_active
+                    SELECT code, name, price_inr, interval_days, trial_days, features, is_active, rank
                     FROM subscription_plans
                     WHERE (%(active_only)s = false OR is_active = true)
-                    ORDER BY price_inr ASC
+                    ORDER BY rank, price_inr
                     """,
                     {"active_only": active_only},
                 )
@@ -2554,7 +2554,7 @@ class BSEDatabaseManager:
             with conn.cursor() as cursor:
                 cursor.execute(
                     """
-                    SELECT code, name, price_inr, interval_days, trial_days, features, is_active
+                    SELECT code, name, price_inr, interval_days, trial_days, features, is_active, rank
                     FROM subscription_plans
                     WHERE code = %(code)s
                     """,
@@ -2562,128 +2562,6 @@ class BSEDatabaseManager:
                 )
                 row = cursor.fetchone()
                 return dict(row) if row else None
-
-    def upsert_user_subscription(
-        self,
-        *,
-        user_id: int,
-        plan_code: str,
-        provider: str,
-        status: str,
-        current_period_start: Optional[datetime],
-        current_period_end: Optional[datetime],
-        cancel_at_period_end: bool = False,
-    ) -> Dict:
-        with self.get_connection() as conn:
-            with conn.cursor() as cursor:
-                cursor.execute(
-                    """
-                    SELECT id
-                    FROM user_subscriptions
-                    WHERE user_id = %(user_id)s AND provider = %(provider)s
-                    ORDER BY created_at DESC
-                    LIMIT 1
-                    """,
-                    {"user_id": user_id, "provider": provider},
-                )
-                existing = cursor.fetchone()
-                if existing:
-                    cursor.execute(
-                        """
-                        UPDATE user_subscriptions
-                        SET plan_code = %(plan_code)s,
-                            status = %(status)s,
-                            current_period_start = %(current_period_start)s,
-                            current_period_end = %(current_period_end)s,
-                            cancel_at_period_end = %(cancel_at_period_end)s,
-                            updated_at = NOW()
-                        WHERE id = %(id)s
-                        RETURNING *
-                        """,
-                        {
-                            "id": existing["id"],
-                            "plan_code": plan_code,
-                            "status": status,
-                            "current_period_start": current_period_start,
-                            "current_period_end": current_period_end,
-                            "cancel_at_period_end": cancel_at_period_end,
-                        },
-                    )
-                    row = cursor.fetchone()
-                else:
-                    cursor.execute(
-                        """
-                        INSERT INTO user_subscriptions (
-                            user_id,
-                            plan_code,
-                            provider,
-                            status,
-                            current_period_start,
-                            current_period_end,
-                            cancel_at_period_end
-                        ) VALUES (
-                            %(user_id)s,
-                            %(plan_code)s,
-                            %(provider)s,
-                            %(status)s,
-                            %(current_period_start)s,
-                            %(current_period_end)s,
-                            %(cancel_at_period_end)s
-                        )
-                        RETURNING *
-                        """,
-                        {
-                            "user_id": user_id,
-                            "plan_code": plan_code,
-                            "provider": provider,
-                            "status": status,
-                            "current_period_start": current_period_start,
-                            "current_period_end": current_period_end,
-                            "cancel_at_period_end": cancel_at_period_end,
-                        },
-                    )
-                    row = cursor.fetchone()
-                conn.commit()
-                return dict(row)
-
-    def update_user_plan(
-        self,
-        *,
-        user_id: int,
-        plan: str,
-        subscription_status: str,
-        subscription_renewal: Optional[datetime],
-        plan_started_at: Optional[datetime],
-        trial_used: Optional[bool] = None,
-    ) -> Dict:
-        with self.get_connection() as conn:
-            with conn.cursor() as cursor:
-                cursor.execute(
-                    """
-                    UPDATE users
-                    SET plan = %(plan)s,
-                        subscription_status = %(subscription_status)s,
-                        subscription_renewal = %(subscription_renewal)s,
-                        plan_started_at = COALESCE(%(plan_started_at)s, plan_started_at),
-                        trial_used = COALESCE(%(trial_used)s, trial_used),
-                        updated_at = NOW()
-                    WHERE id = %(user_id)s
-                    RETURNING id, email, plan, subscription_status,
-                              subscription_renewal, plan_started_at,
-                              provider, google_sub, full_name, avatar_url, trial_used
-                    """,
-                    {
-                        "user_id": user_id,
-                        "plan": plan,
-                        "subscription_status": subscription_status,
-                        "subscription_renewal": subscription_renewal,
-                        "plan_started_at": plan_started_at,
-                        "trial_used": trial_used,
-                    },
-                )
-                row = cursor.fetchone()
-                conn.commit()
-                return dict(row)
 
     def create_razorpay_order(
         self,
@@ -2694,15 +2572,18 @@ class BSEDatabaseManager:
         currency: str,
         status: str,
         payload: Dict[str, Any],
+        plan_code: Optional[str] = None,
+        interval_days: Optional[int] = None,
     ) -> None:
         with self.get_connection() as conn:
             with conn.cursor() as cursor:
                 cursor.execute(
                     """
                     INSERT INTO razorpay_orders (
-                        order_id, user_id, amount, currency, status, payload
+                        order_id, user_id, amount, currency, status, payload, plan_code, interval_days
                     ) VALUES (
-                        %(order_id)s, %(user_id)s, %(amount)s, %(currency)s, %(status)s, %(payload)s
+                        %(order_id)s, %(user_id)s, %(amount)s, %(currency)s, %(status)s, %(payload)s,
+                        %(plan_code)s, %(interval_days)s
                     )
                     ON CONFLICT (order_id) DO UPDATE
                     SET status = EXCLUDED.status,
@@ -2716,6 +2597,8 @@ class BSEDatabaseManager:
                         "currency": currency,
                         "status": status,
                         "payload": Json(payload),
+                        "plan_code": plan_code,
+                        "interval_days": interval_days,
                     },
                 )
                 conn.commit()
@@ -2725,7 +2608,8 @@ class BSEDatabaseManager:
             with conn.cursor() as cursor:
                 cursor.execute(
                     """
-                    SELECT order_id, user_id, amount, currency, status, payload
+                    SELECT order_id, user_id, amount, currency, status, payload, plan_code,
+                           interval_days, payment_id
                     FROM razorpay_orders
                     WHERE order_id = %(order_id)s
                     """,
@@ -2733,60 +2617,6 @@ class BSEDatabaseManager:
                 )
                 row = cursor.fetchone()
                 return dict(row) if row else None
-
-    def update_razorpay_order_status(
-        self,
-        order_id: str,
-        status: str,
-        *,
-        only_if_status: Optional[Sequence[str]] = None,
-    ) -> Optional[Dict]:
-        """Transition an order's status.
-
-        When ``only_if_status`` is supplied the update is conditional, which
-        makes it usable as an atomic claim: exactly one concurrent caller sees a
-        row returned, every other caller sees ``None``. That is what keeps
-        payment verification and webhook delivery from granting a subscription
-        twice for the same order.
-        """
-
-        with self.get_connection() as conn:
-            with conn.cursor() as cursor:
-                params: Dict[str, Any] = {"order_id": order_id, "status": status}
-                condition = ""
-                if only_if_status is not None:
-                    params["allowed"] = list(only_if_status)
-                    condition = " AND status = ANY(%(allowed)s)"
-                cursor.execute(
-                    f"""
-                    UPDATE razorpay_orders
-                    SET status = %(status)s, updated_at = NOW()
-                    WHERE order_id = %(order_id)s{condition}
-                    RETURNING order_id, user_id, amount, currency, status, payload
-                    """,
-                    params,
-                )
-                row = cursor.fetchone()
-                conn.commit()
-                return dict(row) if row else None
-
-    def payment_event_exists(self, provider: str, event_id: str) -> bool:
-        """True when this provider event was already processed (idempotency)."""
-
-        if not event_id:
-            return False
-        with self.get_connection() as conn:
-            with conn.cursor() as cursor:
-                cursor.execute(
-                    """
-                    SELECT 1
-                    FROM payment_events
-                    WHERE provider = %(provider)s AND event_id = %(event_id)s
-                    LIMIT 1
-                    """,
-                    {"provider": provider, "event_id": event_id},
-                )
-                return cursor.fetchone() is not None
 
     def record_payment_event(
         self,
@@ -2825,6 +2655,268 @@ class BSEDatabaseManager:
                 inserted = (cursor.rowcount or 0) > 0
                 conn.commit()
                 return inserted
+
+    # ------------------------------------------------------------------
+    # Subscription grants (D-024). Every write below runs in ONE transaction
+    # that first locks the user row, so settlements, refunds, trials and
+    # projection refreshes for a user are serialised. Times come from the
+    # database clock taken after the lock, so allocation order is the order
+    # in which grants were actually allocated. ``project`` is
+    # api.billing.project, passed in to keep this layer free of API imports.
+    # ------------------------------------------------------------------
+
+    _GRANT_COLUMNS = (
+        "id, user_id, plan_code, source, order_id, duration, allocated_at, refunded_amount, revoked_at"
+    )
+    _CLAIMABLE_ORDER_STATES = ("created", "attempted")
+
+    def get_subscription_grants(self, user_id: int) -> List[Dict]:
+        with self.get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    f"SELECT {self._GRANT_COLUMNS} FROM subscription_grants "
+                    "WHERE user_id = %(user_id)s ORDER BY allocated_at, id",
+                    {"user_id": user_id},
+                )
+                return [dict(row) for row in cursor.fetchall()]
+
+    def _lock_user_grants(self, cursor, user_id: int) -> Tuple[Optional[Dict], List[Dict], datetime]:
+        cursor.execute(
+            "SELECT id, trial_used FROM users WHERE id = %(id)s FOR UPDATE", {"id": user_id}
+        )
+        user = cursor.fetchone()
+        cursor.execute(
+            f"SELECT {self._GRANT_COLUMNS} FROM subscription_grants "
+            "WHERE user_id = %(user_id)s ORDER BY allocated_at, id",
+            {"user_id": user_id},
+        )
+        grants = [dict(row) for row in cursor.fetchall()]
+        cursor.execute("SELECT clock_timestamp() AS now")
+        now = cursor.fetchone()["now"]
+        return (dict(user) if user else None), grants, now
+
+    @staticmethod
+    def _write_projection(cursor, user_id: int, projection: Dict, *, trial_used: Optional[bool] = None) -> None:
+        cursor.execute(
+            """
+            UPDATE users
+            SET plan = %(plan)s,
+                subscription_status = %(subscription_status)s,
+                subscription_renewal = %(subscription_renewal)s,
+                plan_started_at = %(plan_started_at)s,
+                trial_used = COALESCE(%(trial_used)s, trial_used),
+                updated_at = NOW()
+            WHERE id = %(user_id)s
+            """,
+            {**projection, "trial_used": trial_used, "user_id": user_id},
+        )
+
+    @staticmethod
+    def _insert_payment_event(cursor, *, user_id, event_type, event_id, payload) -> bool:
+        cursor.execute(
+            """
+            INSERT INTO payment_events (user_id, provider, event_type, event_id, payload)
+            VALUES (%(user_id)s, 'razorpay', %(event_type)s, %(event_id)s, %(payload)s)
+            ON CONFLICT (provider, event_id) DO NOTHING
+            """,
+            {"user_id": user_id, "event_type": event_type, "event_id": event_id, "payload": Json(payload)},
+        )
+        return (cursor.rowcount or 0) > 0
+
+    def settle_razorpay_order(
+        self,
+        *,
+        order_id: str,
+        payment_id: str,
+        expected_user_id: Optional[int],
+        event_type: str,
+        payload: Dict[str, Any],
+        project: Callable[[List[Dict], datetime], Dict],
+        lifetime_held: Callable[[List[Dict]], bool],
+    ) -> Tuple[str, Optional[Dict]]:
+        """Turn a captured payment into a grant, exactly once.
+
+        Claim, grant, event and projection commit together, so a crash leaves
+        the order claimable instead of "paid without access". Returns one of
+        ("granted", projection), ("settled", order) when already settled,
+        ("missing", None) for an unknown or foreign order, and
+        ("refund_due", order) when Lifetime already covers the user: the
+        payment is kept on record for a manual refund, no time is granted.
+        """
+
+        with self.get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT order_id, user_id, amount, currency, status, plan_code, interval_days "
+                    "FROM razorpay_orders WHERE order_id = %(order_id)s FOR UPDATE",
+                    {"order_id": order_id},
+                )
+                order = cursor.fetchone()
+                if not order or (expected_user_id is not None and order["user_id"] != expected_user_id):
+                    conn.rollback()
+                    return "missing", None
+                order = dict(order)
+                if order["status"] not in self._CLAIMABLE_ORDER_STATES:
+                    conn.rollback()
+                    return "settled", order
+                user_id = order["user_id"]
+                _, grants, now = self._lock_user_grants(cursor, user_id)
+                event = {"user_id": user_id, "event_type": event_type, "event_id": payment_id, "payload": payload}
+                if lifetime_held(grants):
+                    cursor.execute(
+                        "UPDATE razorpay_orders SET status = 'refund_due', payment_id = %(p)s, updated_at = NOW() "
+                        "WHERE order_id = %(o)s",
+                        {"p": payment_id, "o": order_id},
+                    )
+                    self._insert_payment_event(cursor, **event)
+                    conn.commit()
+                    return "refund_due", order
+                interval_days = int(order["interval_days"] or 0)
+                cursor.execute(
+                    f"""
+                    INSERT INTO subscription_grants (user_id, plan_code, source, order_id, duration, allocated_at)
+                    VALUES (%(user_id)s, %(plan_code)s, 'razorpay', %(order_id)s, %(duration)s, %(now)s)
+                    RETURNING {self._GRANT_COLUMNS}
+                    """,
+                    {
+                        "user_id": user_id,
+                        "plan_code": order["plan_code"],
+                        "order_id": order_id,
+                        "duration": timedelta(days=interval_days) if interval_days > 0 else None,
+                        "now": now,
+                    },
+                )
+                grants.append(dict(cursor.fetchone()))
+                cursor.execute(
+                    "UPDATE razorpay_orders SET status = 'paid', payment_id = %(p)s, updated_at = NOW() "
+                    "WHERE order_id = %(o)s",
+                    {"p": payment_id, "o": order_id},
+                )
+                self._insert_payment_event(cursor, **event)
+                projection = project(grants, now)
+                # Any purchase consumes the free trial.
+                self._write_projection(cursor, user_id, projection, trial_used=True)
+                conn.commit()
+                return "granted", projection
+
+    def refund_razorpay_payment(
+        self,
+        *,
+        order_id: Optional[str],
+        payment_id: Optional[str],
+        refund_id: str,
+        refund_amount: int,
+        payment_refunded_total: Optional[int],
+        event_type: str,
+        payload: Dict[str, Any],
+        project: Callable[[List[Dict], datetime], Dict],
+    ) -> Tuple[str, Optional[Dict]]:
+        """Apply one refund to the grant its order created, and only that grant.
+
+        Partial refunds accumulate; the grant is revoked once refunds reach
+        the order amount. Returns ("revoked" | "partial", projection),
+        ("duplicate", None) for a replayed refund, ("blocked", None) when the
+        refund arrived before capture (the order can then never grant),
+        ("no_grant", order) when the order has no grant (refund-due order or
+        an unreconciled pre-ledger purchase: manual review), or
+        ("unknown", None).
+        """
+
+        with self.get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT order_id, user_id, amount, status FROM razorpay_orders "
+                    "WHERE order_id = %(o)s OR (%(p)s::text IS NOT NULL AND payment_id = %(p)s) "
+                    "LIMIT 1 FOR UPDATE",
+                    {"o": order_id, "p": payment_id},
+                )
+                order = cursor.fetchone()
+                if not order:
+                    conn.rollback()
+                    return "unknown", None
+                order = dict(order)
+                user_id = order["user_id"]
+                _, grants, now = self._lock_user_grants(cursor, user_id)
+                if not self._insert_payment_event(
+                    cursor, user_id=user_id, event_type=event_type, event_id=refund_id, payload=payload
+                ):
+                    conn.rollback()
+                    return "duplicate", None
+                if order["status"] in self._CLAIMABLE_ORDER_STATES:
+                    cursor.execute(
+                        "UPDATE razorpay_orders SET status = 'refunded', updated_at = NOW() WHERE order_id = %(o)s",
+                        {"o": order["order_id"]},
+                    )
+                    conn.commit()
+                    return "blocked", None
+                grant = next((g for g in grants if g["order_id"] == order["order_id"]), None)
+                if grant is None:
+                    conn.commit()
+                    return "no_grant", order
+                total = max(int(grant["refunded_amount"]) + int(refund_amount), int(payment_refunded_total or 0))
+                revoke = total >= int(order["amount"]) and grant["revoked_at"] is None
+                cursor.execute(
+                    "UPDATE subscription_grants SET refunded_amount = %(t)s, "
+                    "revoked_at = CASE WHEN %(r)s THEN %(now)s ELSE revoked_at END WHERE id = %(id)s",
+                    {"t": total, "r": revoke, "now": now, "id": grant["id"]},
+                )
+                grant["refunded_amount"] = total
+                if revoke:
+                    grant["revoked_at"] = now
+                    cursor.execute(
+                        "UPDATE razorpay_orders SET status = 'refunded', updated_at = NOW() WHERE order_id = %(o)s",
+                        {"o": order["order_id"]},
+                    )
+                projection = project(grants, now)
+                self._write_projection(cursor, user_id, projection)
+                conn.commit()
+                return ("revoked" if revoke else "partial"), projection
+
+    def start_trial_grant(
+        self,
+        *,
+        user_id: int,
+        plan_code: str,
+        trial_days: int,
+        project: Callable[[List[Dict], datetime], Dict],
+    ) -> Tuple[str, Optional[Dict]]:
+        """Grant the one free trial. Returns ("started", projection), ("used", None) or ("active", None)."""
+
+        with self.get_connection() as conn:
+            with conn.cursor() as cursor:
+                user, grants, now = self._lock_user_grants(cursor, user_id)
+                if not user or user["trial_used"]:
+                    conn.rollback()
+                    return "used", None
+                if project(grants, now)["plan"] != "free":
+                    conn.rollback()
+                    return "active", None
+                cursor.execute(
+                    f"""
+                    INSERT INTO subscription_grants (user_id, plan_code, source, duration, allocated_at)
+                    VALUES (%(user_id)s, %(plan_code)s, 'trial', %(duration)s, %(now)s)
+                    RETURNING {self._GRANT_COLUMNS}
+                    """,
+                    {"user_id": user_id, "plan_code": plan_code, "duration": timedelta(days=trial_days), "now": now},
+                )
+                grants.append(dict(cursor.fetchone()))
+                projection = project(grants, now)
+                self._write_projection(cursor, user_id, projection, trial_used=True)
+                conn.commit()
+                return "started", projection
+
+    def refresh_entitlement(
+        self, user_id: int, project: Callable[[List[Dict], datetime], Dict]
+    ) -> Dict:
+        """Rewrite the projection from the grants (after a period ends)."""
+
+        with self.get_connection() as conn:
+            with conn.cursor() as cursor:
+                _, grants, now = self._lock_user_grants(cursor, user_id)
+                projection = project(grants, now)
+                self._write_projection(cursor, user_id, projection)
+                conn.commit()
+                return projection
 
     def get_database_stats(self) -> Dict:
         """Get comprehensive database statistics"""

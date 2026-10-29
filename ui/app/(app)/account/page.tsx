@@ -3,11 +3,13 @@
 import { useEffect, useState } from "react";
 import clsx from "clsx";
 
-import type { BillingPlan } from "@/lib/types";
+import type { BillingPlan, Entitlement } from "@/lib/types";
 import {
   createRazorpayOrder,
   fetchBillingPlans,
+  fetchEntitlement,
   loadRazorpayScript,
+  purchaseLabel,
   startTrial,
   verifyRazorpayPayment,
 } from "@/lib/billing";
@@ -15,7 +17,7 @@ import { logoutUser } from "@/lib/auth";
 import { GoogleLinkCard } from "@/components/google-link-card";
 import { useAuth } from "@/providers/AuthProvider";
 import { useTheme } from "@/providers/ThemeProvider";
-import { hasPaidAccess as hasPaidAccessForUser, isTrialEligible } from "@/lib/subscription";
+import { isTrialEligible } from "@/lib/subscription";
 
 export default function AccountPage() {
   const { theme } = useTheme();
@@ -27,9 +29,9 @@ export default function AccountPage() {
   const [upgradeLoading, setUpgradeLoading] = useState(false);
   const [upgradeMessage, setUpgradeMessage] = useState<string | null>(null);
   const [trialLoading, setTrialLoading] = useState<string | null>(null);
+  const [entitlement, setEntitlement] = useState<Entitlement | null>(null);
 
   const isAdmin = Boolean(user?.is_admin);
-  const hasPaidAccess = hasPaidAccessForUser(user);
   const trialEligible = isTrialEligible(user);
 
   const cardClass =
@@ -49,6 +51,27 @@ export default function AccountPage() {
       .catch((err) => setBillingError(err.message ?? "Unable to load plans."))
       .finally(() => setBillingLoading(false));
   }, []);
+
+  const loadEntitlement = () =>
+    fetchEntitlement()
+      .then(setEntitlement)
+      .catch(() => setEntitlement(null));
+
+  useEffect(() => {
+    if (!user) return;
+    fetchEntitlement()
+      .then(setEntitlement)
+      .catch(() => setEntitlement(null));
+  }, [user]);
+
+  const formatDate = (iso: string) => new Date(iso).toLocaleDateString();
+  const planName = (code: string) => billingPlans.find((p) => p.code === code)?.name ?? code;
+  const running = entitlement?.segments[0] ?? null;
+  const queued = entitlement?.segments.slice(1) ?? [];
+  const currentRank = running ? billingPlans.find((p) => p.code === running.plan_code)?.rank ?? 0 : 0;
+  // While a timed plan runs, a purchase made now starts when the paid time
+  // already bought runs out (the API's next_purchase_starts).
+  const startsLater = running?.end && entitlement ? entitlement.next_purchase_starts : null;
 
   const handleUpgrade = async (plan: BillingPlan) => {
     if (!user) return;
@@ -99,7 +122,12 @@ export default function AccountPage() {
       });
 
       await refresh();
-      setUpgradeMessage(`Subscription activated. Welcome to ${plan.name}!`);
+      await loadEntitlement();
+      setUpgradeMessage(
+        startsLater
+          ? `Payment received. ${plan.name} starts on ${formatDate(startsLater)}, when your current plan ends.`
+          : `Payment received. Welcome to ${plan.name}!`,
+      );
     } catch (err: any) {
       setUpgradeMessage(err.message ?? "Unable to start checkout.");
     } finally {
@@ -114,6 +142,7 @@ export default function AccountPage() {
     try {
       await startTrial(plan.code);
       await refresh();
+      await loadEntitlement();
       setUpgradeMessage(`Trial started for ${plan.name}.`);
     } catch (err: any) {
       setUpgradeMessage(err.message ?? "Unable to start trial.");
@@ -185,9 +214,23 @@ export default function AccountPage() {
                   </span>{" "}
                   ({isAdmin ? "full access" : user.subscription_status})
                 </p>
-                {user.subscription_renewal && !isAdmin && (
+                {running && !isAdmin && (
                   <p className={clsx("text-xs", mutedTextClass)}>
-                    Renewal on {new Date(user.subscription_renewal).toLocaleDateString()}
+                    {running.end ? `Access until ${formatDate(running.end)}` : "Lifetime access"}
+                  </p>
+                )}
+                {!isAdmin &&
+                  queued.map((segment) => (
+                    <p key={segment.start} className={clsx("text-xs", mutedTextClass)}>
+                      Then {planName(segment.plan_code)}{" "}
+                      {segment.end
+                        ? `from ${formatDate(segment.start)} until ${formatDate(segment.end)}`
+                        : `for life from ${formatDate(segment.start)}`}
+                    </p>
+                  ))}
+                {running?.end && !isAdmin && (
+                  <p className={clsx("text-xs", mutedTextClass)}>
+                    No automatic renewal: buy again before your access ends to continue.
                   </p>
                 )}
               </>
@@ -237,12 +280,13 @@ export default function AccountPage() {
         {billingError && <p className="mt-2 text-xs text-rose-300">{billingError}</p>}
         <div className="mt-4 grid gap-4 md:grid-cols-3">
           {billingPlans.map((plan) => {
-            const isLifetimeUser = user?.plan === "lifetime" && hasPaidAccess;
-            const isCurrentPlan = user?.plan === plan.code && hasPaidAccess;
+            // Lifetime active or scheduled covers every plan (the API refuses the order).
+            const isLifetimeUser = Boolean(entitlement?.purchases_blocked);
+            const isCurrentPlan = running?.plan_code === plan.code;
             const showTrial = plan.trial_days > 0 && trialEligible;
             const isAnnual = plan.interval_days >= 365 && plan.interval_days > 0;
-            const disableUpgrade =
-              upgradeLoading || billingLoading || isCurrentPlan || isLifetimeUser;
+            const disableUpgrade = upgradeLoading || billingLoading || isLifetimeUser;
+            const label = purchaseLabel(plan, currentRank);
             return (
               <div
                 key={plan.code}
@@ -276,9 +320,9 @@ export default function AccountPage() {
                 </ul>
                 <div className="mt-4 flex flex-col gap-2">
                   {user ? (
-                    isLifetimeUser && plan.code !== "lifetime" ? (
+                    isLifetimeUser ? (
                       <p className={clsx("text-xs", mutedTextClass)}>
-                        Lifetime plan active.
+                        {plan.code === "lifetime" ? "Your plan: Lifetime." : "Lifetime covers this plan."}
                       </p>
                     ) : (
                       <>
@@ -300,8 +344,13 @@ export default function AccountPage() {
                           disabled={disableUpgrade}
                           className="w-full rounded-lg bg-gradient-to-r from-cyan-400 to-emerald-400 px-3 py-2 text-xs font-semibold text-slate-950 hover:opacity-90 disabled:opacity-60"
                         >
-                          {isCurrentPlan ? "Current plan" : "Upgrade"}
+                          {label}
                         </button>
+                        {startsLater && (
+                          <p className={clsx("text-[11px]", mutedTextClass)}>
+                            {isCurrentPlan ? "Adds to your plan; " : ""}starts {formatDate(startsLater)}
+                          </p>
+                        )}
                       </>
                     )
                   ) : (
