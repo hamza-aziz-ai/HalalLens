@@ -3217,6 +3217,8 @@ async def verify_razorpay_payment(
             status_code=409,
             detail="Lifetime access already covers your account, so this payment will be refunded.",
         )
+    if result == "refunded_payment":
+        raise HTTPException(status_code=409, detail="This payment was already refunded.")
     return _current_subscription_response(session["user_id"])
 
 
@@ -3276,17 +3278,16 @@ async def razorpay_webhook(request: Request) -> Dict[str, str]:
             payment_id=refund_entity.get("payment_id") or payment_entity.get("id"),
             refund_id=refund_id,
             refund_amount=int(refund_entity.get("amount") or 0),
-            payment_refunded_total=payment_entity.get("amount_refunded"),
             event_type=event_type,
             payload=event,
             project=billing.project,
         )
-        if result == "no_grant":
+        if result == "needs_review":
             api_logger.warning(
-                "Refund %s for order %s matches no grant: review by hand", refund_id, info["order_id"]
+                "Refund %s for order %s: funding payment unknown, review by hand", refund_id, info["order_id"]
             )
-        elif result in ("revoked", "partial"):
-            api_logger.info("Refund %s applied: %s", refund_id, result)
+        elif result != "duplicate":
+            api_logger.info("Refund %s recorded: %s", refund_id, result)
         return {"status": result}
 
     order = db.get_razorpay_order(order_id) if order_id else None
@@ -3300,7 +3301,7 @@ async def razorpay_webhook(request: Request) -> Dict[str, str]:
                 event_type=event_type,
                 event_payload=event,
             )
-            if result in ("granted", "refund_due"):
+            if result in ("granted", "refund_due", "refunded_payment"):
                 return {"status": result}
             # Already settled elsewhere; fall through to record the event.
         else:

@@ -263,6 +263,17 @@ CREATE TABLE IF NOT EXISTS subscription_grants (
 CREATE INDEX IF NOT EXISTS idx_subscription_grants_user
     ON subscription_grants (user_id, allocated_at, id);
 
+-- One row per processed refund, scoped to the payment it refunds (D-025).
+CREATE TABLE IF NOT EXISTS payment_refunds (
+    refund_id TEXT PRIMARY KEY,
+    payment_id TEXT NOT NULL,
+    order_id TEXT REFERENCES razorpay_orders(order_id),
+    amount INTEGER NOT NULL CHECK (amount >= 0),
+    recorded_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_payment_refunds_payment ON payment_refunds (payment_id);
+
 CREATE TABLE IF NOT EXISTS payment_events (
     id BIGSERIAL PRIMARY KEY,
     user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,

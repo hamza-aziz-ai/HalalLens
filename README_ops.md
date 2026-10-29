@@ -58,7 +58,7 @@ Plans are one-time Razorpay Orders; nothing renews automatically. Each paid orde
 - **Before deploying the first release with D-024**, apply `database/migrations/20261029_subscription_grants.sql` (it is idempotent, and creates a legacy grant that keeps each current subscriber's exact end date). Rehearsed on a restored production copy on 2026-10-29.
 - **Refund due:** if a payment lands while Lifetime already covers the user (two checkouts were open), the order gets status `refund_due`, nothing is granted, and the API logs `REFUND DUE`. Refund it in the Razorpay dashboard: `SELECT order_id, user_id, amount, payment_id FROM razorpay_orders WHERE status = 'refund_due';`
 - **Refunds that match no grant** (refund-due orders, or old orders the migration could not link) are logged `matches no grant: review by hand`; adjust access by hand only after checking the user's grants.
-- Partial refunds keep access until refunds reach the full order amount.
+- Refunds are recorded once per refund id against the payment they refund (D-025). Partial refunds keep access until the funding payment's refunds reach the order amount; refunding another payment attempt on the same order never touches access; refunds of pre-ledger purchases are logged `funding payment unknown, review by hand`.
 
 ### Docker Hub pages
 

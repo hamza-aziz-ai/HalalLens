@@ -40,6 +40,7 @@ class BillingFake:
         self.orders: Dict[str, Dict[str, Any]] = {}
         self.grants: List[Dict[str, Any]] = []
         self.events: List[Dict[str, Any]] = []
+        self.refunds: Dict[str, Dict[str, Any]] = {}  # payment_refunds, by refund id
 
     # --- helpers for tests -------------------------------------------------
     def advance(self, days: float) -> None:
@@ -113,6 +114,9 @@ class BillingFake:
         if order["status"] not in CLAIMABLE:
             return "settled", dict(order)
         user_id = order["user_id"]
+        if self._refunded_total(payment_id) >= order["amount"]:
+            self._event(user_id, event_type, payment_id)
+            return "refunded_payment", dict(order)
         if lifetime_held(self._grants_of(user_id)):
             order.update(status="refund_due", payment_id=payment_id)
             self._event(user_id, event_type, payment_id)
@@ -130,24 +134,36 @@ class BillingFake:
         self._write_projection(user_id, projection, trial_used=True)
         return "granted", {**projection, "granted_plan": order["plan_code"]}
 
+    def _refunded_total(self, payment_id):
+        return sum(r["amount"] for r in self.refunds.values() if r["payment_id"] == payment_id)
+
     def refund_razorpay_payment(self, *, order_id, payment_id, refund_id, refund_amount,
-                                payment_refunded_total, event_type, payload, project):
+                                event_type, payload, project):
         order = self.orders.get(order_id) if order_id else None
         if order is None and payment_id:
             order = next((o for o in self.orders.values() if o["payment_id"] == payment_id), None)
         if order is None:
             return "unknown", None
         user_id = order["user_id"]
-        if not self._event(user_id, event_type, refund_id):
+        if refund_id in self.refunds:
             return "duplicate", None
-        if order["status"] in CLAIMABLE:
-            order["status"] = "refunded"
-            return "blocked", None
+        self.refunds[refund_id] = {"payment_id": payment_id, "order_id": order["order_id"], "amount": int(refund_amount)}
+        self._event(user_id, event_type, refund_id)
+        funding = order["payment_id"]
         grant = next((g for g in self.grants if g["order_id"] == order["order_id"]), None)
+        if funding is None:
+            return ("needs_review" if grant else "unsettled"), dict(order)
+        if payment_id and payment_id != funding:
+            return "other_payment", dict(order)
+        total = self._refunded_total(funding)
+        full = total >= order["amount"]
+        if order["status"] == "refund_due":
+            if full:
+                order["status"] = "refunded"
+            return ("refund_due_closed" if full else "partial"), dict(order)
         if grant is None:
-            return "no_grant", dict(order)
-        total = max(grant["refunded_amount"] + int(refund_amount), int(payment_refunded_total or 0))
-        revoke = total >= order["amount"] and grant["revoked_at"] is None
+            return "needs_review", dict(order)
+        revoke = full and grant["revoked_at"] is None
         grant["refunded_amount"] = total
         if revoke:
             grant["revoked_at"] = self.now

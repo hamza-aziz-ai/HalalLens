@@ -70,6 +70,19 @@ def _order(admin, user_id, order_id, plan_code):
         )
 
 
+def _refund(manager, order_id, payment_id, refund_id, amount):
+    return manager.refund_razorpay_payment(
+        order_id=order_id, payment_id=payment_id, refund_id=refund_id, refund_amount=amount,
+        event_type="refund.processed", payload={}, project=project,
+    )[0]
+
+
+def _plan(admin, user_id):
+    with admin.cursor() as cur:
+        cur.execute("SELECT plan FROM users WHERE id = %s", (user_id,))
+        return cur.fetchone()[0]
+
+
 def _settle(manager, order_id, payment_id, **kw):
     return manager.settle_razorpay_order(
         order_id=order_id, payment_id=payment_id, expected_user_id=None, event_type="payment.captured",
@@ -162,10 +175,7 @@ def test_refund_of_a_queued_purchase_keeps_the_current_one(db):
     _settle(manager, "order_s", "pay_s")
 
     def refund(refund_id):
-        return manager.refund_razorpay_payment(
-            order_id=None, payment_id="pay_s", refund_id=refund_id, refund_amount=5000,
-            payment_refunded_total=None, event_type="refund.processed", payload={}, project=project,
-        )[0]
+        return _refund(manager, None, "pay_s", refund_id, 5000)
 
     assert refund("rfnd_1") == "revoked"
     assert refund("rfnd_1") == "duplicate"
@@ -212,3 +222,36 @@ def test_lifetime_and_another_purchase_racing_never_strand_money(db):
         grants = manager.get_subscription_grants(user_id)
         plans = [g["plan_code"] for g in sorted(grants, key=lambda g: (g["allocated_at"], g["id"]))]
         assert plans in (["starter", "lifetime"], ["lifetime"]), plans
+
+
+def test_refunding_a_duplicate_payment_leaves_the_plan(db):
+    manager, admin = db
+    user_id = _user(admin)
+    _order(admin, user_id, "order_1", "annual")
+    _settle(manager, "order_1", "pay_first")
+    # A second captured attempt on the same order is refunded (order_id present).
+    assert _refund(manager, "order_1", "pay_second", "rfnd_dup", 50000) == "other_payment"
+    assert _plan(admin, user_id) == "annual"
+    assert manager.get_razorpay_order("order_1")["status"] == "paid"
+
+
+def test_refund_totals_are_summed_per_refund_never_double_counted(db):
+    manager, admin = db
+    user_id = _user(admin)
+    _order(admin, user_id, "order_1", "annual")  # 50000 paise
+    _settle(manager, "order_1", "pay_1")
+    assert _refund(manager, "order_1", "pay_1", "rfnd_2", 20000) == "partial"
+    assert _refund(manager, "order_1", "pay_1", "rfnd_1", 15000) == "partial"
+    assert _refund(manager, "order_1", "pay_1", "rfnd_1", 15000) == "duplicate"
+    assert _plan(admin, user_id) == "annual"
+    assert _refund(manager, "order_1", "pay_1", "rfnd_3", 15000) == "revoked"
+    assert _plan(admin, user_id) == "free"
+
+
+def test_a_payment_refunded_before_settlement_cannot_fund_the_order(db):
+    manager, admin = db
+    user_id = _user(admin)
+    _order(admin, user_id, "order_1", "starter")
+    assert _refund(manager, "order_1", "pay_1", "rfnd_1", 5000) == "unsettled"
+    assert _settle(manager, "order_1", "pay_1")[0] == "refunded_payment"
+    assert _settle(manager, "order_1", "pay_2")[0] == "granted"  # another attempt still can

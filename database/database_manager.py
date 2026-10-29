@@ -2739,9 +2739,11 @@ class BSEDatabaseManager:
         Claim, grant, event and projection commit together, so a crash leaves
         the order claimable instead of "paid without access". Returns one of
         ("granted", projection), ("settled", order) when already settled,
-        ("missing", None) for an unknown or foreign order, and
-        ("refund_due", order) when Lifetime already covers the user: the
-        payment is kept on record for a manual refund, no time is granted.
+        ("missing", None) for an unknown or foreign order,
+        ("refund_due", order) when Lifetime already covers the user (the
+        payment is kept on record for a refund, no time is granted), and
+        ("refunded_payment", order) when this payment was already fully
+        refunded before settlement.
         """
 
         with self.get_connection() as conn:
@@ -2762,6 +2764,16 @@ class BSEDatabaseManager:
                 user_id = order["user_id"]
                 _, grants, now = self._lock_user_grants(cursor, user_id)
                 event = {"user_id": user_id, "event_type": event_type, "event_id": payment_id, "payload": payload}
+                cursor.execute(
+                    "SELECT COALESCE(SUM(amount), 0) AS total FROM payment_refunds WHERE payment_id = %(p)s",
+                    {"p": payment_id},
+                )
+                if int(cursor.fetchone()["total"]) >= int(order["amount"]):
+                    # Refunded before we settled it: this payment can never fund
+                    # the order; another attempt still can (D-025).
+                    self._insert_payment_event(cursor, **event)
+                    conn.commit()
+                    return "refunded_payment", order
                 if lifetime_held(grants):
                     cursor.execute(
                         "UPDATE razorpay_orders SET status = 'refund_due', payment_id = %(p)s, updated_at = NOW() "
@@ -2806,28 +2818,35 @@ class BSEDatabaseManager:
         payment_id: Optional[str],
         refund_id: str,
         refund_amount: int,
-        payment_refunded_total: Optional[int],
         event_type: str,
         payload: Dict[str, Any],
         project: Callable[[List[Dict], datetime], Dict],
     ) -> Tuple[str, Optional[Dict]]:
-        """Apply one refund to the grant its order created, and only that grant.
+        """Record one processed refund and apply it to the payment it refunds (D-025).
 
-        Partial refunds accumulate; the grant is revoked once refunds reach
-        the order amount. Returns ("revoked" | "partial", projection),
-        ("duplicate", None) for a replayed refund, ("blocked", None) when the
-        refund arrived before capture (the order can then never grant),
-        ("no_grant", order) when the order has no grant (refund-due order or
-        an unreconciled pre-ledger purchase: manual review), or
-        ("unknown", None).
+        Each refund is stored once, by refund id, against its own payment;
+        totals are the sum of those rows, never a mix of per-refund deltas and
+        Razorpay's cumulative snapshot (which double-counted). Access changes
+        only when the refunded payment is the one that funded the order's
+        grant (razorpay_orders.payment_id) and its processed refunds reach the
+        order amount: a refund of another attempt on the same order, or a
+        partial refund, never revokes the plan the funding payment bought.
+
+        Returns ("revoked" | "partial", projection), ("duplicate", None),
+        ("other_payment", order) for a refund of a payment that did not fund
+        the order, ("unsettled", order) when the order has no funding payment
+        yet (the refunded payment can then never fund it: see
+        settle_razorpay_order), ("refund_due_closed", order) when a refund_due
+        payment is fully refunded, ("needs_review", order) for a pre-ledger
+        grant whose funding payment is unknown, or ("unknown", None).
         """
 
         with self.get_connection() as conn:
             with conn.cursor() as cursor:
                 cursor.execute(
-                    "SELECT order_id, user_id, amount, status FROM razorpay_orders "
+                    "SELECT order_id, user_id, amount, status, payment_id FROM razorpay_orders "
                     "WHERE order_id = %(o)s OR (%(p)s::text IS NOT NULL AND payment_id = %(p)s) "
-                    "LIMIT 1 FOR UPDATE",
+                    "ORDER BY (order_id = %(o)s) DESC LIMIT 1 FOR UPDATE",
                     {"o": order_id, "p": payment_id},
                 )
                 order = cursor.fetchone()
@@ -2837,24 +2856,50 @@ class BSEDatabaseManager:
                 order = dict(order)
                 user_id = order["user_id"]
                 _, grants, now = self._lock_user_grants(cursor, user_id)
-                if not self._insert_payment_event(
-                    cursor, user_id=user_id, event_type=event_type, event_id=refund_id, payload=payload
-                ):
+                cursor.execute(
+                    """
+                    INSERT INTO payment_refunds (refund_id, payment_id, order_id, amount)
+                    VALUES (%(r)s, %(p)s, %(o)s, %(a)s)
+                    ON CONFLICT (refund_id) DO NOTHING
+                    """,
+                    {"r": refund_id, "p": payment_id, "o": order["order_id"], "a": int(refund_amount)},
+                )
+                if not (cursor.rowcount or 0):
                     conn.rollback()
                     return "duplicate", None
-                if order["status"] in self._CLAIMABLE_ORDER_STATES:
-                    cursor.execute(
-                        "UPDATE razorpay_orders SET status = 'refunded', updated_at = NOW() WHERE order_id = %(o)s",
-                        {"o": order["order_id"]},
-                    )
+                self._insert_payment_event(
+                    cursor, user_id=user_id, event_type=event_type, event_id=refund_id, payload=payload
+                )
+                funding = order["payment_id"]
+                if funding is None:
+                    grant = next((g for g in grants if g["order_id"] == order["order_id"]), None)
                     conn.commit()
-                    return "blocked", None
+                    # No funding payment recorded: either nothing was granted yet
+                    # (this payment can no longer fund the order), or a pre-ledger
+                    # grant whose funding payment is unknown (review by hand).
+                    return ("needs_review" if grant else "unsettled"), order
+                if payment_id and payment_id != funding:
+                    conn.commit()
+                    return "other_payment", order
+                cursor.execute(
+                    "SELECT COALESCE(SUM(amount), 0) AS total FROM payment_refunds WHERE payment_id = %(p)s",
+                    {"p": funding},
+                )
+                total = int(cursor.fetchone()["total"])
+                full = total >= int(order["amount"])
+                if order["status"] == "refund_due":
+                    if full:
+                        cursor.execute(
+                            "UPDATE razorpay_orders SET status = 'refunded', updated_at = NOW() WHERE order_id = %(o)s",
+                            {"o": order["order_id"]},
+                        )
+                    conn.commit()
+                    return ("refund_due_closed" if full else "partial"), order
                 grant = next((g for g in grants if g["order_id"] == order["order_id"]), None)
                 if grant is None:
                     conn.commit()
-                    return "no_grant", order
-                total = max(int(grant["refunded_amount"]) + int(refund_amount), int(payment_refunded_total or 0))
-                revoke = total >= int(order["amount"]) and grant["revoked_at"] is None
+                    return "needs_review", order
+                revoke = full and grant["revoked_at"] is None
                 cursor.execute(
                     "UPDATE subscription_grants SET refunded_amount = %(t)s, "
                     "revoked_at = CASE WHEN %(r)s THEN %(now)s ELSE revoked_at END WHERE id = %(id)s",
