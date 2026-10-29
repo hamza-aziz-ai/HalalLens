@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import List
 
 from alerts.storage import COMPLIANCE_FLIP, WatchlistStorage, owner_key, require_user_id
 
@@ -25,33 +25,27 @@ class AlertEngine:
     def __init__(self, storage: WatchlistStorage):
         self.storage = storage
 
-    def process_verdict(
-        self, symbol: str, is_compliant: Optional[bool], *, user_id: int
-    ) -> List[AlertEvent]:
-        """Record one user's verdict for the symbol and return an alert on a flip.
+    def check(self, symbol: str, *, user_id: int) -> List[AlertEvent]:
+        """Observe the symbol's stored verdict for one user; return an event on a flip.
 
         Only the given user's entry is read or moved; `user_id` must be a
-        positive integer (the session's user id).
-
-        None (insufficient data / under review) is not a verdict: it neither
-        alerts nor moves the stored baseline, so True -> None -> False still
-        flips exactly once. The storage decides baseline vs flip atomically and
-        has committed before an event is returned.
+        positive integer (the session's user id). Observation only: the flip
+        becomes a pending alert email that the evaluation scheduler sends
+        (alerts/delivery.py). None (insufficient data / under review) moves
+        nothing, so True -> None -> False still flips exactly once.
         """
 
         require_user_id(user_id)
-        if is_compliant is None:
+        observation = self.storage.observe(symbol, user_id=user_id)
+        if user_id not in observation.flipped:
             return []
-
-        outcome = self.storage.transition(user_id, symbol, COMPLIANCE_FLIP, is_compliant)
-        if outcome != "flip":
-            return []
+        label = "Halal" if observation.is_compliant else "Non-Halal"
         return [
             AlertEvent(
                 user_id=owner_key(user_id),
                 symbol=symbol,
                 trigger=COMPLIANCE_FLIP,
-                message=f"{symbol} compliance flipped to {'Halal' if is_compliant else 'Non-Halal'}.",
+                message=f"{symbol} compliance flipped to {label}.",
             )
         ]
 

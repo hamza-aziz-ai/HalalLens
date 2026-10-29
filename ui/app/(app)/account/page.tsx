@@ -17,6 +17,7 @@ import {
 } from "@/lib/billing";
 import { logoutUser } from "@/lib/auth";
 import { GoogleLinkCard } from "@/components/google-link-card";
+import { AlertEmailsCard } from "@/components/alert-emails-card";
 import { useAuth } from "@/providers/AuthProvider";
 import { useTheme } from "@/providers/ThemeProvider";
 import { isTrialEligible } from "@/lib/subscription";
@@ -231,6 +232,8 @@ export default function AccountPage() {
         headingClass={headingClass}
         mutedTextClass={mutedTextClass}
       />
+
+      <AlertEmailsCard cardClass={cardClass} headingClass={headingClass} mutedTextClass={mutedTextClass} />
 
       <section className={cardClass}>
         <div className="flex flex-col gap-6 md:flex-row md:items-start md:justify-between">

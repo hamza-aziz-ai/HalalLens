@@ -179,6 +179,7 @@ CREATE TABLE IF NOT EXISTS users (
     subscription_renewal TIMESTAMPTZ,  -- projection of subscription_grants (D-024)
     trial_used BOOLEAN NOT NULL DEFAULT FALSE,
     email_verified_at TIMESTAMPTZ,
+    alert_emails BOOLEAN NOT NULL DEFAULT TRUE,  -- compliance-flip emails opt-out (D-031)
     plan_started_at TIMESTAMPTZ,
     last_login TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -409,12 +410,20 @@ CREATE TABLE IF NOT EXISTS bhavcopy_quotes (
 CREATE INDEX IF NOT EXISTS idx_bhavcopy_quotes_trade_date
     ON bhavcopy_quotes (trade_date);
 
--- Watchlists (migration 20261029_watchlist_entries.sql); alerts/storage.py.
+-- Watchlists (migrations 20261029_watchlist_entries.sql, 20261030_alert_emails.sql);
+-- alerts/storage.py. Pending alert email: last_is_compliant IS DISTINCT FROM
+-- notified_is_compliant (D-031).
 CREATE TABLE IF NOT EXISTS watchlist_entries (
     user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     symbol TEXT NOT NULL,
     trigger TEXT NOT NULL DEFAULT 'compliance_flip',
     last_is_compliant BOOLEAN,
+    notified_is_compliant BOOLEAN,
+    notify_attempts INTEGER NOT NULL DEFAULT 0,
+    notify_next_at TIMESTAMPTZ,
+    notify_failed_at TIMESTAMPTZ,
+    observed_filing_date TIMESTAMPTZ,
+    observed_evaluated_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (user_id, symbol, trigger)

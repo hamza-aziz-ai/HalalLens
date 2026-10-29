@@ -135,6 +135,9 @@ ROUTES = {
     ("POST", "/watchlist"): ("paid", "/watchlist", {"user_id": "someone", "symbol": "ABC"}),
     ("GET", "/watchlist/{user_id}"): ("paid", "/watchlist/someone", None),
     ("POST", "/alerts/check"): ("paid", "/alerts/check", {"symbol": "ABC", "is_compliant": True}),
+    # Authenticated, not paid: opting out of alert emails must work after access ends (D-031).
+    ("GET", "/account/alert-emails"): ("authenticated", "/account/alert-emails", None),
+    ("PUT", "/account/alert-emails"): ("authenticated", "/account/alert-emails", {"enabled": False}),
     ("GET", "/filings/recent"): ("public", "/filings/recent", None),
     # Cached filings are public; refresh=true (an on-demand BSE fetch) is paid.
     ("GET", "/filings/{symbol}"): ("paid", "/filings/ABC?refresh=true", None),
@@ -415,66 +418,65 @@ def test_watchlist_is_scoped_to_the_session_not_the_path(client):
 FILING_DATE = datetime(2026, 1, 1)
 
 
-def _stored(verdict, is_compliant, symbol="ABC"):
+def _stored(verdict, is_compliant, day=1, open_issues=False):
     return {
-        "symbol": symbol,
         "filing_date": FILING_DATE,
+        "evaluated_at": datetime(2026, 2, day),
         "verdict": verdict,
         "is_compliant": is_compliant,
+        "open_issues": open_issues,
     }
 
 
 @pytest.fixture
 def alerts(client, db, monkeypatch):
-    """Watch entries for the paid caller (user:2) and another subscriber (user:3)."""
+    """Watch entries for the paid caller (user 2) and another subscriber (user 3)."""
 
     storage = api_module.watch_storage
     storage.add(WatchEntry(user_id=2, symbol="ABC"))
     storage.add(WatchEntry(user_id=3, symbol="ABC", last_is_compliant=True))
-    sent = []
-    monkeypatch.setattr(api_module.email_notifier, "send", sent.append)
-    db.get_quality_issues.return_value = []
 
     def explode(*args, **kwargs):
-        raise AssertionError("/alerts/check must not fetch or re-evaluate")
+        raise AssertionError("/alerts/check must not fetch, re-evaluate or send mail")
 
     for name in ("_market_data_for_filing", "_fetch_latest_filing_from_bse", "_ensure_filing_evaluation"):
         monkeypatch.setattr(api_module, name, explode)
+    monkeypatch.setattr(api_module, "send_email", explode)
+    assert not hasattr(api_module, "email_notifier")  # the operator-mail path is gone (D-031)
 
     def check(body=None, token="paid-token"):
         return _call(client, "POST", "/alerts/check", body or {"symbol": "ABC"}, token)
 
-    def baseline(owner):
-        return storage.list(int(owner.removeprefix("user:")))[0].last_is_compliant
+    def row(user_id):
+        return storage.rows[(user_id, "ABC", "compliance_flip")]
 
-    return check, baseline, sent
+    return check, storage, row
 
 
-def test_alert_flip_uses_the_stored_verdict_and_only_the_caller(alerts, db):
-    check, baseline, sent = alerts
-    db.get_latest_filing.return_value = _stored("compliant", True)
-    assert check().json() == []  # seeds the caller's baseline
-    assert baseline("user:2") is True
+def test_alert_flip_uses_the_stored_verdict_and_only_the_caller(alerts):
+    check, storage, row = alerts
+    storage.filings["ABC"] = _stored("compliant", True)
+    assert check().json() == []  # seeds the caller's baseline, silently
+    assert row(2)["last_is_compliant"] is True and row(2)["notified_is_compliant"] is True
 
-    db.get_latest_filing.return_value = _stored("non-compliant", False)
+    storage.filings["ABC"] = _stored("non-compliant", False, day=2)
     events = check().json()
     assert [(e["user_id"], e["symbol"]) for e in events] == [("user:2", "ABC")]
-    assert [e.user_id for e in sent] == ["user:2"]
-    # The other subscriber's baseline is never read or moved by this caller.
-    assert baseline("user:3") is True
+    # Observation only: the flip is now a pending alert email for the scheduler.
+    assert row(2)["last_is_compliant"] is False and row(2)["notified_is_compliant"] is True
+    # The other subscriber's row is never read or moved by this caller.
+    assert row(3)["last_is_compliant"] is True
 
-    assert check().json() == []  # unchanged verdict: no second alert
-    assert len(sent) == 1
+    assert check().json() == []  # unchanged verdict: no second event
 
 
-def test_alert_ignores_a_caller_supplied_verdict(alerts, db):
-    check, baseline, sent = alerts
-    db.get_latest_filing.return_value = _stored("compliant", True)
+def test_alert_ignores_a_caller_supplied_verdict(alerts):
+    check, storage, row = alerts
+    storage.filings["ABC"] = _stored("compliant", True)
     check()
     response = check({"symbol": "ABC", "is_compliant": False})
-    assert response.status_code == 200
-    assert response.json() == [] and sent == []
-    assert baseline("user:2") is True
+    assert response.status_code == 200 and response.json() == []
+    assert row(2)["last_is_compliant"] is True
 
 
 @pytest.mark.parametrize(
@@ -487,44 +489,29 @@ def test_alert_ignores_a_caller_supplied_verdict(alerts, db):
         _stored("compliant", False),  # inconsistent pair
         _stored("non-compliant", True),
         _stored("compliant", None),
+        _stored("non-compliant", False, open_issues=True),  # open quality issue
     ],
 )
-def test_alert_without_a_conclusive_stored_verdict_changes_nothing(alerts, db, record):
-    check, baseline, sent = alerts
-    db.get_latest_filing.return_value = record
+def test_alert_without_a_conclusive_stored_verdict_changes_nothing(alerts, record):
+    check, storage, row = alerts
+    storage.filings["ABC"] = record
     response = check()
     assert response.status_code == 200 and response.json() == []
-    assert baseline("user:2") is None and baseline("user:3") is True
-    assert sent == []
+    assert row(2)["last_is_compliant"] is None and row(3)["last_is_compliant"] is True
 
 
-def test_alert_with_open_quality_issues_changes_nothing(alerts, db):
-    check, baseline, sent = alerts
-    db.get_latest_filing.return_value = _stored("non-compliant", False)
-    db.get_quality_issues.return_value = ["ratio_anomaly: debt ratio > 100%"]
-    assert check().json() == []
-    assert baseline("user:2") is None and sent == []
+def test_alert_lookup_failure_is_503_and_changes_nothing(alerts):
+    check, storage, row = alerts
+    storage.filings["ABC"] = RuntimeError("db down")
+    assert check().status_code == 503
+    assert row(2)["last_is_compliant"] is None and row(3)["last_is_compliant"] is True
 
 
-@pytest.mark.parametrize("failing", ["get_latest_filing", "get_quality_issues"])
-def test_alert_lookup_failure_is_503_and_changes_nothing(alerts, db, failing):
-    check, baseline, sent = alerts
-    db.get_latest_filing.return_value = _stored("non-compliant", False)
-    getattr(db, failing).side_effect = RuntimeError("db down")
-    response = check()
-    assert response.status_code == 503
-    assert baseline("user:2") is None and baseline("user:3") is True
-    assert sent == []
-
-
-def test_alert_normalises_the_symbol_and_queries_issues_by_canonical_symbol(alerts, db):
-    check, baseline, _ = alerts
-    # An alias request: the filing comes back under its canonical symbol.
-    db.get_latest_filing.return_value = _stored("compliant", True, symbol="ABCLTD")
+def test_alert_normalises_the_symbol(alerts):
+    check, storage, row = alerts
+    storage.filings["ABC"] = _stored("compliant", True)
     check({"symbol": "  abc "})
-    db.get_latest_filing.assert_called_with("ABC")
-    db.get_quality_issues.assert_called_with("ABCLTD", FILING_DATE)
-    assert baseline("user:2") is True
+    assert row(2)["last_is_compliant"] is True
 
 
 def test_alert_blank_symbol_is_422(alerts):
@@ -532,13 +519,22 @@ def test_alert_blank_symbol_is_422(alerts):
     assert check({"symbol": "   "}).status_code == 422
 
 
-def test_alert_check_is_rate_limited_per_user(alerts, db, monkeypatch):
+def test_alert_check_is_rate_limited_per_user(alerts, monkeypatch):
     check, _, _ = alerts
-    db.get_latest_filing.return_value = None
     monkeypatch.setattr(api_module, "RATE_LIMIT_ENABLED", True)
     monkeypatch.setitem(api_module.RATE_LIMIT_RULES, "metered", RateLimitRule(2, 60.0))
     assert [check().status_code for _ in range(3)] == [200, 200, 429]
 
+
+def test_alert_email_setting_is_the_callers_own(client):
+    storage = api_module.watch_storage
+    assert _call(client, "GET", "/account/alert-emails", token="free-token").json() == {"enabled": True}
+    response = _call(client, "PUT", "/account/alert-emails", {"enabled": False}, "free-token")
+    assert response.json() == {"enabled": False}
+    assert storage.users[1]["alert_emails"] is False and 2 not in storage.users  # the session's user only
+    assert _call(client, "GET", "/account/alert-emails", token="paid-token").json() == {"enabled": True}
+    # No other account can be named: the body takes only the flag.
+    assert _call(client, "PUT", "/account/alert-emails", {"enabled": True, "user_id": 2}, "free-token").status_code == 422
 
 
 def test_watchlist_storage_failure_is_503_not_an_empty_list(client, monkeypatch):

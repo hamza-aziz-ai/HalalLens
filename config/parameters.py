@@ -107,7 +107,9 @@ SMTP_PORT = _as_int(os.getenv("SMTP_PORT"), 587)
 SMTP_USERNAME = os.getenv("SMTP_USERNAME")
 SMTP_PASSWORD = os.getenv("SMTP_PASSWORD")
 ALERT_EMAIL_SENDER = os.getenv("ALERT_EMAIL_SENDER")
-ALERT_EMAIL_RECIPIENT = os.getenv("ALERT_EMAIL_RECIPIENT")
+# Compliance-flip emails to subscribers (D-031). Off: pending alerts are
+# silently rebaselined each run, so nothing replays when it is switched on.
+ALERT_EMAILS_ENABLED = _as_bool(os.getenv("ALERT_EMAILS_ENABLED"), False)
 AUTH_TOKEN_TTL_HOURS = _as_int(os.getenv("AUTH_TOKEN_TTL_HOURS"), 24 * 30)
 RAZORPAY_KEY_ID = os.getenv("RAZORPAY_KEY_ID")
 RAZORPAY_KEY_SECRET = os.getenv("RAZORPAY_KEY_SECRET")
