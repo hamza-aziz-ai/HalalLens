@@ -52,10 +52,12 @@ export async function callAnalysis(
   });
   let narration: NarrationResponse | null = null;
   if (includeNarration) {
+    // Narration is a paid extra: the score stands on its own if it fails
+    // (request() has already logged the error).
     narration = await request<NarrationResponse>("/narrate", {
       method: "POST",
       body: JSON.stringify(payload),
-    });
+    }).catch(() => null);
   }
   return { score, narration };
 }
