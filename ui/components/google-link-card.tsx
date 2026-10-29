@@ -28,6 +28,8 @@ export function GoogleLinkCard({
   useEffect(() => {
     const linkError = takeFragmentParam("link_error");
     if (linkError) {
+      // One-time, browser-only read of the fragment after hydration (static export): it cannot be initial state.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setError(GOOGLE_ERRORS[linkError] ?? "Linking failed. Start again.");
       return;
     }

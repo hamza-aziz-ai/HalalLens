@@ -261,6 +261,8 @@ export default function AnalysisPage() {
     if (!paramSymbol) return;
     const upperSymbol = paramSymbol.toUpperCase();
     if (upperSymbol === lookupSymbol) return;
+    // Mirrors ?symbol= into the input on each navigation and runs the lookup (a fetch, so it belongs in an effect).
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setLookupSymbol(upperSymbol);
     runSymbolLookup(upperSymbol);
     // eslint-disable-next-line react-hooks/exhaustive-deps

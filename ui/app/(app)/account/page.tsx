@@ -25,7 +25,7 @@ export default function AccountPage() {
   const { user, refresh } = useAuth();
 
   const [billingPlans, setBillingPlans] = useState<BillingPlan[]>([]);
-  const [billingLoading, setBillingLoading] = useState(false);
+  const [billingLoading, setBillingLoading] = useState(true);
   const [billingError, setBillingError] = useState<string | null>(null);
   const [upgradeLoading, setUpgradeLoading] = useState(false);
   const [upgradeMessage, setUpgradeMessage] = useState<string | null>(null);
@@ -43,7 +43,6 @@ export default function AccountPage() {
   const mutedTextClass = theme === "dark" ? "text-slate-400" : "text-slate-500";
 
   useEffect(() => {
-    setBillingLoading(true);
     fetchBillingPlans()
       .then((plans) => {
         setBillingPlans(plans);
