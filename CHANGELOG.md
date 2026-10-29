@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.2](https://github.com/hamza-aziz-ai/HalalLens/compare/v0.6.1...v0.6.2) (2026-10-29)
+
+
+### Bug Fixes
+
+* **etl:** detect amount scale from whole unit words, not substrings ([#158](https://github.com/hamza-aziz-ai/HalalLens/issues/158)) ([db0c6c0](https://github.com/hamza-aziz-ai/HalalLens/commit/db0c6c08f56ba02edc8ba224e16f50c1e23807df))
+
 ## [0.6.1](https://github.com/hamza-aziz-ai/HalalLens/compare/v0.6.0...v0.6.1) (2026-10-29)
 
 
