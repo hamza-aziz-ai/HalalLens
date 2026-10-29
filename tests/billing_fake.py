@@ -208,7 +208,8 @@ class BillingFake:
         conflicts = sorted(
             o["order_id"] for o in self.orders.values()
             if o["user_id"] == user_id and o.get("credit_version") is not None and o["status"] == "paid"
-            and any(s["payment_id"] == funding for s in (o.get("credit_detail") or {}).get("sources", []))
+            and any(s["payment_id"] == funding and s.get("credit", 0) > 0
+                    for s in (o.get("credit_detail") or {}).get("sources", []))
         )
         if conflicts:
             self.tracked.setdefault(("credit_conflict", refund_id), {
