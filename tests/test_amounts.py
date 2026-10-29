@@ -100,7 +100,9 @@ def test_vendor_converter_still_strips_percent_signs():
 # --- Real ETL parser -> engine ----------------------------------------------
 
 
-def _engine_result_from_structured(payload):
+def _engine_result_from_structured(payload, base=None):
+    """`base` stands for a reviewed non-permissible income figure (a governance
+    override): since D-028 the parser never supplies one."""
     metrics = FDP._parse_structured_json(payload, scale_hint=1.0)
     snapshot = FinancialSnapshotInput(
         symbol="X",
@@ -110,7 +112,7 @@ def _engine_result_from_structured(payload):
         revenue=metrics.get("revenue"),
         interest_income=metrics.get("interest_income"),
         dividend_income=metrics.get("dividend_income"),
-        non_permissible_income=metrics.get("non_halal_income"),
+        non_permissible_income=metrics.get("non_halal_income", base),
         accounts_receivable=metrics.get("accounts_receivable"),
         liquid_assets=metrics.get("liquid_assets"),
     )
@@ -126,16 +128,24 @@ COMPLETE = {
     "InterestIncome": 1_000_000,
     "DividendIncome": 0,
     "AccountsReceivable": 20_000_000,
-    "CurrentAssets": 40_000_000,  # the ETL maps liquid_assets from current assets
-    "NonPermissible": {"Income": 5_000_000},
+    "LiquidAssets": 40_000_000,  # only an explicit aggregate fills liquid_assets (D-028)
+    "NonPermissible": {"Income": 5_000_000},  # never fills the base (D-028)
 }
 
 
 def test_structured_parser_complete_payload_screens_compliant():
-    metrics, result = _engine_result_from_structured({"Financials": COMPLETE})
+    metrics, result = _engine_result_from_structured({"Financials": COMPLETE}, base=0.0)
 
     assert result.missing_inputs == {}, metrics
     assert result.verdict == "compliant"
+
+
+def test_structured_parser_never_supplies_the_income_base():
+    metrics, result = _engine_result_from_structured({"Financials": COMPLETE})
+
+    assert "non_halal_income" not in metrics
+    assert result.missing_inputs == {"non_permissible_income": "missing"}
+    assert result.verdict == "insufficient-data"
 
 
 @pytest.mark.parametrize("flag", [True, False])
@@ -148,7 +158,7 @@ def test_structured_parser_boolean_fields_are_not_zeros(flag):
             "NonPermissible": {"Income": flag},
         }
     }
-    metrics, result = _engine_result_from_structured(payload)
+    metrics, result = _engine_result_from_structured(payload, base=0.0)
 
     assert "interest_income" not in metrics
     assert "dividend_income" not in metrics
@@ -158,7 +168,7 @@ def test_structured_parser_boolean_fields_are_not_zeros(flag):
 
 def test_structured_parser_underflowing_string_is_not_a_zero():
     payload = {"Financials": {**COMPLETE, "InterestIncome": "1e-400"}}
-    metrics, result = _engine_result_from_structured(payload)
+    metrics, result = _engine_result_from_structured(payload, base=0.0)
 
     assert "interest_income" not in metrics
     assert result.verdict == "insufficient-data"

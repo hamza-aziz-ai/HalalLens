@@ -108,7 +108,9 @@ def test_pdf_non_liquid_rows_never_fill_liquid_assets(processor, label):
 def test_explicit_liquid_assets_line_maps(processor):
     assert FDP._parse_xbrl(_xbrl(LiquidAssets=40))["liquid_assets"] == 40
     assert _tables(processor, [["Liquid assets", "40"]])["liquid_assets"] == 40
-    assert "liquid_assets" not in _tables(processor, [["Net liquid assets", "40"]])
+    for label in ("Net liquid assets", "Illiquid assets", "Non-liquid assets"):
+        assert "liquid_assets" not in _tables(processor, [[label, "40"]])
+        assert "liquid_assets" not in FDP._parse_xbrl(_xbrl(**{FDP._normalize_tag(label): 40}))
 
 
 def test_vendor_never_derives_liquid_assets():
@@ -157,6 +159,8 @@ def test_interest_never_fills_both_interest_and_base(processor):
         "InterestIncomeExpense",
         "FinanceIncome",
         "OtherIncomeIncludingInterestIncome",
+        "InterestIncomeAccrued",
+        "InterestIncomeReceivable",
     ],
 )
 def test_net_expense_and_finance_income_tags_abstain(tag):

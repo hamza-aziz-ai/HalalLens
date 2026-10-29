@@ -115,11 +115,15 @@ class FinancialDataProcessor:
     STRICT_METRICS = frozenset({'interest_income', 'dividend_income', 'liquid_assets'})
     EXCLUDED_LABEL_PARTS = {
         # Gross interest income only: not "interest income, net", "net
-        # interest", "interest income/(expense)" or an aggregate that includes it.
-        'interest_income': ('net', 'expens', 'includ'),
-        # Dividends received only, never paid, payable, proposed or declared.
-        'dividend_income': ('paid', 'payable', 'propos', 'declar', 'includ'),
-        'liquid_assets': ('net',),
+        # interest", "interest income/(expense)", an aggregate that includes
+        # it, or a balance-sheet "interest accrued/receivable".
+        'interest_income': ('net', 'expens', 'includ', 'accrued', 'receivable'),
+        # Dividends received only, never paid, payable, proposed, declared or
+        # a receivable balance.
+        'dividend_income': ('paid', 'payable', 'propos', 'declar', 'includ', 'receivable'),
+        # "Net liquid assets" and "illiquid"/"non-liquid assets" also contain
+        # the alias.
+        'liquid_assets': ('net', 'illiquid', 'nonliquid'),
     }
 
     def __init__(
