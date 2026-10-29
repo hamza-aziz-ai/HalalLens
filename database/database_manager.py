@@ -3144,6 +3144,225 @@ class BSEDatabaseManager:
                 )
                 return [dict(row) for row in cursor.fetchall()]
 
+    # --- automatic refunds (D-025, PR C) -------------------------------------
+
+    _ACTION_COLUMNS = (
+        "id, payment_id, order_id, reason, amount, currency, idempotency_key, request_body, state, "
+        "provider_refund_id, attempts, next_attempt_at, last_error, obligation_settled_at"
+    )
+    # Monotonic: a state may only move to a later one; failed / blocked only
+    # from requested or created; processed is final.
+    _ACTION_RANK = {"requested": 0, "created": 1, "failed": 2, "blocked": 2, "processed": 3}
+
+    def create_refund_intent(
+        self, *, payment_id: str, order_id: str, reason: str, amount: int, currency: str,
+        idempotency_key: str, request_body: Dict[str, Any],
+    ) -> Tuple[str, Optional[Dict]]:
+        """Re-check eligibility under the order lock and persist the refund intent.
+
+        duplicate: the order was settled by a different, known payment.
+        refund_due: the order is refund_due and this payment funds it.
+        Both: amount and currency equal the order's. Returns ("created" |
+        "existing", action) or ("ineligible", None); the existing row is
+        returned unchanged (its key and body never change).
+        """
+
+        with self.get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT order_id, amount, currency, status, payment_id FROM razorpay_orders "
+                    "WHERE order_id = %(o)s FOR UPDATE",
+                    {"o": order_id},
+                )
+                order = cursor.fetchone()
+                cursor.execute(
+                    f"SELECT {self._ACTION_COLUMNS} FROM refund_actions WHERE payment_id = %(p)s",
+                    {"p": payment_id},
+                )
+                existing = cursor.fetchone()
+                if existing:
+                    conn.rollback()
+                    return "existing", dict(existing)
+                terms = (
+                    order is not None
+                    and int(order["amount"]) == int(amount)
+                    and str(order["currency"] or "INR").upper() == str(currency).upper()
+                )
+                funding = order["payment_id"] if order else None
+                eligible = terms and (
+                    (reason == "duplicate" and order["status"] in ("paid", "refunded", "refund_due")
+                     and funding is not None and funding != payment_id)
+                    or (reason == "refund_due" and order["status"] == "refund_due" and funding == payment_id)
+                )
+                if not eligible:
+                    conn.rollback()
+                    return "ineligible", None
+                cursor.execute(
+                    f"""
+                    INSERT INTO refund_actions
+                        (payment_id, order_id, reason, amount, currency, idempotency_key, request_body)
+                    VALUES (%(p)s, %(o)s, %(r)s, %(a)s, %(c)s, %(k)s, %(b)s)
+                    RETURNING {self._ACTION_COLUMNS}
+                    """,
+                    {"p": payment_id, "o": order_id, "r": reason, "a": int(amount), "c": currency.upper(),
+                     "k": idempotency_key, "b": Json(request_body)},
+                )
+                action = dict(cursor.fetchone())
+                conn.commit()
+                return "created", action
+
+    def update_refund_action(
+        self, action_id: int, *, state: Optional[str] = None, provider_refund_id: Optional[str] = None,
+        error: Optional[str] = None, retry_after_seconds: Optional[int] = None,
+    ) -> Dict:
+        """Record an attempt's outcome; the state never moves backwards (see _ACTION_RANK)."""
+
+        with self.get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    f"SELECT {self._ACTION_COLUMNS} FROM refund_actions WHERE id = %(id)s FOR UPDATE",
+                    {"id": action_id},
+                )
+                action = dict(cursor.fetchone())
+                current = action["state"]
+                new_state = current
+                if state and self._ACTION_RANK[state] > self._ACTION_RANK[current] and current not in (
+                    "failed", "blocked", "processed"
+                ):
+                    new_state = state
+                cursor.execute(
+                    f"""
+                    UPDATE refund_actions SET
+                        state = %(s)s,
+                        provider_refund_id = COALESCE(provider_refund_id, %(pr)s),
+                        attempts = attempts + 1,
+                        last_error = %(e)s,
+                        next_attempt_at = NOW() + make_interval(secs => %(after)s),
+                        updated_at = NOW()
+                    WHERE id = %(id)s
+                    RETURNING {self._ACTION_COLUMNS}
+                    """,
+                    {"s": new_state, "pr": provider_refund_id, "e": error,
+                     "after": retry_after_seconds if retry_after_seconds is not None else 900, "id": action_id},
+                )
+                row = dict(cursor.fetchone())
+                conn.commit()
+                return row
+
+    def get_refund_action(self, payment_id: str) -> Optional[Dict]:
+        with self.get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    f"SELECT {self._ACTION_COLUMNS} FROM refund_actions WHERE payment_id = %(p)s",
+                    {"p": payment_id},
+                )
+                row = cursor.fetchone()
+                return dict(row) if row else None
+
+    def refund_actions_due(self, limit: int) -> List[Dict]:
+        with self.get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    f"SELECT {self._ACTION_COLUMNS} FROM refund_actions "
+                    "WHERE state IN ('requested', 'created') AND obligation_settled_at IS NULL "
+                    "AND next_attempt_at <= NOW() ORDER BY next_attempt_at LIMIT %(n)s",
+                    {"n": limit},
+                )
+                return [dict(row) for row in cursor.fetchall()]
+
+    def open_refund_obligations(self, limit: int) -> List[Dict]:
+        """Open duplicate / refund_due payments that have no automatic refund yet."""
+
+        with self.get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT t.provider_id AS payment_id, t.order_id, t.reason FROM billing_tracked t "
+                    "LEFT JOIN refund_actions a ON a.payment_id = t.provider_id "
+                    "WHERE t.kind = 'payment' AND t.resolved_at IS NULL "
+                    "AND t.reason IN ('duplicate', 'refund_due') AND a.id IS NULL "
+                    "ORDER BY t.first_seen LIMIT %(n)s",
+                    {"n": limit},
+                )
+                return [dict(row) for row in cursor.fetchall()]
+
+    def sync_refund_action(self, payment_id: str) -> Dict[str, Any]:
+        """Bring a payment's refund action and refund obligation up to date.
+
+        Two separate facts, both from recorded processed refunds
+        (payment_refunds), whatever path recorded them and whatever the refund
+        methods returned: the automatic request is processed once its own
+        provider refund is recorded; the obligation (a billing_tracked
+        duplicate / refund_due item) is settled once this payment's distinct
+        processed refunds reach its full amount, manual refunds included.
+        """
+
+        with self.get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT COALESCE(SUM(amount), 0) AS total FROM payment_refunds WHERE payment_id = %(p)s",
+                    {"p": payment_id},
+                )
+                total = int(cursor.fetchone()["total"])
+                cursor.execute(
+                    f"SELECT {self._ACTION_COLUMNS} FROM refund_actions WHERE payment_id = %(p)s FOR UPDATE",
+                    {"p": payment_id},
+                )
+                action = cursor.fetchone()
+                cursor.execute(
+                    "SELECT t.order_id, o.amount FROM billing_tracked t "
+                    "JOIN razorpay_orders o ON o.order_id = t.order_id "
+                    "WHERE t.kind = 'payment' AND t.provider_id = %(p)s AND t.resolved_at IS NULL "
+                    "AND t.reason IN ('duplicate', 'refund_due')",
+                    {"p": payment_id},
+                )
+                tracked = cursor.fetchone()
+                owed = int(action["amount"]) if action else (int(tracked["amount"]) if tracked else None)
+                settled = owed is not None and total >= owed
+                result = {"total_refunded": total, "obligation_settled": settled, "action_state": None}
+                if action:
+                    own = False
+                    if action["provider_refund_id"]:
+                        cursor.execute(
+                            "SELECT 1 FROM payment_refunds WHERE refund_id = %(r)s",
+                            {"r": action["provider_refund_id"]},
+                        )
+                        own = cursor.fetchone() is not None
+                    cursor.execute(
+                        f"""
+                        UPDATE refund_actions SET
+                            state = CASE WHEN %(own)s AND state IN ('requested', 'created') THEN 'processed' ELSE state END,
+                            obligation_settled_at = CASE WHEN %(settled)s THEN COALESCE(obligation_settled_at, NOW())
+                                                    ELSE obligation_settled_at END,
+                            updated_at = NOW()
+                        WHERE id = %(id)s
+                        RETURNING state
+                        """,
+                        {"own": own, "settled": settled, "id": action["id"]},
+                    )
+                    result["action_state"] = cursor.fetchone()["state"]
+                if settled:
+                    cursor.execute(
+                        "UPDATE billing_tracked SET resolved_at = NOW(), last_checked = NOW() "
+                        "WHERE kind = 'payment' AND provider_id = %(p)s AND resolved_at IS NULL "
+                        "AND reason IN ('duplicate', 'refund_due')",
+                        {"p": payment_id},
+                    )
+                conn.commit()
+                return result
+
+    def read_reconcile_heartbeat(self) -> Dict[str, Any]:
+        """Read-only: the reconciler's last success and its age by the database clock."""
+
+        with self.get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT last_success_at, EXTRACT(EPOCH FROM (NOW() - last_success_at)) AS age "
+                    "FROM billing_reconcile_state WHERE id = 1"
+                )
+                row = cursor.fetchone()
+                conn.rollback()
+                return dict(row) if row else {"last_success_at": None, "age": None}
+
     def get_database_stats(self) -> Dict:
         """Get comprehensive database statistics"""
         with self.get_connection() as conn:

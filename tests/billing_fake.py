@@ -172,6 +172,9 @@ class BillingFake:
         self._write_projection(user_id, projection)
         return ("revoked" if revoke else "partial"), projection
 
+    def sync_refund_action(self, payment_id):
+        return {"total_refunded": self._refunded_total(payment_id), "obligation_settled": False, "action_state": None}
+
     def start_trial_grant(self, *, user_id, plan_code, trial_days, project):
         user = self.users[user_id]
         if user["trial_used"]:
@@ -202,6 +205,7 @@ class ReconcileFake(BillingFake):
         self.state = {"payments_checkpoint": None, "refunds_checkpoint": None, "audit_before": None,
                       "last_success_at": None, "last_error": None}
         self.tracked: Dict[tuple, Dict[str, Any]] = {}
+        self.actions: Dict[str, Dict[str, Any]] = {}  # refund_actions, by payment id
 
     def add_order(self, order_id, plan_code, user_id=42):
         order = super().add_order(order_id, plan_code, user_id)
@@ -275,6 +279,78 @@ class ReconcileFake(BillingFake):
         return "bound", projection
 
 
+    # --- refund_actions (mirrors database_manager, D-025 PR C) ---------------------
+    RANK = {"requested": 0, "created": 1, "failed": 2, "blocked": 2, "processed": 3}
+
+    def create_refund_intent(self, *, payment_id, order_id, reason, amount, currency, idempotency_key, request_body):
+        if payment_id in self.actions:
+            return "existing", dict(self.actions[payment_id])
+        order = self.orders.get(order_id)
+        funding = order["payment_id"] if order else None
+        terms = order is not None and order["amount"] == int(amount) and currency.upper() == "INR"
+        eligible = terms and (
+            (reason == "duplicate" and order["status"] in ("paid", "refunded", "refund_due")
+             and funding is not None and funding != payment_id)
+            or (reason == "refund_due" and order["status"] == "refund_due" and funding == payment_id)
+        )
+        if not eligible:
+            return "ineligible", None
+        action = {"id": len(self.actions) + 1, "payment_id": payment_id, "order_id": order_id, "reason": reason,
+                  "amount": int(amount), "currency": currency.upper(), "idempotency_key": idempotency_key,
+                  "request_body": request_body, "state": "requested", "provider_refund_id": None, "attempts": 0,
+                  "next_attempt_at": self.now, "last_error": None, "obligation_settled_at": None}
+        self.actions[payment_id] = action
+        return "created", dict(action)
+
+    def update_refund_action(self, action_id, *, state=None, provider_refund_id=None, error=None,
+                             retry_after_seconds=None):
+        action = next(a for a in self.actions.values() if a["id"] == action_id)
+        if state and self.RANK[state] > self.RANK[action["state"]] and action["state"] not in ("failed", "blocked", "processed"):
+            action["state"] = state
+        action["provider_refund_id"] = action["provider_refund_id"] or provider_refund_id
+        action["attempts"] += 1
+        action["last_error"] = error
+        action["next_attempt_at"] = self.now + timedelta(seconds=retry_after_seconds if retry_after_seconds is not None else 900)
+        return dict(action)
+
+    def get_refund_action(self, payment_id):
+        action = self.actions.get(payment_id)
+        return dict(action) if action else None
+
+    def refund_actions_due(self, limit):
+        due = [dict(a) for a in self.actions.values() if a["state"] in ("requested", "created")
+               and a["obligation_settled_at"] is None and a["next_attempt_at"] <= self.now]
+        return sorted(due, key=lambda a: a["next_attempt_at"])[:limit]
+
+    def open_refund_obligations(self, limit):
+        rows = [{"payment_id": pid, "order_id": r["order_id"], "reason": r["reason"]}
+                for (kind, pid), r in self.tracked.items()
+                if kind == "payment" and r["resolved_at"] is None and r["reason"] in ("duplicate", "refund_due")
+                and pid not in self.actions]
+        return rows[:limit]
+
+    def sync_refund_action(self, payment_id):
+        total = self._refunded_total(payment_id)
+        action = self.actions.get(payment_id)
+        row = self.tracked.get(("payment", payment_id))
+        open_obligation = row if row and row["resolved_at"] is None and row["reason"] in ("duplicate", "refund_due") else None
+        owed = action["amount"] if action else (self.orders[open_obligation["order_id"]]["amount"] if open_obligation else None)
+        settled = owed is not None and total >= owed
+        if action:
+            if action["provider_refund_id"] in self.refunds and action["state"] in ("requested", "created"):
+                action["state"] = "processed"
+            if settled and action["obligation_settled_at"] is None:
+                action["obligation_settled_at"] = self.now
+        if settled and open_obligation:
+            open_obligation["resolved_at"] = self.now
+        return {"total_refunded": total, "obligation_settled": settled,
+                "action_state": action["state"] if action else None}
+
+    def read_reconcile_heartbeat(self):
+        last = self.state["last_success_at"]
+        return {"last_success_at": last, "age": None if last is None else (self.now - last).total_seconds()}
+
+
 class FakeRazorpay:
     """In-memory Razorpay for the reconciler: payments and refunds with created_at times."""
 
@@ -284,6 +360,8 @@ class FakeRazorpay:
         self.refunds: Dict[str, Dict[str, Any]] = {}
         self.fail_with = None  # an exception to raise from list_window
         self.list_calls = 0
+        self.refund_posts = []          # (payment_id, body, key) per create_refund call
+        self.post_outcomes = []         # queued: "ok", "pending", "lost" (refund made, response lost) or a RazorpayError
 
     def pay(self, payment_id, order, status="captured", **extra):
         payment = {"id": payment_id, "order_id": order["order_id"], "amount": order["amount"],
@@ -293,11 +371,12 @@ class FakeRazorpay:
         self.payments[payment_id] = payment
         return payment
 
-    def refund(self, refund_id, payment_id, amount=None, status="processed"):
+    def refund(self, refund_id, payment_id, amount=None, status="processed", notes=None):
         payment = self.payments[payment_id]
         amount = payment["amount"] if amount is None else amount
         self.refunds[refund_id] = {"id": refund_id, "payment_id": payment_id, "amount": amount,
-                                   "status": status, "created_at": int(self.clock.now.timestamp())}
+                                   "currency": "INR", "status": status, "notes": notes or {},
+                                   "created_at": int(self.clock.now.timestamp())}
         if status == "processed":
             payment["amount_refunded"] += amount
             if payment["amount_refunded"] >= payment["amount"]:
@@ -322,3 +401,19 @@ class FakeRazorpay:
 
     def list_payment_refunds(self, payment_id):
         return [dict(r) for r in self.refunds.values() if r["payment_id"] == payment_id]
+
+    def create_refund(self, payment_id, body, idempotency_key):
+        self.refund_posts.append((payment_id, body, idempotency_key))
+        outcome = self.post_outcomes.pop(0) if self.post_outcomes else "ok"
+        if isinstance(outcome, Exception):
+            raise outcome
+        # Idempotency: the same key returns the refund it already created.
+        for refund in self.refunds.values():
+            if refund["notes"].get("halallens_refund_key") == idempotency_key:
+                return dict(refund)
+        refund = self.refund(f"rfnd_auto{len(self.refunds) + 1}", payment_id, body["amount"],
+                             status="pending" if outcome == "pending" else "processed", notes=body["notes"])
+        if outcome == "lost":
+            from api.razorpay_client import RazorpayError
+            raise RazorpayError("POST timed out")
+        return dict(refund)

@@ -118,6 +118,8 @@ ROUTES = {
     ("GET", "/auth/me"): ("authenticated", "/auth/me", None),
     ("POST", "/client-logs"): ("public", "/client-logs", {"message": "hello"}),
     ("GET", "/billing/plans"): ("public", "/billing/plans", None),
+    # Public by design: only a status and an age, for the uptime workflow (D-025).
+    ("GET", "/health/billing"): ("public", "/health/billing", None),
     ("POST", "/billing/trial"): ("authenticated", "/billing/trial", {"plan_code": "pro"}),
     ("POST", "/billing/razorpay/order"): ("authenticated", "/billing/razorpay/order", {}),
     ("POST", "/billing/razorpay/verify"): (

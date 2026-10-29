@@ -1,9 +1,14 @@
-# Production uptime check: every 30 minutes, GET <UPTIME_URL>/api/health.
-# A failure opens (or comments on) one issue labelled `uptime`, which notifies
-# the repository watchers; the next success closes it. The site address comes
-# from the repository variable UPTIME_URL (e.g. https://example.com); without
-# it the job does nothing, so forks and a fresh owner are not paged.
+# Production uptime check: every 30 minutes, GET <UPTIME_URL>/api/health and
+# <UPTIME_URL>/api/health/billing (the payment reconciler's heartbeat, D-025).
+# A failure of either opens (or comments on) one issue labelled `uptime`,
+# which notifies the repository watchers; the issue closes only when BOTH
+# pass again. The site address comes from the repository variable UPTIME_URL
+# (e.g. https://example.com); without it the job does nothing, so forks and a
+# fresh owner are not paged. Set the repository variable BILLING_EXPECTED=true
+# where billing must run: "disabled" (Razorpay not configured) then fails.
 #
+# Detection takes about 60-90 minutes (heartbeat older than 60 min, checked
+# every 30 min); GitHub can delay or drop scheduled runs, so this is nominal.
 # GitHub disables scheduled workflows after 60 days without repository
 # activity; re-enable it under Actions if that happens.
 name: Uptime
@@ -29,6 +34,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
       URL: ${{ vars.UPTIME_URL }}
+      BILLING_EXPECTED: ${{ vars.BILLING_EXPECTED }}
     steps:
       - name: Check /api/health (3 tries)
         id: probe
@@ -44,24 +50,39 @@ jobs:
             sleep 20
           done
           echo "status=down" >> "$GITHUB_OUTPUT"
-          echo "code=$code" >> "$GITHUB_OUTPUT"
+          echo "detail=HTTP $code from /api/health" >> "$GITHUB_OUTPUT"
+
+      - name: Check /api/health/billing (reconciler heartbeat)
+        id: billing
+        run: |
+          code=$(curl -s -o billing.txt -w '%{http_code}' -m 20 "${URL%/}/api/health/billing" || echo 000)
+          status=$(jq -r '.status // "malformed"' billing.txt 2>/dev/null || echo malformed)
+          echo "HTTP $code, status $status"
+          if [ "$code" = 200 ] && [ "$status" = ok ]; then
+            echo "status=up" >> "$GITHUB_OUTPUT"
+          elif [ "$code" = 200 ] && [ "$status" = disabled ] && [ "$BILLING_EXPECTED" != true ]; then
+            echo "status=up" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=down" >> "$GITHUB_OUTPUT"
+            echo "detail=billing heartbeat: HTTP $code, status $status" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Open or update the outage issue
-        if: steps.probe.outputs.status == 'down'
+        if: steps.probe.outputs.status == 'down' || steps.billing.outputs.status == 'down'
         run: |
           gh label create uptime --color B60205 --description "Production health check" 2>/dev/null || true
           issue=$(gh issue list --label uptime --state open --json number --jq '.[0].number')
-          note="Health check failed at $(date -u +%FT%TZ): HTTP ${{ steps.probe.outputs.code }} from /api/health. Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          note="Health check failed at $(date -u +%FT%TZ): ${{ steps.probe.outputs.detail }} ${{ steps.billing.outputs.detail }}. Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           if [ -n "$issue" ]; then
             gh issue comment "$issue" --body "$note"
           else
-            gh issue create --label uptime --title "Production is down: /api/health failing" --body "$note"
+            gh issue create --label uptime --title "Production check failing" --body "$note"
           fi
           exit 1
 
       - name: Close the outage issue after recovery
-        if: steps.probe.outputs.status == 'up'
+        if: steps.probe.outputs.status == 'up' && steps.billing.outputs.status == 'up'
         run: |
           for issue in $(gh issue list --label uptime --state open --json number --jq '.[].number'); do
-            gh issue close "$issue" --comment "Recovered at $(date -u +%FT%TZ): /api/health returns 200."
+            gh issue close "$issue" --comment "Recovered at $(date -u +%FT%TZ): /api/health and the billing heartbeat pass."
           done
