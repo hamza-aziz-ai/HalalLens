@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import clsx from "clsx";
 
 import type { Filing, GovernanceOverride, GovernanceReview } from "@/lib/types";
@@ -110,16 +110,6 @@ export default function GovernancePage() {
     }
   };
 
-  useEffect(() => {
-    if (selectedFiling) {
-      refreshOverrides(selectedFiling.symbol);
-      loadGovernanceReview(selectedFiling.symbol, selectedFiling.filing_date);
-    } else {
-      setGovernanceOverrides([]);
-      setGovernanceReview(null);
-    }
-  }, [selectedFiling]);
-
   const loadLatestFiling = async () => {
     const trimmed = symbol.trim();
     if (!trimmed) return;
@@ -128,8 +118,13 @@ export default function GovernancePage() {
     try {
       const filing = await fetchFilingDetail(trimmed, { refresh: true });
       setSelectedFiling(filing);
+      // Not awaited: both load alongside, each handling its own errors.
+      refreshOverrides(filing.symbol);
+      loadGovernanceReview(filing.symbol, filing.filing_date);
     } catch (err: any) {
       setSelectedFiling(null);
+      setGovernanceOverrides([]);
+      setGovernanceReview(null);
       setFilingError(err.message ?? "Unable to load filing.");
     } finally {
       setLoadingFiling(false);

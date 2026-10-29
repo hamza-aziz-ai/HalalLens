@@ -16,8 +16,11 @@ export default function DashboardPage() {
 
   const [filings, setFilings] = useState<Filing[]>([]);
   const [filingError, setFilingError] = useState<string | null>(null);
-  const [stats, setStats] = useState<IngestionStats | null>(null);
-  const [statsError, setStatsError] = useState<string | null>(null);
+  const [adminStats, setAdminStats] = useState<IngestionStats | null>(null);
+  const [adminStatsError, setAdminStatsError] = useState<string | null>(null);
+  // Shown only while the session is an admin's.
+  const stats = user?.is_admin ? adminStats : null;
+  const statsError = user?.is_admin ? adminStatsError : null;
 
   const cardClass =
     theme === "dark"
@@ -35,19 +38,15 @@ export default function DashboardPage() {
       .catch((err) => setFilingError(err.message ?? "Unable to load filings."));
 
     // Ingestion stats are an operator surface; non-admins get 403 from the API,
-    // so don't render a scary error for them.
-    if (!user?.is_admin) {
-      setStats(null);
-      setStatsError(null);
-      return;
-    }
+    // so don't fetch (or render a scary error) for them.
+    if (!user?.is_admin) return;
 
     fetchIngestionStats()
       .then((data) => {
-        setStats(data);
-        setStatsError(null);
+        setAdminStats(data);
+        setAdminStatsError(null);
       })
-      .catch((err) => setStatsError(err.message ?? "Unable to load stats."));
+      .catch((err) => setAdminStatsError(err.message ?? "Unable to load stats."));
   }, [user?.is_admin]);
 
   return (

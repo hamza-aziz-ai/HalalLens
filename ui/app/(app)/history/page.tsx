@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import clsx from "clsx";
 
 import type { Filing } from "@/lib/types";
@@ -92,13 +92,6 @@ export default function HistoryPage() {
       setAppending(false);
     }
   };
-
-  useEffect(() => {
-    if (symbol.trim()) {
-      loadHistory(symbol);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
   return (
     <main className="space-y-10">

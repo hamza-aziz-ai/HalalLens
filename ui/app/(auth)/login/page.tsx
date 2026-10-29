@@ -41,6 +41,8 @@ export default function LoginPage() {
   useEffect(() => {
     const googleError = takeFragmentParam("error");
     if (googleError) {
+      // One-time, browser-only read of the fragment after hydration (static export): it cannot be initial state.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setError(GOOGLE_ERRORS[googleError] ?? "Google sign-in failed. Please try again.");
       return;
     }
@@ -85,6 +87,8 @@ export default function LoginPage() {
   };
 
   const handleGoogle = () => {
+    // An API route (prod API_BASE is the same-origin "/api" proxy), not a Next page: a full navigation that redirects to Google.
+    // eslint-disable-next-line @next/next/no-location-assign-relative-destination
     window.location.href = `${API_BASE}/auth/google/start`;
   };
 

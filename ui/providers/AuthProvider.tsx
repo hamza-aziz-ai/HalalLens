@@ -25,8 +25,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState(true);
 
-  const refresh = useCallback(async () => {
-    setLoading(true);
+  // Fetches the session's user; `loading` already starts true for the first load.
+  const load = useCallback(async () => {
     try {
       // A session token arrives only on the Google sign-in landing page, and
       // only in the fragment; other pages never take one from the URL.
@@ -46,9 +46,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  const refresh = useCallback(async () => {
+    setLoading(true);
+    await load();
+  }, [load]);
+
   useEffect(() => {
-    refresh();
-  }, [refresh]);
+    load();
+  }, [load]);
 
   const value = useMemo(
     () => ({
