@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.15.0](https://github.com/hamza-aziz-ai/HalalLens/compare/v0.14.1...v0.15.0) (2026-10-29)
+
+
+### Features
+
+* **ui:** the maintenance screen appears and disappears by itself ([#201](https://github.com/hamza-aziz-ai/HalalLens/issues/201)) ([6261387](https://github.com/hamza-aziz-ai/HalalLens/commit/6261387a3e4f0082b5d71c1471d697f4b33e709f))
+
 ## [0.14.1](https://github.com/hamza-aziz-ai/HalalLens/compare/v0.14.0...v0.14.1) (2026-10-29)
 
 
