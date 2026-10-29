@@ -37,9 +37,22 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       status: response.status,
       message: message.slice(0, 500),
     });
-    throw new Error(message || `Request failed: ${response.status}`);
+    throw new Error(errorMessage(response.status, message));
   }
   return response.json() as Promise<T>;
+}
+
+/** The API's `detail` text; never a raw body (a proxy can answer with an HTML page). */
+export function errorMessage(status: number, body: string): string {
+  try {
+    const detail = JSON.parse(body)?.detail;
+    if (typeof detail === "string" && detail) return detail;
+  } catch {
+    // Not JSON: an HTML error page from Caddy or Cloudflare.
+  }
+  return status >= 500
+    ? "HalalLens is briefly unavailable. Please try again in a minute."
+    : `Request failed (${status}).`;
 }
 
 export async function callAnalysis(

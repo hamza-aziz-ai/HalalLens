@@ -165,6 +165,7 @@ services:
       - "${CADDY_BIND:-0.0.0.0}:443:443"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./caddy/maintenance.html:/srv/errors/maintenance.html:ro
       - caddy_data:/data
       - caddy_config:/config
     restart: unless-stopped

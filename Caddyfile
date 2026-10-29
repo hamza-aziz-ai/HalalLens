@@ -42,4 +42,25 @@
     redir @policy_no_slash {path}/ 308
     reverse_proxy ui:3000
   }
+
+  # The api or ui container is down or restarting (a deploy): Caddy itself
+  # failed to reach it. Answer 503, never 502: Cloudflare replaces an origin
+  # 502 with its own error page. Responses the API sends itself (its own 503s
+  # included) never come through here.
+  handle_errors 502 503 504 {
+    header Retry-After 20
+    header Cache-Control no-store
+    @api expression `{http.request.orig_uri.path}.startsWith("/api/")`
+    handle @api {
+      header Content-Type application/json
+      respond `{"detail":"HalalLens is being updated. Please try again in a minute."}` 503
+    }
+    handle {
+      root * /srv/errors
+      rewrite * /maintenance.html
+      file_server {
+        status 503
+      }
+    }
+  }
 }
