@@ -957,7 +957,7 @@ def _exchange_google_code(code: str) -> Dict[str, Any]:
         resp.raise_for_status()
     except requests.RequestException as exc:  # pragma: no cover - network error
         api_logger.error("Google token exchange failed: %s", exc)
-        raise HTTPException(status_code=502, detail="Google token exchange failed")
+        raise HTTPException(status_code=503, detail="Google token exchange failed")
     payload = resp.json()
     if "access_token" not in payload:
         raise HTTPException(status_code=400, detail="Google response missing access token")
@@ -971,7 +971,7 @@ def _fetch_google_profile(access_token: str) -> Dict[str, Any]:
         resp.raise_for_status()
     except requests.RequestException as exc:  # pragma: no cover - network error
         api_logger.error("Google profile fetch failed: %s", exc)
-        raise HTTPException(status_code=502, detail="Google profile fetch failed")
+        raise HTTPException(status_code=503, detail="Google profile fetch failed")
     return resp.json()
 
 
@@ -1026,7 +1026,11 @@ def _create_razorpay_order(
         resp.raise_for_status()
     except requests.RequestException as exc:
         api_logger.error("Razorpay order creation failed: %s", exc)
-        raise HTTPException(status_code=502, detail="Failed to create order")
+        # 503, not 502, for every upstream failure: Cloudflare replaces an
+        # origin 502 (even this JSON) with its own HTML error page.
+        raise HTTPException(
+            status_code=503, detail="Checkout is unavailable right now. Please try again shortly."
+        )
     order = resp.json()
     _get_db().create_razorpay_order(
         user_id=user_id,
