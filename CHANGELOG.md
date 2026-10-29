@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.3](https://github.com/hamza-aziz-ai/HalalLens/compare/v0.5.2...v0.5.3) (2026-10-29)
+
+
+### Bug Fixes
+
+* **market-data:** read the current BSE and NSE bhavcopy files ([#150](https://github.com/hamza-aziz-ai/HalalLens/issues/150)) ([9522273](https://github.com/hamza-aziz-ai/HalalLens/commit/95222736ab6835d48fba351d68a4e54a951602b7))
+
 ## [0.5.2](https://github.com/hamza-aziz-ai/HalalLens/compare/v0.5.1...v0.5.2) (2026-10-28)
 
 
