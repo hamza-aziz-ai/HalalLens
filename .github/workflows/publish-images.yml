@@ -128,6 +128,7 @@ jobs:
               --label org.opencontainers.image.version="$TAG" \
               --label org.opencontainers.image.licenses=MIT \
               --build-arg "NEXT_PUBLIC_SUPPORT_EMAIL=${{ vars.SUPPORT_EMAIL }}" \
+              --build-arg "NEXT_PUBLIC_REPO_URL=${{ vars.REPO_URL || format('https://github.com/{0}', github.repository) }}" \
               --load -t "halallens-$img:candidate" .
           done
 
@@ -182,6 +183,7 @@ jobs:
               --label org.opencontainers.image.version="$TAG" \
               --label org.opencontainers.image.licenses=MIT \
               --build-arg "NEXT_PUBLIC_SUPPORT_EMAIL=${{ vars.SUPPORT_EMAIL }}" \
+              --build-arg "NEXT_PUBLIC_REPO_URL=${{ vars.REPO_URL || format('https://github.com/{0}', github.repository) }}" \
               --provenance=mode=max --sbom=true --push "${tags[@]}" .
           done
 

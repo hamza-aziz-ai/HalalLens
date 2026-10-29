@@ -40,6 +40,10 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
+    // Public pages are always dark: drop the attribute when the dashboard unmounts.
+    return () => {
+      delete document.documentElement.dataset.theme;
+    };
   }, [theme]);
 
   const value = useMemo(

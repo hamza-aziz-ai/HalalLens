@@ -87,6 +87,7 @@ services:
       args:
         NEXT_PUBLIC_HALAL_API_BASE_URL: /api
         NEXT_PUBLIC_SUPPORT_EMAIL: ${SUPPORT_EMAIL:-support@${HALAL_APP_DOMAIN}}
+        NEXT_PUBLIC_REPO_URL: ${REPO_URL:-}
     depends_on:
       api:
         condition: service_healthy
