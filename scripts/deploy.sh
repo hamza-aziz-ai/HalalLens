@@ -20,7 +20,9 @@ git -c advice.detachedHead=false checkout -q "$TAG"
 echo "== deploying $(git describe --tags) ($(git rev-parse --short HEAD))"
 
 COMPOSE="docker compose -f docker-compose-prod.yml"
-IMAGE_REPOSITORY=$(sed -n 's/^IMAGE_REPOSITORY=//p' .env | tail -1)
+# tr: an .env edited on Windows has CRLF endings; a trailing CR would end up
+# inside the image reference ("invalid reference format").
+IMAGE_REPOSITORY=$(sed -n 's/^IMAGE_REPOSITORY=//p' .env | tail -1 | tr -d '\r')
 if [ -n "$IMAGE_REPOSITORY" ]; then
   export API_IMAGE="$IMAGE_REPOSITORY/halallens-api:$TAG"
   export UI_IMAGE="$IMAGE_REPOSITORY/halallens-ui:$TAG"
@@ -47,7 +49,7 @@ if [ "$state" != healthy ]; then
 fi
 
 echo "== smoke test through Caddy"
-host=$(sed -n 's/^HALAL_APP_DOMAIN=//p' .env | tail -1)
+host=$(sed -n 's/^HALAL_APP_DOMAIN=//p' .env | tail -1 | tr -d '\r')
 fail=0
 for path in /api/health /api/openapi.json / /products/; do
   code=$(curl -s -o /dev/null -w '%{http_code}' -H "Host: ${host:-localhost}" "http://127.0.0.1$path")
