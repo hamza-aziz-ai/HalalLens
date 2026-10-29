@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.11.1](https://github.com/hamza-aziz-ai/HalalLens/compare/v0.11.0...v0.11.1) (2026-10-29)
+
+
+### Bug Fixes
+
+* **ops:** read .env values without carriage returns in the deploy script ([#186](https://github.com/hamza-aziz-ai/HalalLens/issues/186)) ([714029b](https://github.com/hamza-aziz-ai/HalalLens/commit/714029bc6a9f88f7593bf4d8891c63bd8a84763c))
+
 ## [0.11.0](https://github.com/hamza-aziz-ai/HalalLens/compare/v0.10.0...v0.11.0) (2026-10-29)
 
 
