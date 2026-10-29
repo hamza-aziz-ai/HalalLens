@@ -2546,23 +2546,63 @@ async def auth_google_link_confirm(
 
 
 @app.get("/auth/google/callback")
-async def auth_google_callback(code: str, state: str, request: Request = None):
-    """Handle Google's redirect for a login or link flow started in this browser."""
+async def auth_google_callback(
+    request: Request = None,
+    code: Optional[str] = None,
+    state: Optional[str] = None,
+    error: Optional[str] = None,
+):
+    """Handle Google's redirect for a login or link flow started in this browser.
 
-    _ensure_google_oauth_enabled()
-    browser = request.cookies.get(OAUTH_BROWSER_COOKIE) if request is not None else None
-    flow = (
-        _get_db().consume_oauth_flow(
-            state_digest=hash_session_token(state), browser_digest=hash_session_token(browser)
+    This is a full-page navigation, not an API call: every failure redirects to
+    the login page (the account page for a link flow) with a reason code in the
+    fragment, and the detail goes to the log only. No raw JSON reaches the user.
+    """
+
+    flow: Optional[Dict[str, Any]] = None
+    try:
+        _ensure_google_oauth_enabled()
+        if error or not code or not state:
+            # error=access_denied: the user cancelled on Google's page.
+            return _google_callback_error("google_cancelled" if error else "google_failed", None, request)
+        browser = request.cookies.get(OAUTH_BROWSER_COOKIE) if request is not None else None
+        flow = (
+            _get_db().consume_oauth_flow(
+                state_digest=hash_session_token(state), browser_digest=hash_session_token(browser)
+            )
+            if browser
+            else None
         )
-        if browser
-        else None
-    )
-    if not flow:
-        raise HTTPException(
-            status_code=400,
-            detail="Google sign-in expired or was opened in another browser. Please start again.",
+        if not flow:
+            # Expired, already used, or completed in another browser (login CSRF).
+            return _google_callback_error("google_expired", None, request)
+        return _complete_google_callback(flow, code, request)
+    except HTTPException as exc:
+        api_logger.warning("Google callback failed: %s %s", exc.status_code, exc.detail)
+        reason = "google_unavailable" if exc.status_code >= 500 else "google_failed"
+        return _google_callback_error(reason, flow, request)
+
+
+def _google_callback_error(
+    reason: str, flow: Optional[Dict[str, Any]], request: Optional[Request]
+) -> RedirectResponse:
+    if flow and flow.get("purpose") == "link":
+        # A signed-in user on /login is bounced to the dashboard, so link
+        # failures go back to the account page instead.
+        base = (FRONTEND_BASE_URL or "").rstrip("/")
+        target = f"{base}/account/#{urlencode({'link_error': reason})}"
+    else:
+        target = _build_auth_error_redirect(
+            reason, _sanitize_google_redirect(flow.get("redirect")) if flow else None
         )
+    response = RedirectResponse(target, status_code=302)
+    response.delete_cookie(OAUTH_BROWSER_COOKIE, path=_oauth_cookie_path(request))
+    return response
+
+
+def _complete_google_callback(
+    flow: Dict[str, Any], code: str, request: Optional[Request]
+) -> RedirectResponse:
     redirect_base = _sanitize_google_redirect(flow.get("redirect"))
     token_data = _exchange_google_code(code)
     access_token = token_data.get("access_token")
@@ -2575,7 +2615,7 @@ async def auth_google_callback(code: str, state: str, request: Request = None):
         raise HTTPException(status_code=400, detail="Google profile missing identifiers")
     if profile.get("email_verified") is not True:
         # A missing claim is not proof of the mailbox.
-        raise HTTPException(status_code=403, detail="Google email not verified")
+        return _google_callback_error("google_unverified", flow, request)
 
     if flow["purpose"] == "link":
         # Prove the Google identity only; the signed-in session confirms it.

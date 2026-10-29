@@ -151,3 +151,20 @@ export async function fetchCurrentUser(): Promise<UserProfile | null> {
     return null;
   }
 }
+
+// Reasons a Google sign-in is refused (api/app.py _build_auth_error_redirect,
+// _google_callback_error); also used for link failures on the account page.
+export const GOOGLE_ERRORS: Record<string, string> = {
+  google_cancelled: "Google sign-in was cancelled.",
+  google_expired:
+    "That Google sign-in expired or was opened in another browser. Please try again.",
+  google_unverified:
+    "Google did not confirm this email address. Use a Google account with a verified email.",
+  google_unavailable:
+    "Google sign-in is temporarily unavailable. Please try again in a few minutes, or sign in with your password.",
+  google_failed: "Google sign-in failed. Please try again.",
+  account_exists:
+    "An account with this email already exists. Sign in with your password (or use 'Forgot password'), then link Google from your account.",
+  verify_email:
+    "This Google account is linked to a HalalLens account with a different email that is not verified yet. Use 'Forgot password' for that email first.",
+};

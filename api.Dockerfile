@@ -49,4 +49,6 @@ ENV POSTGRES_HOST=${POSTGRES_HOST}
 
 EXPOSE 8001
 
-CMD ["uvicorn", "api.app:app", "--host", "0.0.0.0", "--port", "8001"]
+# --no-access-log: uvicorn's access line includes the query string (Google's
+# OAuth code and state on the callback); the app logs method, path and status.
+CMD ["uvicorn", "api.app:app", "--host", "0.0.0.0", "--port", "8001", "--no-access-log"]

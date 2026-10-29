@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import clsx from "clsx";
 import {
+  GOOGLE_ERRORS,
   loginUser,
   registerUser,
   requestPasswordReset,
@@ -17,13 +18,6 @@ import SiteFooter from "@/components/site-footer";
 
 type Mode = "signin" | "signup" | "forgot";
 
-// Reasons a Google sign-in is refused (api/app.py _build_auth_error_redirect).
-const GOOGLE_ERRORS: Record<string, string> = {
-  account_exists:
-    "An account with this email already exists. Sign in with your password (or use 'Forgot password'), then link Google from your account.",
-  verify_email:
-    "This Google account is linked to a HalalLens account with a different email that is not verified yet. Use 'Forgot password' for that email first.",
-};
 
 const cardBase =
   "w-full rounded-3xl border border-white/10 bg-white/5 p-8 shadow-[0_25px_80px_rgba(3,7,18,0.6)] backdrop-blur";

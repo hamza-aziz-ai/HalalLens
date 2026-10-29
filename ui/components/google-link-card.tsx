@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import clsx from "clsx";
-import { confirmGoogleLink, startGoogleLink, takeFragmentParam } from "@/lib/auth";
+import { GOOGLE_ERRORS, confirmGoogleLink, startGoogleLink, takeFragmentParam } from "@/lib/auth";
 import { useAuth } from "@/providers/AuthProvider";
 
 /**
@@ -26,6 +26,11 @@ export function GoogleLinkCard({
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    const linkError = takeFragmentParam("link_error");
+    if (linkError) {
+      setError(GOOGLE_ERRORS[linkError] ?? "Linking failed. Start again.");
+      return;
+    }
     const code = takeFragmentParam("link");
     if (!code) return;
     confirmGoogleLink(code)
