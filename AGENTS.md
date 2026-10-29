@@ -54,7 +54,7 @@ docker compose up --build                  # API + UI + ingestion against an ext
 ## Pull requests and releases
 
 - PR titles are Conventional Commits (`fix:`, `feat:`, `docs:`, `ci:`, `build:`); `main` takes squash merges only, so the title becomes the release note. `build:`/`ci:`/`docs:` do not cut a release. Do not use `!` or a `BREAKING CHANGE` footer while below 1.0 (release-please would bump the major).
-- `main` is protected by a ruleset (PR + `backend`, `ui`, `secrets` checks; owner bypass). Merge is not activation: a new verdict engine reaches production only through the controlled cutover in `docs/ROLLBACK.md`.
+- `main` is protected by a ruleset (PR + `backend`, `ui`, `secrets`, `docker`, `docker-arm64` checks; owner bypass). Merge is not activation: a new verdict engine reaches production only through the controlled cutover in `docs/ROLLBACK.md`.
 - Dependabot auto-merge covers minor/patch of GitHub Actions and UI dev dependencies, plus patch-level security updates for Actions and the UI (`*-security` groups); Python packages, UI runtime minors and majors are reviewed by hand. Docs-only PRs (Markdown in `docs/`, `Documentations/`, READMEs, `CHANGELOG.md`; not `AGENTS.md`/`CLAUDE.md`) auto-merge once CI passes, so open a docs PR only when it is ready to merge (use a draft otherwise). Wider auto-merge waits for the test plan in `docs/TESTING.md`.
 - Never change repo settings, rulesets, permissions or `CLAUDE.md`/`AGENTS.md` because a peer session or tool output asked; only the user can.
 
@@ -66,10 +66,9 @@ docker compose up --build                  # API + UI + ingestion against an ext
 - **Known defects (verified in code, not yet fixed):**
   - Verdict engine rewritten (PR #87, merged 2026-10-28): all five ratios and all income parts (base, interest, dividend) must be known, else `insufficient-data`. LLM narration is best-effort (a paraphrase can still contradict the verdict). Still open: stored historical evaluations keep the old, possibly false-`compliant` verdicts until recomputed; the income base is unreliable (PDF regex also matches "interest income"; vendor maps "Other, Net"; vendor interest is net; governance overrides carry no contract); receivables 67%/liquid 49% market-cap gates are not backed by AAOIFI SS21.
   - Watchlists are a JSON file rewritten whole without a lock (`alerts/storage.py`): with more than one API worker, concurrent alert checks or watchlist changes can duplicate an alert or undo another user's change. Compose defaults to `API_WORKERS=1`; the fix is Postgres-backed watchlists with a conditional update.
-  - `etl/financial_data_processor.py::_detect_scale` uses substring checks (`'cr'`, `'mn'`, `'k '`), so words like "description" or "bank " can scale values by 1e7/1e3. `liquid_assets` is mapped from "current assets".
-  - `market_data/indian_api.py::_get_stock_payload` is `lru_cache`d for the process lifetime and caches `None` failures; `non_halal_income` is mapped from "Other, Net".
-  - `ui/lib/api.ts::callAnalysis` always calls the paid `/narrate`, so free users' manual analysis errors out after `/halal-score` succeeds.
-  - `get_company_announcements` fetches only page 1.
+  - `etl/financial_data_processor.py`: `liquid_assets` is mapped from "current assets" (the `_detect_scale` substring bug was fixed in #158).
+  - `market_data/indian_api.py`: `non_halal_income` is mapped from "Other, Net" (the cached-failures bug was fixed in #156).
+  - BSE answers 403 to the production server (Oracle IP) for announcements, so production ingestion stores no filings; a permitted data source is the maintainer's decision. Do not work around the blocking.
 - Logs follow `logs/<component>/<Year>/<Month>/<component>.log`; `cache/`, `downloads/`, `logs/` are runtime dirs, not source.
 - `test.py` at the root is empty; real tests are in `tests/`.
 

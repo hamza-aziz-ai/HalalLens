@@ -2,7 +2,24 @@
 
 Read first: [ARCHITECTURE.md](ARCHITECTURE.md), [CONSTRAINTS.md](CONSTRAINTS.md). Newest entry on top. Update last, every session.
 
-## Latest session: 2026-10-29 (model: Claude Opus 5.5, `claude-opus-5-5`): first production deployment
+## Latest session: 2026-10-29, later (model: Claude Opus 5.5, `claude-opus-5-5`): data, backups, monitoring, defects
+
+**Done**
+- v0.5.3 (#150): Bhavcopy reads BSE's UDiFF file and NSE's market caps from the daily price-report zip, matched by exact ticker before any fuzzy name match. In production, 28 Oct matched 2,497 companies.
+- v0.6.0 (#152): nightly `pg_dump` to `backups/postgres/` in R2, 14-day retention, deleted only after a successful upload; the first one is in R2. Deployed to the VM (the maintainer approved the deploy).
+- Uptime check (#154): `/api/health` every 30 minutes, opens an `uptime` issue on failure; `UPTIME_URL` repository variable set; the first run passed.
+- Defects fixed: free-tier manual analysis no longer fails on the paid `/narrate` (#155); Indian Stock API failures no longer cached for the life of the process, successes cached for 6 hours (#156); `_detect_scale` matches whole unit words (#158); company announcements follow every page with a bounded loop (#159). Releases v0.6.1 to v0.6.3.
+
+**In progress / next**
+- Deploy v0.6.3 to the VM: production deploys need the maintainer's approval (`bash ~/vm_deploy.sh v0.6.3` on the VM).
+- BSE announcements still answer 403 to the server: data-source decision pending with the maintainer.
+- Approved by the maintainer and in progress: `docker` and `docker-arm64` are now required checks on `main` (ruleset updated 2026-10-29); next the Next.js 15/16 upgrade and watchlists in Postgres (schema migration). Pull-only compose and runbook not started.
+
+**Broken or risky**
+- Filings parsed before #158 keep values scaled by the old substring rule; re-parse or `--recompute` is a maintainer-run step (no production filings yet).
+- Backups share the PDF bucket and its token; a separate bucket and token would isolate them.
+
+## Session: 2026-10-29 (model: Claude Opus 5.5, `claude-opus-5-5`): first production deployment
 
 **Done**
 - `https://halallens.in` is live: v0.5.2 runs on the Oracle A1 VM `halallens-prod` (Mumbai, 2 OCPU / 12 GB arm64, Ubuntu 24.04) behind the Cloudflare Tunnel. The VM was created by a CLI launch retry after "Out of host capacity" errors. Verified from the internet: `/`, `/login/`, `/api/health` and `/api/openapi.json` return 200. The VM's own address has no open app ports (80, 443, 5432 and 8001 closed); the host firewall allows only SSH. Preflight reached Postgres and the R2 bucket; the migrations applied; all services are healthy.
@@ -35,7 +52,7 @@ Read first: [ARCHITECTURE.md](ARCHITECTURE.md), [CONSTRAINTS.md](CONSTRAINTS.md)
 **Broken or risky**
 - Stored evaluations from the old engine may still say `compliant` until recomputed (no production data yet).
 - Watchlists are a JSON file rewritten without a lock: the API must run one worker until they move to Postgres.
-- `_detect_scale` substring scaling, the process-lifetime `lru_cache` of Indian Stock API failures, the free-tier `callAnalysis` always calling the paid `/narrate`, and announcements fetched from page 1 only (AGENTS.md "Known defects").
+- (Fixed on 2026-10-29: `_detect_scale` #158, the Indian Stock API failure cache #156, free-tier `callAnalysis` #155, company announcement paging #159.)
 - SSH to the Oracle VM is open to the internet by the maintainer's choice (key-only login; fail2ban and unattended upgrades planned on the VM).
 - Not yet seen live: a real R2 upload, the tunnel serving the site, Google sign-in and the Razorpay webhook on the `/api/` URLs. `docker` and `docker-arm64` are not required checks in the ruleset yet.
 
