@@ -1,0 +1,60 @@
+# Keep the Docker Hub repository pages in sync with docs/dockerhub/*.md.
+# Short descriptions are set below (Docker Hub limit: 100 characters).
+# Categories cannot be set through the API; pick them in Docker Hub's
+# repository settings (README_ops, "Published images").
+name: Docker Hub descriptions
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/dockerhub/**"
+      - ".github/workflows/dockerhub-description.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dockerhub-description
+  cancel-in-progress: true
+
+jobs:
+  sync:
+    if: vars.DOCKERHUB_NAMESPACE != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: publish
+    env:
+      NAMESPACE: ${{ vars.DOCKERHUB_NAMESPACE }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Update the repository descriptions
+        env:
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          [ -n "${DOCKERHUB_TOKEN:-}" ] || { echo "::error::DOCKERHUB_TOKEN is not set in the publish environment"; exit 1; }
+          jwt=$(jq -n --arg u "$NAMESPACE" --arg p "$DOCKERHUB_TOKEN" '{username: $u, password: $p}' \
+            | curl -sSf -H 'Content-Type: application/json' -d @- https://hub.docker.com/v2/users/login \
+            | jq -r .token)
+          echo "::add-mask::$jwt"
+          update() {
+            repo=$1 short=$2
+            [ "${#short}" -le 100 ] || { echo "::error::$repo short description over 100 characters"; exit 1; }
+            code=$(jq -n --arg d "$short" --rawfile f "docs/dockerhub/$repo.md" '{description: $d, full_description: $f}' \
+              | curl -sS -o response.json -w '%{http_code}' -X PATCH \
+                  -H "Authorization: Bearer $jwt" -H 'Content-Type: application/json' -d @- \
+                  "https://hub.docker.com/v2/repositories/$NAMESPACE/$repo/")
+            if [ "$code" != 200 ]; then
+              echo "::error::$repo: HTTP $code. The token needs Read, Write, Delete access to update descriptions."
+              jq -r '.message // .detail // .' response.json || true
+              exit 1
+            fi
+            echo "$repo: description updated"
+          }
+          update halallens-api "Shariah (AAOIFI) screening API for BSE-listed Indian equities: ratios, verdicts, alerts."
+          update halallens-ui "Web dashboard for HalalLens, Shariah screening of BSE-listed Indian equities."

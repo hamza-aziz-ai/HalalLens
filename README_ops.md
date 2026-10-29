@@ -50,6 +50,10 @@ The `backup` service in `docker-compose-prod.yml` runs `jobs.backup_postgres` on
   3. `docker compose -f docker-compose-prod.yml up -d`
 - Test a restore into a scratch database before relying on it (`createdb` a new name, restore there, compare row counts).
 
+### Docker Hub pages
+
+The Docker Hub descriptions of `halallens-api` and `halallens-ui` come from `docs/dockerhub/*.md` (full description) and `.github/workflows/dockerhub-description.yml` (short description). The workflow runs when those change on `main`, or by hand (Actions, Docker Hub descriptions, Run workflow). It uses `DOCKERHUB_NAMESPACE` and `DOCKERHUB_TOKEN` from the `publish` environment; updating a description needs a token with Read, Write, Delete access. Categories (up to three per repository) can only be set in Docker Hub's repository settings, not through the API.
+
 ### Indian Stock API quota
 
 The vendor plan is small (the free plan allows 500 requests per month). Every vendor call goes through `market_data/indian_api.py::_request_json`, which enforces `INDIAN_API_MONTHLY_LIMIT` (production default 450) with a counter in `cache/indian_api_quota.json` in the persistent `api_cache` volume, so the cap survives restarts. At the cap the app logs `Indian API monthly limit reached` and falls back to stored data and the free Bhavcopy files. In production the ingestion and evaluation schedulers run with the vendor turned off, so the quota is spent only on users' on-demand lookups. The API key is sent only in the `X-API-Key` header, never in a URL.
