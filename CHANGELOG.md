@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.2](https://github.com/hamza-aziz-ai/HalalLens/compare/v0.7.1...v0.7.2) (2026-10-29)
+
+
+### Bug Fixes
+
+* **auth:** email-first sign-up, password reset, and no admin or Google linking from an unproven email ([#172](https://github.com/hamza-aziz-ai/HalalLens/issues/172)) ([b32da3a](https://github.com/hamza-aziz-ai/HalalLens/commit/b32da3a8e200c5dea77bd15d0153b15158476af4))
+
 ## [0.7.1](https://github.com/hamza-aziz-ai/HalalLens/compare/v0.7.0...v0.7.1) (2026-10-29)
 
 
