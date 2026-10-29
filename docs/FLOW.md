@@ -664,40 +664,65 @@ Sources: `api/app.py::auth_google_start`, `api/app.py::_start_oauth_flow`, `api/
 ```mermaid
 flowchart TB
   C(["`**Subscriber**: paid, verified session`"])
-  WL[("`**watchlist_entries**: user id, symbol, trigger, last_is_compliant`")]
-  FIL[("`**Stored filings**: newest filing's evaluation and quality issues`")]
-  MAIL[("`**SMTP**: ALERT_EMAIL_RECIPIENT`")]
+  SCH(["`**Evaluation scheduler**: every EVALUATION_INTERVAL_MINUTES, after the precompute`"])
+  WL[("`**watchlist_entries**: last / notified verdict, retry state, observed evaluation`")]
+  FIL[("`**Stored filings**: newest filing's evaluation and open issues`")]
+  MAIL[("`**SMTP**: the subscriber's own verified address`")]
+
+  subgraph OBS["`**Observation** (alerts/storage.py, shared)`"]
+    direction TB
+    LOCK["`**3. Newest filing, D-027 filing lock**, read evaluation and open issues`"]
+    CONC{"`**4. Conclusive, consistent, no open issue?**`"}
+    NONE(["`**Nothing moves**`"])
+    TRANS{"`**5. Seed, then flip** (never an older observation)`"}
+    PEND(["`**Flip**: last differs from notified, pending`"])
+  end
 
   subgraph API["`**FastAPI**`"]
     direction TB
     ADD["`**1. POST /watchlist**: entry for the session's user id`"]
     CHK{"`**2. POST /alerts/check** allowed? paid, metered budget, symbol`"}
     EDENY(["`**401 / 402 / 429 / 422**`"])
-    READ["`**3. Read the stored verdict**: no vendor calls, no re-evaluation`"]
-    E503(["`**503** filing data unavailable`"])
-    CONC{"`**4. Conclusive, consistent, no open quality issue?**`"}
-    NONE(["`**No alert**, baseline unchanged`"])
-    TRANS{"`**5. Conditional update** of the caller's entry`"}
-    BASE(["`**Baseline set**, no alert`"])
-    SAME(["`**Same verdict or not watched**, no alert`"])
-    FLIP(["`**6. Flip**: alert event returned`"])
+    OPT["`**PUT /account/alert-emails**: the caller's own opt-out`"]
+  end
+
+  subgraph SEND["`**Sender** (alerts/delivery.py), one advisory lock`"]
+    direction TB
+    SW["`**6. Observe every watched symbol**`"]
+    KILL{"`**7. ALERT_EMAILS_ENABLED?**`"}
+    REB(["`**Silent rebaseline**: notified = last`"])
+    GUARD{"`**8. Per due pending row**: verified, opted in, paid now, source conclusive?`"}
+    SIL(["`**Silenced**: notified = last`"])
+    DEF(["`**Deferred**: try again in an hour`"])
+    TX["`**9. Send** old -> new verdict, stable Message-ID`"]
+    ACK(["`**10. Compare-and-set** notified = what was sent`"])
+    FAIL(["`**SMTP failure**: backoff, stop after 5`"])
   end
 
   C --> ADD
   ADD -.->|"`insert, keep baseline`"| WL
   C --> CHK
   CHK -->|"`no`"| EDENY
-  CHK -->|"`yes`"| READ
-  READ -.->|"`reads verdict, issues`"| FIL
-  READ -->|"`lookup fails`"| E503
-  READ --> CONC
+  CHK -->|"`yes, caller's row only`"| LOCK
+  C --> OPT
+  SCH --> SW
+  SW -->|"`all rows`"| LOCK
+  LOCK -.->|"`reads`"| FIL
+  LOCK --> CONC
   CONC -->|"`no`"| NONE
   CONC -->|"`yes`"| TRANS
-  TRANS -.->|"`seed, then flip`"| WL
-  TRANS -->|"`baseline was null`"| BASE
-  TRANS -->|"`matched nothing`"| SAME
-  TRANS -->|"`verdict changed`"| FLIP
-  FLIP -.->|"`**7. best-effort email**`"| MAIL
+  TRANS -.->|"`conditional UPDATE`"| WL
+  TRANS --> PEND
+  SW --> KILL
+  KILL -->|"`off`"| REB
+  KILL -->|"`on`"| GUARD
+  GUARD -->|"`not eligible`"| SIL
+  GUARD -->|"`source unknown or blocked`"| DEF
+  GUARD -->|"`yes`"| TX
+  TX -.-> MAIL
+  TX -->|"`handed to SMTP`"| ACK
+  TX -->|"`error`"| FAIL
+  ACK -.-> WL
 
   classDef ingress fill:#dbeafe,stroke:#1d4ed8,color:#0f172a
   classDef step fill:#dcfce7,stroke:#15803d,color:#0f172a
@@ -705,22 +730,25 @@ flowchart TB
   classDef outcome fill:#ede9fe,stroke:#6d28d9,color:#0f172a
   classDef store fill:#f1f5f9,stroke:#475569,color:#0f172a
   classDef error fill:#fee2e2,stroke:#b91c1c,color:#0f172a
-  class C ingress
-  class ADD,READ step
-  class CHK,CONC,TRANS decision
-  class NONE,BASE,SAME,FLIP outcome
+  class C,SCH ingress
+  class ADD,OPT,LOCK,SW,TX step
+  class CHK,CONC,TRANS,KILL,GUARD decision
+  class NONE,PEND,REB,SIL,DEF,ACK outcome
   class WL,FIL,MAIL store
-  class EDENY,E503 error
+  class EDENY,FAIL error
 ```
 
-Key: as in section 1; dotted arrows are database reads and writes and the email. Read top to bottom from the subscriber.
+Key: as in section 1; dotted arrows are database reads and writes and the email. Read top to bottom from the subscriber, then from the scheduler.
 
 1. `POST /watchlist` (paid, "Watchlist alerts") stores `(user_id, symbol, compliance_flip)` in Postgres for the session's user id, never a user id from the request; re-adding keeps the stored baseline (`ON CONFLICT DO NOTHING`). `GET /watchlist/{user_id}` ignores the path id and lists only the caller's entries. Storage failures are 503, never an empty list (D-019).
-2. `POST /alerts/check` takes only a symbol. It needs a paid, verified session (401 or 402), charges the caller's `metered` bucket (429) and rejects a blank symbol (422).
-3. `_stored_alert_verdict` reads the newest filing's stored evaluation and its open quality issues; the caller cannot supply a verdict. A database failure is 503, never "no issues".
-4. Only a consistent conclusive pair (`compliant` with `true`, or `non-compliant` with `false`) and no open quality issue counts. No filing, no evaluation, `insufficient-data`, `needs-review` or an open issue returns no alert and leaves the baseline alone, so `True -> unknown -> False` still flips exactly once.
-5. `AlertEngine.process_verdict` moves only the caller's own entry for that symbol. `WatchlistStorage.transition` first seeds a null baseline, and only if that matched nothing tries the flip (`last_is_compliant` differs), each as one conditional `UPDATE`, so concurrent checks with the same verdict produce exactly one flip. A first verdict sets the baseline; the same verdict, or a symbol the caller does not watch, matches nothing.
-6. A flip returns one event to the caller ("SYMBOL compliance flipped to Halal" or "Non-Halal").
-7. `EmailNotifier.send` emails the event to the configured `ALERT_EMAIL_RECIPIENT`, an operator address rather than the subscriber's own. It is best effort: the baseline is already committed, SMTP errors are logged and swallowed, and nothing is sent when SMTP is not configured, so there is no exactly-once delivery.
+2. `POST /alerts/check` takes only a symbol. It needs a paid, verified session (401 or 402), charges the caller's `metered` bucket (429) and rejects a blank symbol (422). It observes the caller's own row only and never sends mail; a flip is returned as an event and left pending for the sender.
+3. `WatchlistStorage.observe` (shared by the route and the scheduler, no web framework imports) finds the newest filing with a parsed snapshot (symbol or alias), takes that filing's D-027 advisory lock (the lock publication and quality-issue writes take first) and reads its stored evaluation and open issues in the same transaction. The caller cannot supply a verdict. A database failure raises: 503 in the route, a counted error in the scheduler, never "no issues".
+4. Only a consistent conclusive pair (`compliant` with `true`, or `non-compliant` with `false`) and no open quality issue counts. Anything else moves nothing, so `True -> unknown -> False` still flips exactly once.
+5. A null row is seeded silently (`last` and `notified` both set), then the flip runs as one conditional `UPDATE` per statement on rows whose `last` differs, only if the stored observation (`observed_filing_date`, `observed_evaluated_at`) is not newer than this one. A flip resets the retry state. Concurrent identical observations produce one flip per row.
+6. Each scheduler run (`jobs/schedule_evaluations.py`, separately from the precompute's success) calls `alerts.delivery.run_once`: under one session-level advisory lock (`pg_try_advisory_lock(20261030, 1)` on its own connection; a second sender skips), it observes every watched symbol.
+7. With `ALERT_EMAILS_ENABLED=false` (the default) every pending row is silently rebaselined (`notified = last`), so nothing accumulates or replays when it is switched on.
+8. Otherwise the due pending rows are taken never-tried first, then longest-waiting, at most 5 per user and 50 per run, skipping terminally failed rows. For each: the source is observed again; a deleted row is skipped; a verdict that went back to the notified one leaves nothing to send; an unverified, opted-out or no-longer-paid user (paid = admin or a current grant through `api.billing.project`, including a Lifetime overlay) is rebaselined silently; an unknown or blocked source defers the row an hour without counting a failure.
+9. One plain-text email to the user's own verified address through `api/mailer.py`: symbol, old -> new verdict, filing date, a link to `FRONTEND_BASE_URL/analysis?symbol=...`, "not a fatwa and not investment advice", and a "Manage alerts" link to the account page. The Message-ID is derived from the watch row and the observed evaluation, so a resend is the same message.
+10. On SMTP acceptance the sender sets `notified` to what it sent, only if `notified` is still what it read (compare-and-set). If the verdict moved back during the send, that leaves a corrective alert pending. On an SMTP error the attempt is counted, retried after 15 min, 30 min, 1 h, 2 h, and stopped after 5 (`notify_failed_at`) until the verdict changes again. Delivery is at least once: a crash between SMTP acceptance and the acknowledgement resends next run. Logs and ops alerts carry counts and error classes only, never addresses.
 
-Sources: `api/app.py::add_watchlist`, `api/app.py::list_watchlist`, `api/app.py::check_alerts`, `api/app.py::_stored_alert_verdict`, `api/app.py::_watchlist_owner`, `alerts/engine.py::AlertEngine.process_verdict`, `alerts/storage.py::WatchlistStorage.add`, `alerts/storage.py::WatchlistStorage.transition`, `alerts/notifier.py::EmailNotifier.send`. Decision: D-019.
+Sources: `api/app.py::add_watchlist`, `api/app.py::list_watchlist`, `api/app.py::check_alerts`, `api/app.py::put_alert_emails`, `alerts/engine.py::AlertEngine.check`, `alerts/storage.py::WatchlistStorage.observe`, `alerts/storage.py::WatchlistStorage.pending`, `alerts/storage.py::WatchlistStorage.acknowledge`, `alerts/delivery.py::run`, `alerts/delivery.py::deliver`, `alerts/delivery.py::run_locked`, `jobs/schedule_evaluations.py::_alert_emails_step`, `ui/components/alert-emails-card.tsx`. Decisions: D-019, D-027, D-031.

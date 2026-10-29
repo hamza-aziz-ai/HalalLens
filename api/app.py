@@ -28,7 +28,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from alerts import AlertEngine, AlertEvent, WatchEntry, WatchlistStorage, EmailNotifier, owner_key
+from alerts import AlertEngine, AlertEvent, WatchEntry, WatchlistStorage, owner_key
 from config import (
     LLM_API_KEY,
     LLM_ENDPOINT,
@@ -45,12 +45,6 @@ from config import (
     NARRATION_CACHE_TTL_SECONDS,
     HISTORY_CACHE_TTL_SECONDS,
     RECENT_CACHE_TTL_SECONDS,
-    SMTP_HOST,
-    SMTP_PORT,
-    SMTP_USERNAME,
-    SMTP_PASSWORD,
-    ALERT_EMAIL_SENDER,
-    ALERT_EMAIL_RECIPIENT,
     ALLOWED_ORIGINS,
     ALLOWED_ORIGIN_REGEX,
     DEFAULT_ALLOWED_ORIGINS,
@@ -575,14 +569,6 @@ except Exception:  # pragma: no cover
     )
     DB_MANAGER = None
 SYMBOL_METADATA_CACHE: Dict[str, Dict[str, str]] = {}
-email_notifier = EmailNotifier(
-    SMTP_HOST,
-    SMTP_PORT,
-    SMTP_USERNAME,
-    SMTP_PASSWORD,
-    ALERT_EMAIL_SENDER,
-    ALERT_EMAIL_RECIPIENT,
-)
 market_logger = logging.getLogger("market_data")
 MARKET_CACHE: Dict[
     str, tuple[float, tuple[Optional[float], Optional[float], Optional[str]]]
@@ -3619,10 +3605,12 @@ async def check_alerts(
     payload: AlertCheckPayload,
     authorization: Optional[str] = Header(None),
 ) -> List[AlertEventPayload]:
-    """Evaluate compliance flip alerts for a symbol.
+    """Observe the stored verdict of a symbol for the caller's own watch entry.
 
-    Authenticated because a flip sends operator email; leaving it open turned
-    the endpoint into an unauthenticated mail trigger.
+    Observation only (D-031): a flip becomes a pending alert email that the
+    evaluation scheduler sends to the subscriber; this route never sends mail.
+    The verdict comes from the stored evaluation (alerts/storage.py
+    ``observe``), never from the request. Lookup failures are 503.
     """
 
     session = _require_paid_feature(authorization, "Watchlist alerts")
@@ -3632,49 +3620,39 @@ async def check_alerts(
     if not symbol:
         raise HTTPException(status_code=422, detail="symbol is required")
 
-    is_compliant = _stored_alert_verdict(symbol)
-    # Only the caller's own entries are read or moved (alerts/engine.py).
+    # Only the caller's own entry is read or moved (alerts/engine.py).
     with _watchlist_storage_errors("alert check"):
-        events: List[AlertEvent] = alert_engine.process_verdict(
-            symbol, is_compliant, user_id=owner
-        )
-    # Best-effort: the baseline is already updated and send() swallows SMTP
-    # errors, so there is no exactly-once delivery.
-    for event in events:
-        email_notifier.send(event)
+        events: List[AlertEvent] = alert_engine.check(symbol, user_id=owner)
     return [AlertEventPayload(**asdict(event)) for event in events]
 
 
-def _stored_alert_verdict(symbol: str) -> Optional[bool]:
-    """Conclusive stored verdict of the symbol's newest filing, else None.
+class AlertEmailsPayload(BaseModel):
+    """Whether compliance-flip alerts are emailed to the account's own address."""
 
-    Read-only: no vendor calls and no re-evaluation. None (no alert, baseline
-    untouched) when the newest filing has no evaluation, the stored pair is not
-    a consistent conclusive verdict, or the filing has open quality issues.
-    Lookup failures are 503, never "no issues".
-    """
+    model_config = ConfigDict(extra="forbid")
 
-    db = _get_db()
-    try:
-        record = db.get_latest_filing(symbol)
-    except Exception:
-        api_logger.exception("Alert check: filing lookup failed for %s", symbol)
-        raise HTTPException(status_code=503, detail="Filing data unavailable")
-    if not record:
-        return None
-    verdict, is_compliant = record.get("verdict"), record.get("is_compliant")
-    if not (
-        (verdict == "compliant" and is_compliant is True)
-        or (verdict == "non-compliant" and is_compliant is False)
-    ):
-        return None
-    try:
-        # Canonical symbol: get_latest_filing also matches aliases.
-        issues = db.get_quality_issues(record["symbol"], record["filing_date"])
-    except Exception:
-        api_logger.exception("Alert check: quality lookup failed for %s", symbol)
-        raise HTTPException(status_code=503, detail="Filing data unavailable")
-    return None if issues else is_compliant
+    enabled: bool
+
+
+@app.get("/account/alert-emails", response_model=AlertEmailsPayload)
+async def get_alert_emails(authorization: Optional[str] = Header(None)) -> AlertEmailsPayload:
+    """The caller's alert-email setting. Authenticated, not paid: opting out must work after access ends."""
+
+    _, session = _require_session(authorization)
+    with _watchlist_storage_errors("alert email setting"):
+        return AlertEmailsPayload(enabled=watch_storage.get_alert_emails(_watchlist_owner(session)))
+
+
+@app.put("/account/alert-emails", response_model=AlertEmailsPayload)
+async def put_alert_emails(
+    payload: AlertEmailsPayload, authorization: Optional[str] = Header(None)
+) -> AlertEmailsPayload:
+    """Turn the caller's own alert emails on or off (never another account's)."""
+
+    _, session = _require_session(authorization)
+    with _watchlist_storage_errors("alert email setting"):
+        enabled = watch_storage.set_alert_emails(_watchlist_owner(session), payload.enabled)
+    return AlertEmailsPayload(enabled=enabled)
 
 
 class FilingResponse(BaseModel):

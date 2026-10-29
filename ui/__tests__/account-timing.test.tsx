@@ -26,6 +26,7 @@ jest.mock("@/lib/billing", () => ({
 }));
 jest.mock("@/lib/auth", () => ({ logoutUser: jest.fn() }));
 jest.mock("@/components/google-link-card", () => ({ GoogleLinkCard: () => null }));
+jest.mock("@/components/alert-emails-card", () => ({ AlertEmailsCard: () => null }));
 jest.mock("@/providers/ThemeProvider", () => ({ useTheme: () => ({ theme: "dark" }) }));
 jest.mock("@/providers/AuthProvider", () => {
   const user = { id: 42, email: "buyer@example.com", plan: "annual", subscription_status: "active" };

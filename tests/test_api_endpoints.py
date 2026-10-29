@@ -140,11 +140,11 @@ def test_halal_score_handler_requires_market_cap():
 
 
 @pytest.fixture()
-def isolated_watch_storage():
+def isolated_watch_storage(monkeypatch):
     storage = MemoryWatchlistStorage()
-    api_module.watch_storage = storage
-    api_module.alert_engine = AlertEngine(storage)
-    yield
+    monkeypatch.setattr(api_module, "watch_storage", storage)
+    monkeypatch.setattr(api_module, "alert_engine", AlertEngine(storage))
+    yield storage
 
 
 def test_watchlist_and_alert_handlers(isolated_watch_storage, paid_access, monkeypatch):
@@ -165,24 +165,15 @@ def test_watchlist_and_alert_handlers(isolated_watch_storage, paid_access, monke
     assert items[0].user_id == "user:1"
 
     # The verdict comes from the stored evaluation, never from the request.
-    stored = {"verdict": "compliant", "is_compliant": True}
-
-    class FilingDB:
-        def get_latest_filing(self, symbol):
-            return {"symbol": symbol, "filing_date": datetime(2026, 1, 1), **stored}
-
-        def get_quality_issues(self, symbol, filing_date):
-            return []
-
-    monkeypatch.setattr(api_module, "_get_db", lambda: FilingDB())
-    monkeypatch.setattr(api_module.email_notifier, "send", lambda event: None)
+    stored = {"verdict": "compliant", "is_compliant": True, "filing_date": datetime(2026, 1, 1), "evaluated_at": datetime(2026, 1, 2)}
+    isolated_watch_storage.filings["INFY"] = stored
 
     assert _run(api_module.check_alerts(AlertCheckPayload(symbol="INFY"))) == []
     # A caller claiming a flip changes nothing: the stored verdict is unchanged.
     spoofed = AlertCheckPayload.model_validate({"symbol": "INFY", "is_compliant": False})
     assert _run(api_module.check_alerts(spoofed)) == []
 
-    stored.update(verdict="non-compliant", is_compliant=False)
+    stored.update(verdict="non-compliant", is_compliant=False, evaluated_at=datetime(2026, 1, 3))
     events = _run(api_module.check_alerts(AlertCheckPayload(symbol="infy")))
     assert len(events) == 1
     assert events[0].user_id == "user:1"

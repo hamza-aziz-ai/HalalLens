@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Scheduler that precomputes filing evaluations on a fixed interval."""
+"""Scheduler that precomputes filing evaluations, then sends compliance-flip alert emails, on a fixed interval."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ from pathlib import Path
 
 from config.logging_config import configure_logging
 from monitoring.notifier import OpsNotifier
+from alerts.delivery import run_once as run_alert_emails
 from jobs.precompute_evaluations import run_precompute
 
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
@@ -53,6 +54,27 @@ def _record_metrics(
     payload.update(extra)
     with METRICS_PATH.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(payload) + "\n")
+
+
+def _alert_emails_step() -> None:
+    """Alert emails (D-031), independent of whether the precompute succeeded.
+
+    Ops alerts carry counts and error classes only, never addresses.
+    """
+
+    try:
+        counts = run_alert_emails()
+    except Exception as exc:
+        logger.exception("Alert email step failed")
+        OPS_NOTIFIER.notify("ERROR", "Alert email step failed", details=type(exc).__name__)
+        return
+    failed = counts["failed"] + counts["failed_terminal"] + counts["row_error"] + counts["observe_error"]
+    if failed:
+        OPS_NOTIFIER.notify(
+            "WARNING",
+            f"Alert email step: {failed} failure(s)",
+            details=", ".join(f"{k}={v}" for k, v in sorted(counts.items())),
+        )
 
 
 def main() -> None:
@@ -100,6 +122,7 @@ def main() -> None:
             )
         finally:
             _record_heartbeat()
+        _alert_emails_step()
         due = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(minutes=SLEEP_MINUTES)
         logger.info("Next run scheduled at ~%s UTC", due.isoformat())
         time.sleep(SLEEP_MINUTES * 60)

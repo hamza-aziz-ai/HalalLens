@@ -12,7 +12,7 @@ One page. Trust boundaries are marked **[B]**. Deeper docs: [FLOW.md](FLOW.md), 
 | `ratio_engine/`                 | The five ratios and the **only** verdict derivation (`engine.py`), `summary.py`, `amounts.py`                                           |
 | `evaluation/`                   | Shared publication overlay (`quality.py`, D-027): ratio-anomaly detector and the policy that masks the engine's pair as `needs-review` while any quality issue is open |
 | `narrator/`                     | Explain-why text: rule-based by default; optional LLM text for conclusive verdicts behind a best-effort guard (`narrator/explainer.py`) |
-| `alerts/`                       | Watchlists in Postgres, flip detection, SMTP notifier                                                                                   |
+| `alerts/`                       | Watchlists in Postgres, flip observation, alert emails to subscribers sent by the evaluation scheduler (D-031)                          |
 | `crawler/`, `etl/`, `jobs/`     | BSE announcements -> PDF/XBRL parsing -> Postgres + S3-compatible store (R2 in production, MinIO locally); schedulers                   |
 | `market_data/`                  | Indian Stock API and Bhavcopy market caps                                                                                               |
 | `database/`                     | `schema.sql`, `database_manager.py`, dated migrations                                                                                   |
@@ -356,7 +356,7 @@ Key: green boxes are the containers that write; grey cylinders are Postgres doma
 | Access projection | `users.plan`, `users.subscription_status`, `users.subscription_renewal` | Written only with a grant change, in the same per-user locked transaction | api route tiers; an expired projection is refreshed from the grants |
 | Refunds (D-025) | `payment_refunds`, `refund_actions` | api (webhook refunds, settles refund actions); billing-reconcile (refunds made elsewhere, automatic refunds with TEST keys only) | billing-reconcile; api |
 | Reconciler state (D-025) | `billing_reconcile_state`, `billing_tracked` | billing-reconcile | billing-reconcile; api (`/health/billing` heartbeat) |
-| Watchlists (D-019) | `watchlist_entries` | api (paid users, keyed by the session's user id) | api (`/alerts/check`) |
+| Watchlists (D-019, D-031) | `watchlist_entries`, `users.alert_emails` | api (paid users, keyed by the session's user id; `/alerts/check` observes the caller's row) and the evaluation scheduler (observes every row, sends and acknowledges alert emails) | api (`/watchlist`, `/alerts/check`, `/account/alert-emails`), evaluation scheduler |
 | Feedback | `feedback_reports`, `feedback_events` | api (public create, admin triage) | api (admins; the reporter by tracking token) |
 | Legacy | `user_subscriptions` | nothing (pre-ledger, kept for history) | nothing |
 | Objects in R2 | Filing PDFs; `backups/postgres/<db>-<timestamp>.dump` | ingestion (PDFs); backup (daily `pg_dump`, deletes dumps older than 14 days after a successful upload) | restore by hand ([README_ops.md](../README_ops.md)) |
