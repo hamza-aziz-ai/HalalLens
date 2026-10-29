@@ -39,8 +39,8 @@ function AppShell({ children }: { children: React.ReactNode }) {
 
   const shellClass =
     theme === "dark"
-      ? "bg-[radial-gradient(1200px_circle_at_12%_-10%,rgba(14,116,144,0.35),transparent_45%),radial-gradient(900px_circle_at_85%_0%,rgba(16,185,129,0.18),transparent_40%),radial-gradient(700px_circle_at_70%_85%,rgba(251,191,36,0.12),transparent_45%),#05070d] text-slate-100"
-      : "bg-[radial-gradient(900px_circle_at_20%_-10%,rgba(14,116,144,0.16),transparent_45%),radial-gradient(800px_circle_at_85%_0%,rgba(16,185,129,0.12),transparent_40%),#f5f7fb] text-slate-900";
+      ? "bg-[#05070d] bg-[image:radial-gradient(1200px_circle_at_12%_-10%,rgba(14,116,144,0.35),transparent_45%),radial-gradient(900px_circle_at_85%_0%,rgba(16,185,129,0.18),transparent_40%),radial-gradient(700px_circle_at_70%_85%,rgba(251,191,36,0.12),transparent_45%)] text-slate-100"
+      : "bg-[#f5f7fb] bg-[image:radial-gradient(900px_circle_at_20%_-10%,rgba(14,116,144,0.16),transparent_45%),radial-gradient(800px_circle_at_85%_0%,rgba(16,185,129,0.12),transparent_40%)] text-slate-900";
 
   return (
     <div className={clsx("min-h-screen", shellClass)}>

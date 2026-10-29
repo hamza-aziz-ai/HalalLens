@@ -5,7 +5,7 @@ import { policyBodyClass, policyCardClass } from "@/components/policy-layout";
 // Exported as 404.html; the UI image's Caddy serves it for every unknown path.
 export default function NotFound() {
   return (
-    <main className="flex min-h-screen flex-col bg-[radial-gradient(1200px_circle_at_10%_-10%,rgba(14,116,144,0.35),transparent_45%),radial-gradient(900px_circle_at_85%_0%,rgba(16,185,129,0.18),transparent_40%),#05070d] px-4 py-12 text-slate-100">
+    <main className="flex min-h-screen flex-col bg-[#05070d] bg-[image:radial-gradient(1200px_circle_at_10%_-10%,rgba(14,116,144,0.35),transparent_45%),radial-gradient(900px_circle_at_85%_0%,rgba(16,185,129,0.18),transparent_40%)] px-4 py-12 text-slate-100">
       <div className="mx-auto flex w-full max-w-2xl flex-1 flex-col justify-center gap-8">
         <section className={`${policyCardClass} text-center`}>
           <p className="text-xs uppercase tracking-[0.2em] text-cyan-300/80">HalalLens · 404</p>
