@@ -44,12 +44,88 @@ Store secrets in a `.env` file, Docker secrets, or whichever secret manager your
 The `backup` service in `docker-compose-prod.yml` runs `jobs.backup_postgres` once a day (`BACKUP_INTERVAL_HOURS`, default 24). Each run writes a `pg_dump --format=custom` of the app database to `backups/postgres/<db>-<UTC timestamp>.dump` in `MINIO_BUCKET` (R2 in production), then deletes backups under that prefix older than `BACKUP_RETENTION_DAYS` (default 14). Old copies are deleted only after a successful upload; a failed run logs `Backup failed`, notifies through the ops notifier and retries after an hour. The dumps hold user accounts (emails, password hashes, session digests): keep the bucket private and the token scoped to it.
 
 - Back up now: `docker compose -f docker-compose-prod.yml exec -T backup python -m jobs.backup_postgres` (one run inside the running service; `run backup ...` would append to its `--loop` entrypoint).
-- **Use the API image's `pg_restore`, not the Postgres container's.** The dumps are written by the API image's `pg_dump` (17); Postgres 14's own `pg_restore` refuses them with `unsupported version (1.16) in file header`. One error during a restore is expected and harmless: `unrecognized configuration parameter "transaction_timeout"` (a 17-only setting).
+- **Use the API image's `pg_restore`.** The dumps are written by the API image's `pg_dump`, whose version follows the API base image (17 from Debian trixie), not the Postgres container. Production runs Postgres 17 since 2026-10-29 (D-029), so client and server now match. Historical, for dumps restored into a 14 server: Postgres 14's own `pg_restore` refused them (`unsupported version (1.16) in file header`), and the restore logged one harmless error, `unrecognized configuration parameter "transaction_timeout"` (a 17-only setting).
 - Restore: download a `.dump` from the bucket (Cloudflare dashboard, or any S3 client) into `/opt/halallens/halallens.dump`, then stop the writers and restore into the running Postgres:
   1. `docker compose -f docker-compose-prod.yml stop api ingestion evaluation backup billing-reconcile`
   2. `docker compose -f docker-compose-prod.yml run --rm --no-deps -T -v "$PWD/halallens.dump:/tmp/restore.dump:ro" --entrypoint sh backup -c 'PGPASSWORD="$POSTGRES_PASSWORD" pg_restore --clean --if-exists --no-owner -h "$POSTGRES_HOST" -U "$POSTGRES_USER" -d "$POSTGRES_DB" /tmp/restore.dump'`
   3. `docker compose -f docker-compose-prod.yml up -d`
-- Restore drill: restore the newest dump into a throwaway `postgres:14` container started with `--network none`, run the API image's `pg_restore` inside its network namespace (`docker run --network container:<throwaway> --entrypoint pg_restore <api image> ... -h 127.0.0.1`), and compare `count(*)` per table with live. Last drill 2026-10-29: 20 of 20 tables matched, including 34,959 `market_data_snapshots` rows. Repeat monthly and after any Postgres or API base-image upgrade.
+- Restore drill: restore the newest dump into a throwaway `postgres:17.11-trixie` container started with `--network none`, run the API image's `pg_restore` inside its network namespace (`docker run --network container:<throwaway> --entrypoint pg_restore <api image> ... -h 127.0.0.1`), and compare `count(*)` per table with live. Last drill 2026-10-29 (into Postgres 14, before the upgrade): 20 of 20 tables matched, including 34,959 `market_data_snapshots` rows. Repeat monthly and after any Postgres or API base-image upgrade.
+
+### Postgres major upgrade (14 -> 17, 2026-10-29)
+
+Postgres 14 reaches end of life on 2026-11-12. The upgrade is a dump and restore into a new volume (D-029): `docker-compose-prod.yml` now runs `postgres:17.11-trixie` on the volume `postgres17_data`, and the old volume `postgres_data` (on the server `halallens_postgres_data`) keeps the 14 files untouched as the rollback. The database is small (21 MB), so the window is minutes; the site shows the maintenance page meanwhile, and the uptime workflow will open an issue during the window. Run everything on the VM in `/opt/halallens`. `OLD` is the release running now, `NEW` the first release with this change.
+
+- **Checkpoints:** stop at A, B or C if a check fails and take that checkpoint's way back; nothing before W4 touches the old volume.
+- **Credentials and tools:** every client command runs in a one-off container of the `backup` service (the API image: `pg_dump`, `pg_restore`, `psql` 17, credentials from `.env`). Dumps travel through stdin and stdout because the image runs as user 10001 and cannot read the private `upgrade/` directory.
+- **`REQUIRE_EXISTING_DB=1`** makes `scripts/run_migrations.sh` refuse an empty database instead of creating a fresh schema, so a deploy onto the new, still-empty volume fails loudly instead of starting an empty site. Keep it in production's `.env` from now on.
+
+```bash
+cd /opt/halallens
+C="docker compose -f docker-compose-prod.yml"
+export API_IMAGE=$(docker inspect -f '{{.Config.Image}}' "$($C ps -q -a api)")
+OLD=$(git describe --tags --exact-match); NEW=vX.Y.Z   # NEW: the release with D-029
+psqlc() { $C run --rm --no-deps -T --entrypoint sh backup -c 'PGPASSWORD="$POSTGRES_PASSWORD" exec psql -X -v ON_ERROR_STOP=1 -tA -h "$POSTGRES_HOST" -U "$POSTGRES_USER" -d "$POSTGRES_DB" "$@"' sh "$@"; }
+dumpdb() { $C run --rm --no-deps -T --entrypoint sh backup -c 'PGPASSWORD="$POSTGRES_PASSWORD" exec pg_dump --format=custom --no-owner -h "$POSTGRES_HOST" -U "$POSTGRES_USER" -d "$POSTGRES_DB"'; }
+
+# P0, before the window (writers still running)
+git status --short                       # must print nothing
+echo "OLD=$OLD NEW=$NEW"                 # write both down
+docker pull postgres:17.11-trixie
+umask 077; mkdir -p upgrade
+dumpdb > upgrade/rehearse.dump
+docker run -d --rm --name pg17rehearse --network none -e POSTGRES_PASSWORD=x postgres:17.11-trixie
+until docker exec pg17rehearse pg_isready -q -h 127.0.0.1; do sleep 2; done   # TCP: ready only after init
+docker run --rm -i --network container:pg17rehearse -e PGPASSWORD=x --entrypoint pg_restore "$API_IMAGE" -1 --no-owner -h 127.0.0.1 -U postgres -d postgres < upgrade/rehearse.dump; echo "rc=$?"   # must be 0
+docker rm -f pg17rehearse; rm upgrade/rehearse.dump
+cat > upgrade/counts.sql <<'SQL'
+SELECT 'table ' || table_name || ' ' || (xpath('/row/c/text()', query_to_xml(format('SELECT count(*) AS c FROM public.%I', table_name), false, true, '')))[1]::text
+  FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
+UNION ALL
+SELECT 'seq ' || sequencename || ' ' || coalesce(last_value::text, 'unset')
+  FROM pg_sequences WHERE schemaname = 'public'
+ORDER BY 1;
+SQL
+
+# W1, freeze (compose still on 14)
+$C stop api ingestion evaluation backup billing-reconcile    # Caddy now serves the maintenance page
+psqlc -c "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid()"   # must be 0
+psqlc < upgrade/counts.sql > upgrade/counts14.txt; wc -l upgrade/counts14.txt
+dumpdb > upgrade/halallens-pg14.dump && sha256sum upgrade/halallens-pg14.dump | tee upgrade/halallens-pg14.dump.sha256
+docker run --rm -i --entrypoint pg_restore "$API_IMAGE" -l < upgrade/halallens-pg14.dump | grep -c 'TABLE DATA'   # must be > 0
+# Off-site copy under backups/upgrade/ (the nightly prune only touches backups/postgres/); prints the stored size
+$C run --rm --no-deps -T --entrypoint sh backup -c 'cat > /tmp/d && python3 -c "from config import MINIO_BUCKET as b; from etl.minio_client import make_storage_client as m; c = m(); k = \"backups/upgrade/halallens-pg14.dump\"; c.fput_object(b, k, \"/tmp/d\"); print(c.stat_object(b, k).size)"' < upgrade/halallens-pg14.dump
+stat -c %s upgrade/halallens-pg14.dump   # must equal the size printed above
+# Checkpoint A. Way back: $C start api ingestion evaluation backup billing-reconcile   (still 14)
+
+# W2, start 17 on the new, empty volume
+sed -i '/^REQUIRE_EXISTING_DB=/d' .env && echo REQUIRE_EXISTING_DB=1 >> .env
+git fetch -q --tags origin && git checkout -q "$NEW"
+$C config -q
+$C up -d --no-deps postgres
+# The image's init server listens on the socket only, and the compose healthcheck can pass during init: wait over TCP
+$C run --rm --no-deps -T --entrypoint sh backup -c 'until pg_isready -q -h "$POSTGRES_HOST" -U "$POSTGRES_USER"; do sleep 2; done'
+psqlc -c "SELECT version()"                                                  # PostgreSQL 17.11 ...
+psqlc -c "SELECT count(*) FROM pg_tables WHERE schemaname = 'public'"       # must be 0
+# Checkpoint B. Way back: env -u API_IMAGE scripts/deploy.sh "$OLD"   (14 on the old volume)
+
+# W3, restore (one transaction: a failure leaves the database empty, so a retry is safe)
+$C run --rm --no-deps -T --entrypoint sh backup -c 'PGPASSWORD="$POSTGRES_PASSWORD" exec pg_restore -1 --no-owner -h "$POSTGRES_HOST" -U "$POSTGRES_USER" -d "$POSTGRES_DB"' < upgrade/halallens-pg14.dump; echo "rc=$?"   # must be 0
+psqlc -c "ANALYZE"
+psqlc < upgrade/counts.sql > upgrade/counts17.txt
+diff upgrade/counts14.txt upgrade/counts17.txt && echo IDENTICAL
+# Checkpoint C. Way back: env -u API_IMAGE scripts/deploy.sh "$OLD"   (14 on the old volume)
+
+# W4, release on 17
+env -u API_IMAGE scripts/deploy.sh "$NEW"
+$C exec -T backup python -m jobs.backup_postgres                          # one backup on 17 must succeed
+docker volume ls | grep postgres                                        # halallens_postgres_data (14) and halallens_postgres17_data
+```
+
+Then sign in by hand and open a filing; `/api/health/billing` must report `ok` after the next reconcile (at most 15 minutes).
+
+- **Rollback after W4:** `env -u API_IMAGE scripts/deploy.sh "$OLD"` boots 14 on the old volume with the data as of W1. Writes made on 17 since the cutover are lost unless you first stop the writers, dump 17 (`dumpdb > upgrade/halallens-pg17.dump`), roll back, stop the writers again, restore that dump into 14 and start the writers: `$C run --rm --no-deps -T --entrypoint sh backup -c 'PGPASSWORD="$POSTGRES_PASSWORD" exec pg_restore --clean --if-exists --no-owner -h "$POSTGRES_HOST" -U "$POSTGRES_USER" -d "$POSTGRES_DB"' < upgrade/halallens-pg17.dump`. Never add `--exit-on-error` or `-1` there: 17 dumps contain `SET transaction_timeout`, which 14 rejects with one harmless error.
+- **Point of no return:** the first real user or payment write on 17 (billing is in test mode today). After it, prefer fixing forward on 17.
+- **Cleanup**, after 14 days and with the maintainer's OK: `docker volume rm halallens_postgres_data`, `rm -rf upgrade`, delete `backups/upgrade/halallens-pg14.dump` from the bucket, `docker image rm postgres:14`. Until then never run `$C down -v` or `docker volume prune`.
 
 ### Billing (Razorpay, one-time purchases)
 

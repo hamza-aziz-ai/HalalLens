@@ -2,13 +2,14 @@
 # MinIO no longer publishes free images. Set MINIO_HOST/KEYS/BUCKET in .env.
 services:
   postgres:
-    image: postgres:14
+    # Postgres 17 since 2026-10-29 (D-029; 14 reaches end of life on 2026-11-12).
+    image: postgres:17.11-trixie
     environment:
       POSTGRES_DB: ${POSTGRES_DB:?set in .env}
       POSTGRES_USER: ${POSTGRES_USER:?set in .env}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in .env}
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - postgres17_data:/var/lib/postgresql/data
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
@@ -339,7 +340,11 @@ services:
 
 volumes:
   api_cache:
-  postgres_data:
+  # The old Postgres 14 data stays in the volume `postgres_data` (on the server
+  # `halallens_postgres_data`), no longer referenced here, as the rollback for
+  # the 14 -> 17 upgrade. Do not remove it (`down -v`, `volume prune`) until
+  # the retention in README_ops.md ends and the maintainer agrees.
+  postgres17_data:
   logs_data:
   caddy_data:
   caddy_config:

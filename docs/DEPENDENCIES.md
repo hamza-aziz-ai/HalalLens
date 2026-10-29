@@ -35,6 +35,7 @@ None. `ratio_engine/amounts.py` uses only the standard library (`decimal`, `math
 | @types/jest 29.5.14 | types for the Jest 29 tests | New: without it the test files failed `tsc` (70 errors), and Next 16's build type-checks them. |
 
 ## External services
+- PostgreSQL: the `postgres:17.11-trixie` image in `docker-compose-prod.yml` (was `postgres:14` until 2026-10-29; 14 reaches end of life on 2026-11-12; D-029). Pinned to the minor, so an upgrade is a reviewed change. The API image's client tools (`pg_dump`, `pg_restore`, `psql`) are 17 from Debian trixie.
 - Cloudflare R2: filing PDF storage and Postgres backups in production (D-016), reached through the `minio` SDK's S3 API. Free tier 10 GB, free egress.
 - Cloudflare Tunnel and Workers (free plan): the tunnel connects the VM; the `halallens-maintenance` Worker (`cloudflare/maintenance-worker.js`, deployed from the dashboard) serves the maintenance page when the origin is unreachable, 100,000 requests a day, fail open.
 - Razorpay (Test Mode): orders, webhooks, and since D-025 the reconciler's GET calls and automatic refund POSTs (TEST keys only).
