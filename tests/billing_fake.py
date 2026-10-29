@@ -128,7 +128,7 @@ class BillingFake:
         self._event(user_id, event_type, payment_id)
         projection = project(self._grants_of(user_id), self.now)
         self._write_projection(user_id, projection, trial_used=True)
-        return "granted", projection
+        return "granted", {**projection, "granted_plan": order["plan_code"]}
 
     def refund_razorpay_payment(self, *, order_id, payment_id, refund_id, refund_amount,
                                 payment_refunded_total, event_type, payload, project):

@@ -15,10 +15,30 @@ export async function fetchEntitlement(): Promise<Entitlement> {
   return request<Entitlement>("/billing/entitlement");
 }
 
-/** Button label for buying `plan` while `currentRank` is running (0: nothing running). */
+/** Button label for buying `plan` after the last paid plan of rank `currentRank` (0: none). */
 export function purchaseLabel(plan: BillingPlan, currentRank: number): string {
   if (currentRank === 0 || plan.rank > currentRank) return "Upgrade";
   return plan.rank < currentRank ? "Switch" : "Extend";
+}
+
+/**
+ * After the checkout closes without its success callback, ask the server what
+ * happened: a payment finished on the bank's page is settled by the webhook.
+ * Polls every 2 s for up to `timeoutMs`; returns the last status seen.
+ */
+export async function waitForOrderSettlement(orderId: string, timeoutMs = 30_000): Promise<string> {
+  const deadline = Date.now() + timeoutMs;
+  let status = "created";
+  while (Date.now() < deadline) {
+    try {
+      status = (await request<{ status: string }>(`/billing/razorpay/order/${encodeURIComponent(orderId)}`)).status;
+    } catch {
+      // A transient failure: keep waiting until the deadline.
+    }
+    if (status !== "created" && status !== "attempted") return status;
+    await new Promise((resolve) => setTimeout(resolve, 2_000));
+  }
+  return status;
 }
 
 export async function createRazorpayOrder(

@@ -337,3 +337,23 @@ def test_cancel_changes_nothing_because_nothing_renews(fake):
     before = dict(fake.users[42])
     status = _run(api_module.cancel_subscription(authorization="t"))
     assert status.plan == "annual" and fake.users[42] == before
+
+
+def test_order_status_is_visible_to_its_owner_only(fake):
+    fake.add_order("order_1", "starter")
+    _pay(fake, "order_1", "pay_aaaaaa1")
+    status = _run(api_module.razorpay_order_status("order_1", authorization="t"))
+    assert status.status == "paid"
+    fake.add_order("order_other", "starter", user_id=7)
+    with pytest.raises(HTTPException) as excinfo:
+        _run(api_module.razorpay_order_status("order_other", authorization="t"))
+    assert excinfo.value.status_code == 404
+
+
+def test_grant_log_names_the_plan_bought_not_the_plan_running(fake, caplog):
+    fake.add_order("o_a", "annual")
+    _pay(fake, "o_a", "pay_annual1")
+    fake.add_order("o_s", "starter")
+    with caplog.at_level("INFO"):
+        _pay(fake, "o_s", "pay_start1")
+    assert any("order_id=o_s" in r.getMessage() and "plan=starter" in r.getMessage() for r in caplog.records)

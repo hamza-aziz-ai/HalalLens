@@ -340,6 +340,12 @@ class RazorpayOrderResponse(BaseModel):
     email: str
 
 
+class RazorpayOrderStatusResponse(BaseModel):
+    order_id: str
+    #: created | attempted (not paid yet) | paid | refund_due | refunded
+    status: str
+
+
 class RazorpayVerifyRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -3123,7 +3129,7 @@ def _settle_razorpay_order(
     if result == "granted":
         api_logger.info(
             "Subscription granted order_id=%s payment_id=%s plan=%s via=%s",
-            order_id, payment_id, info["plan"], event_type,
+            order_id, payment_id, info["granted_plan"], event_type,
         )
     elif result == "refund_due":
         # Two checkouts were open and Lifetime won: keep the money on record
@@ -3142,6 +3148,25 @@ def _current_subscription_response(user_id: int) -> SubscriptionStatusResponse:
         subscription_status=row.get("subscription_status", "inactive"),
         subscription_renewal=row.get("subscription_renewal"),
     )
+
+
+@app.get("/billing/razorpay/order/{order_id}", response_model=RazorpayOrderStatusResponse)
+async def razorpay_order_status(
+    order_id: str, authorization: Optional[str] = Header(None)
+) -> RazorpayOrderStatusResponse:
+    """Status of the caller's own order.
+
+    The checkout can close without its success callback (the payment finished
+    on the bank's page, or the window was closed afterwards) while the webhook
+    still settles the order; the account page polls this before telling the
+    user anything.
+    """
+
+    _, session = _require_session(authorization)
+    order = _get_db().get_razorpay_order(order_id)
+    if not order or order.get("user_id") != session.get("user_id"):
+        raise HTTPException(status_code=404, detail="Order not found")
+    return RazorpayOrderStatusResponse(order_id=order_id, status=order["status"])
 
 
 @app.post("/billing/razorpay/verify", response_model=SubscriptionStatusResponse)
