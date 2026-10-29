@@ -52,3 +52,32 @@ def test_parse_structured_json_handles_nested_keys():
     metrics = FDP._parse_structured_json(payload, scale_hint=1.0)
     assert metrics["total_debt"] == 200
     assert metrics["non_halal_income"] == 5.5
+
+
+import pytest
+
+
+@pytest.mark.parametrize(
+    "text, scale",
+    [
+        ("(Rs. in Crores)", 10_000_000),
+        ("Amount in Cr.", 10_000_000),
+        ("₹ 5cr", 10_000_000),
+        ("(Rs. in Lakhs)", 100_000),
+        ("in lacs", 100_000),
+        ("USD million", 1_000_000),
+        ("INR mn", 1_000_000),
+        ("2.5 bn", 1_000_000_000),
+        ("Rs. in thousands", 1_000),
+        ("10k shares", 1_000),
+        # Words that only contain a unit's letters do not scale.
+        ("Description of the item", 1.0),
+        ("Balance with bank and cash", 1.0),
+        ("Column total", 1.0),
+        ("Other comprehensive income (incremental)", 1.0),
+        ("Lacquer division", 1.0),
+        ("", 1.0),
+    ],
+)
+def test_detect_scale_matches_whole_unit_words(text, scale):
+    assert FDP._detect_scale(text) == scale
