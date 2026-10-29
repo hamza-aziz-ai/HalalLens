@@ -13,7 +13,7 @@ Read first: [ARCHITECTURE.md](ARCHITECTURE.md), [CONSTRAINTS.md](CONSTRAINTS.md)
 **In progress / next**
 - Deploy v0.6.3 to the VM: production deploys need the maintainer's approval (`bash ~/vm_deploy.sh v0.6.3` on the VM).
 - BSE announcements still answer 403 to the server: data-source decision pending with the maintainer.
-- Needs a maintainer yes: `docker`/`docker-arm64` as required checks, the Next.js 15/16 upgrade, watchlists in Postgres (schema migration). Pull-only compose and runbook not started.
+- Approved by the maintainer and in progress: `docker` and `docker-arm64` are now required checks on `main` (ruleset updated 2026-10-29); next the Next.js 15/16 upgrade and watchlists in Postgres (schema migration). Pull-only compose and runbook not started.
 
 **Broken or risky**
 - Filings parsed before #158 keep values scaled by the old substring rule; re-parse or `--recompute` is a maintainer-run step (no production filings yet).
