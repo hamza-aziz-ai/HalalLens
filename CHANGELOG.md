@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.11.2](https://github.com/hamza-aziz-ai/HalalLens/compare/v0.11.1...v0.11.2) (2026-10-29)
+
+
+### Bug Fixes
+
+* **billing:** a Razorpay refund webhook now actually revokes the plan ([#188](https://github.com/hamza-aziz-ai/HalalLens/issues/188)) ([dc66190](https://github.com/hamza-aziz-ai/HalalLens/commit/dc66190a69417fdb1289193078c590b684e3a369))
+
 ## [0.11.1](https://github.com/hamza-aziz-ai/HalalLens/compare/v0.11.0...v0.11.1) (2026-10-29)
 
 
