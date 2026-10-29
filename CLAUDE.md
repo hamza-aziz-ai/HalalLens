@@ -21,6 +21,7 @@ Complex = architecture changes, multi-file or risky edits, security/billing/verd
 
 - Use `/codex-claude-council:codex-claude-council` via `council_join`, continuing the maintainer's Codex session (ID kept outside the repo, in Claude Code's local memory note `council-for-complex-tasks`; pass it as `other_session_id`), with `workspace` set to this repo's absolute path.
 - If Codex hits its session limit, fall back to `/llm-council`.
+- Always run councils to agreement: `max_rounds: 0` (maintainer's default, 2026-10-29).
 - Council is advisory: verify its claims against the code before acting.
 
 ## Session ritual (Claude Code)

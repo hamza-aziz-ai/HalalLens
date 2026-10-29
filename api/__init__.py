@@ -1,5 +1,5 @@
-"""API package for Halal-Lens services."""
+"""API package for Halal-Lens services.
 
-from .app import app
-
-__all__ = ["app"]
+Nothing is imported here: uvicorn loads ``api.app:app`` directly, and jobs
+import ``api.billing`` / ``api.razorpay_client`` without starting the app.
+"""

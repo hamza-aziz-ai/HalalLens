@@ -292,6 +292,30 @@ services:
     entrypoint: ["python3", "-m", "jobs.backup_postgres", "--loop"]
     restart: unless-stopped
 
+  # Payment reconciler (D-025): every 15 minutes, settles Razorpay payments
+  # the webhook missed and applies refunds made elsewhere; read-only toward
+  # Razorpay. Same image and env as the api.
+  billing-reconcile:
+    image: ${API_IMAGE:-halal-lens-api}
+    build:
+      context: .
+      dockerfile: api.Dockerfile
+    env_file:
+      - .env
+    environment:
+      POSTGRES_HOST: ${POSTGRES_HOST:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      RECONCILE_INTERVAL_MINUTES: ${RECONCILE_INTERVAL_MINUTES:-15}
+    depends_on:
+      migrations:
+        condition: service_completed_successfully
+    volumes:
+      - logs_data:/app/logs
+    entrypoint: ["python3", "-m", "jobs.reconcile_payments", "--loop"]
+    restart: unless-stopped
+
   # Optional LLM daemon (COMPOSE_PROFILES includes "llm"), used by the
   # narrator when NARRATOR_MODE=llm. Internal only: no published port. Cloud
   # models (e.g. gpt-oss:120b-cloud) run on ollama.com; link this daemon to the

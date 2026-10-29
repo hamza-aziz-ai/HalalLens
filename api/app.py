@@ -76,6 +76,8 @@ from config import (
     TRUST_PROXY_HEADERS,
 )
 from api import billing
+from api.razorpay_client import RazorpayClient, RazorpayError
+from api.razorpay_client import payment_matches_order as _payment_matches_order
 from api.mailer import send_email
 from api.security import (
     RateLimitRule,
@@ -3066,37 +3068,16 @@ RAZORPAY_GRANT_EVENTS = {"payment.captured", "order.paid"}
 RAZORPAY_PAYMENT_ID_RE = re.compile(r"^pay_[A-Za-z0-9]{6,40}$")
 
 
-def _payment_matches_order(payment: Dict[str, Any], order: Dict[str, Any]) -> bool:
-    """A captured payment for exactly this order's amount and currency."""
-
-    try:
-        amount = int(payment.get("amount"))
-    except (TypeError, ValueError):
-        return False
-    return (
-        payment.get("status") == "captured"
-        and payment.get("order_id") == order["order_id"]
-        and amount == int(order["amount"])
-        and str(payment.get("currency") or "").upper() == str(order.get("currency") or "INR").upper()
-    )
-
-
 def _fetch_razorpay_payment(payment_id: str) -> Dict[str, Any]:
     try:
-        resp = requests.get(
-            f"{RAZORPAY_API_BASE}/payments/{payment_id}",
-            auth=(RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET),
-            timeout=15,
-        )
-        resp.raise_for_status()
-    except requests.RequestException as exc:
+        return RazorpayClient(RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET).fetch_payment(payment_id)
+    except RazorpayError as exc:
         api_logger.error("Razorpay payment fetch failed: %s", exc)
         raise HTTPException(
             status_code=503,
             detail="Could not confirm the payment with Razorpay yet. If money was taken, "
             "access is added automatically within a few minutes.",
         )
-    return resp.json()
 
 
 def _settle_razorpay_order(

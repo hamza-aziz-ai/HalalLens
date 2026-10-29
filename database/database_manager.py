@@ -2749,7 +2749,7 @@ class BSEDatabaseManager:
         with self.get_connection() as conn:
             with conn.cursor() as cursor:
                 cursor.execute(
-                    "SELECT order_id, user_id, amount, currency, status, plan_code, interval_days "
+                    "SELECT order_id, user_id, amount, currency, status, plan_code, interval_days, payment_id "
                     "FROM razorpay_orders WHERE order_id = %(order_id)s FOR UPDATE",
                     {"order_id": order_id},
                 )
@@ -2962,6 +2962,187 @@ class BSEDatabaseManager:
                 self._write_projection(cursor, user_id, projection)
                 conn.commit()
                 return projection
+
+    def bind_legacy_payment(
+        self, *, order_id: str, payment_id: str, project: Callable[[List[Dict], datetime], Dict]
+    ) -> Tuple[str, Optional[Dict]]:
+        """Record the funding payment of a pre-ledger purchase, then apply its refunds.
+
+        The caller has verified at Razorpay that this payment is the only
+        attempt of the order that ever succeeded, for the order's terms. In one
+        transaction (order row, then user, as everywhere else) the order gets
+        its payment_id, and refunds already recorded for that payment are
+        applied to the legacy grant (they were held for review until now).
+        Returns ("bound", projection), ("already_bound", order) or
+        ("no_legacy_grant", order).
+        """
+
+        with self.get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT order_id, user_id, amount, status, payment_id FROM razorpay_orders "
+                    "WHERE order_id = %(o)s FOR UPDATE",
+                    {"o": order_id},
+                )
+                order = cursor.fetchone()
+                if not order:
+                    conn.rollback()
+                    return "no_legacy_grant", None
+                order = dict(order)
+                if order["payment_id"] is not None:
+                    conn.rollback()
+                    return "already_bound", order
+                _, grants, now = self._lock_user_grants(cursor, order["user_id"])
+                grant = next(
+                    (g for g in grants if g["order_id"] == order_id and g["source"] == "legacy"), None
+                )
+                if grant is None:
+                    conn.rollback()
+                    return "no_legacy_grant", order
+                cursor.execute(
+                    "UPDATE razorpay_orders SET payment_id = %(p)s, updated_at = NOW() WHERE order_id = %(o)s",
+                    {"p": payment_id, "o": order_id},
+                )
+                cursor.execute(
+                    "SELECT COALESCE(SUM(amount), 0) AS total FROM payment_refunds WHERE payment_id = %(p)s",
+                    {"p": payment_id},
+                )
+                total = int(cursor.fetchone()["total"])
+                revoke = total >= int(order["amount"]) and grant["revoked_at"] is None
+                cursor.execute(
+                    "UPDATE subscription_grants SET refunded_amount = %(t)s, "
+                    "revoked_at = CASE WHEN %(r)s THEN %(now)s ELSE revoked_at END WHERE id = %(id)s",
+                    {"t": total, "r": revoke, "now": now, "id": grant["id"]},
+                )
+                grant["refunded_amount"] = total
+                if revoke:
+                    grant["revoked_at"] = now
+                    cursor.execute(
+                        "UPDATE razorpay_orders SET status = 'refunded', updated_at = NOW() WHERE order_id = %(o)s",
+                        {"o": order_id},
+                    )
+                projection = project(grants, now)
+                self._write_projection(cursor, order["user_id"], projection)
+                conn.commit()
+                return "bound", projection
+
+    # --- payment reconciler state (jobs/reconcile_payments.py, D-025) --------
+
+    def first_order_created_at(self) -> Optional[datetime]:
+        with self.get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT MIN(created_at) AS first FROM razorpay_orders")
+                return cursor.fetchone()["first"]
+
+    def get_reconcile_state(self) -> Dict:
+        with self.get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("INSERT INTO billing_reconcile_state (id) VALUES (1) ON CONFLICT (id) DO NOTHING")
+                cursor.execute("SELECT * FROM billing_reconcile_state WHERE id = 1")
+                row = dict(cursor.fetchone())
+                conn.commit()
+                return row
+
+    def save_reconcile_progress(
+        self,
+        *,
+        checkpoints: Optional[Dict[str, datetime]] = None,
+        audit_before: Optional[datetime] = None,
+        error: Optional[str] = None,
+        success: bool = False,
+    ) -> None:
+        """Checkpoints only move forward (GREATEST); success clears last_error."""
+
+        checkpoints = checkpoints or {}
+        with self.get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    UPDATE billing_reconcile_state SET
+                        payments_checkpoint = GREATEST(payments_checkpoint, %(payments)s),
+                        refunds_checkpoint = GREATEST(refunds_checkpoint, %(refunds)s),
+                        audit_before = COALESCE(%(audit)s, audit_before),
+                        last_success_at = CASE WHEN %(ok)s THEN NOW() ELSE last_success_at END,
+                        last_error = CASE WHEN %(ok)s THEN NULL ELSE COALESCE(%(error)s, last_error) END,
+                        updated_at = NOW()
+                    WHERE id = 1
+                    """,
+                    {
+                        "payments": checkpoints.get("payments"),
+                        "refunds": checkpoints.get("refunds"),
+                        "audit": audit_before,
+                        "ok": success,
+                        "error": error,
+                    },
+                )
+                conn.commit()
+
+    def track_billing_item(
+        self,
+        *,
+        kind: str,
+        provider_id: str,
+        order_id: Optional[str],
+        reason: str,
+        last_status: Optional[str],
+        recheck_after_seconds: int,
+    ) -> Dict:
+        """Open (or reopen and reclassify) a tracked item; returns the row."""
+
+        with self.get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    INSERT INTO billing_tracked (kind, provider_id, order_id, reason, last_status, next_check_at)
+                    VALUES (%(k)s, %(p)s, %(o)s, %(r)s, %(s)s, NOW() + make_interval(secs => %(after)s))
+                    ON CONFLICT (kind, provider_id) DO UPDATE SET
+                        order_id = COALESCE(EXCLUDED.order_id, billing_tracked.order_id),
+                        reason = EXCLUDED.reason,
+                        last_status = EXCLUDED.last_status,
+                        attempts = billing_tracked.attempts + 1,
+                        last_checked = NOW(),
+                        -- Never retired by age: after a week, looked at daily (D-025).
+                        next_check_at = CASE WHEN billing_tracked.first_seen < NOW() - INTERVAL '7 days'
+                            THEN NOW() + make_interval(secs => GREATEST(%(after)s, 86400))
+                            ELSE EXCLUDED.next_check_at END,
+                        resolved_at = NULL
+                    RETURNING *
+                    """,
+                    {"k": kind, "p": provider_id, "o": order_id, "r": reason, "s": last_status,
+                     "after": recheck_after_seconds},
+                )
+                row = dict(cursor.fetchone())
+                conn.commit()
+                return row
+
+    def resolve_billing_item(self, kind: str, provider_id: str) -> None:
+        with self.get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "UPDATE billing_tracked SET resolved_at = NOW(), last_checked = NOW() "
+                    "WHERE kind = %(k)s AND provider_id = %(p)s AND resolved_at IS NULL",
+                    {"k": kind, "p": provider_id},
+                )
+                conn.commit()
+
+    def mark_billing_notified(self, kind: str, provider_id: str) -> None:
+        with self.get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "UPDATE billing_tracked SET last_notified_at = NOW() WHERE kind = %(k)s AND provider_id = %(p)s",
+                    {"k": kind, "p": provider_id},
+                )
+                conn.commit()
+
+    def due_billing_items(self, limit: int) -> List[Dict]:
+        with self.get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT * FROM billing_tracked WHERE resolved_at IS NULL AND next_check_at <= NOW() "
+                    "ORDER BY next_check_at LIMIT %(n)s",
+                    {"n": limit},
+                )
+                return [dict(row) for row in cursor.fetchall()]
 
     def get_database_stats(self) -> Dict:
         """Get comprehensive database statistics"""

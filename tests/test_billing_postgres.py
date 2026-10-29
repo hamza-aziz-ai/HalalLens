@@ -255,3 +255,95 @@ def test_a_payment_refunded_before_settlement_cannot_fund_the_order(db):
     assert _refund(manager, "order_1", "pay_1", "rfnd_1", 5000) == "unsettled"
     assert _settle(manager, "order_1", "pay_1")[0] == "refunded_payment"
     assert _settle(manager, "order_1", "pay_2")[0] == "granted"  # another attempt still can
+
+
+def _db_now(admin):
+    with admin.cursor() as cur:
+        cur.execute("SELECT NOW()")
+        return cur.fetchone()[0]
+
+
+def test_reconciler_end_to_end_on_real_sql(db):
+    from types import SimpleNamespace
+
+    from jobs.reconcile_payments import Reconciler
+    from tests.billing_fake import FakeRazorpay
+
+    manager, admin = db
+    user_id = _user(admin)
+    _order(admin, user_id, "order_1", "starter")
+    _order(admin, user_id, "order_2", "annual")
+    with admin.cursor() as cur:  # orders created a while ago, so they fall inside the window
+        cur.execute("UPDATE razorpay_orders SET created_at = NOW() - INTERVAL '2 hours'")
+    clock = SimpleNamespace(now=_db_now(admin) - timedelta(hours=1))
+    rzp = FakeRazorpay(clock)
+    rzp.pay("pay_1", manager.get_razorpay_order("order_1"))                 # missed webhook
+    rzp.pay("pay_2", manager.get_razorpay_order("order_2"), amount=100)     # mismatch
+    alerts = []
+    summary = Reconciler(manager, rzp, lambda *a: alerts.append(a)).run(_db_now(admin))
+    assert summary.get("webhook_missed") == 1
+    assert _plan(admin, user_id) == "starter"
+    with admin.cursor() as cur:
+        cur.execute("SELECT kind, provider_id, reason FROM billing_tracked WHERE resolved_at IS NULL")
+        open_items = {(k, p): r for k, p, r in cur.fetchall()}
+    assert open_items == {("payment", "pay_2"): "mismatch"}
+    state = manager.get_reconcile_state()
+    assert state["payments_checkpoint"] and state["refunds_checkpoint"] and state["last_success_at"]
+    assert state["last_error"] is None
+
+
+def test_checkpoints_never_move_back_and_tracking_reopens(db):
+    manager, admin = db
+    now = _db_now(admin)
+    manager.save_reconcile_progress(checkpoints={"payments": now})
+    manager.save_reconcile_progress(checkpoints={"payments": now - timedelta(days=3)})
+    assert manager.get_reconcile_state()["payments_checkpoint"] == now
+    manager.track_billing_item(kind="payment", provider_id="pay_x", order_id=None, reason="pending",
+                               last_status="created", recheck_after_seconds=900)
+    manager.resolve_billing_item("payment", "pay_x")
+    row = manager.track_billing_item(kind="payment", provider_id="pay_x", order_id="o", reason="duplicate",
+                                     last_status="captured", recheck_after_seconds=900)
+    assert row["resolved_at"] is None and row["reason"] == "duplicate" and row["attempts"] == 2
+    with admin.cursor() as cur:  # a week-old pending item is looked at daily, never retired
+        cur.execute("UPDATE billing_tracked SET first_seen = NOW() - INTERVAL '8 days'")
+    row = manager.track_billing_item(kind="payment", provider_id="pay_x", order_id="o", reason="pending",
+                                     last_status="created", recheck_after_seconds=900)
+    assert row["next_check_at"] - _db_now(admin) > timedelta(hours=23)
+
+
+def test_legacy_binding_applies_recorded_refunds_on_real_sql(db):
+    manager, admin = db
+    user_id = _user(admin)
+    with admin.cursor() as cur:
+        cur.execute(
+            "INSERT INTO razorpay_orders (order_id, user_id, amount, status, payload, plan_code, interval_days) "
+            "VALUES ('order_old', %s, 50000, 'paid', '{}', 'annual', 365)", (user_id,))
+        cur.execute(
+            "INSERT INTO subscription_grants (user_id, plan_code, source, order_id, duration, allocated_at) "
+            "VALUES (%s, 'annual', 'legacy', 'order_old', INTERVAL '365 days', NOW())", (user_id,))
+    manager.refresh_entitlement(user_id, project)
+    assert _refund(manager, "order_old", "pay_old", "rfnd_1", 50000) == "needs_review"
+    assert _plan(admin, user_id) == "annual"  # held for review: funding payment unknown
+    assert manager.bind_legacy_payment(order_id="order_old", payment_id="pay_old", project=project)[0] == "bound"
+    assert _plan(admin, user_id) == "free"    # the recorded refund now applies
+    assert manager.bind_legacy_payment(order_id="order_old", payment_id="pay_old", project=project)[0] == "already_bound"
+
+
+def test_the_advisory_lock_lets_only_one_run_through(db):
+    import psycopg2
+
+    from jobs.reconcile_payments import LOCK_KEY
+
+    first, second = psycopg2.connect(DSN), psycopg2.connect(DSN)
+    first.autocommit = second.autocommit = True
+    try:
+        with first.cursor() as a, second.cursor() as b:
+            a.execute("SELECT pg_try_advisory_lock(%s)", (LOCK_KEY,))
+            b.execute("SELECT pg_try_advisory_lock(%s)", (LOCK_KEY,))
+            assert a.fetchone()[0] is True and b.fetchone()[0] is False
+            a.execute("SELECT pg_advisory_unlock(%s)", (LOCK_KEY,))
+            b.execute("SELECT pg_try_advisory_lock(%s)", (LOCK_KEY,))
+            assert b.fetchone()[0] is True
+    finally:
+        first.close()
+        second.close()
