@@ -20,6 +20,9 @@ ENV NEXT_PUBLIC_HALAL_API_BASE_URL=${NEXT_PUBLIC_HALAL_API_BASE_URL}
 # Support address on the policy and contact pages; empty shows "our support team".
 ARG NEXT_PUBLIC_SUPPORT_EMAIL=
 ENV NEXT_PUBLIC_SUPPORT_EMAIL=${NEXT_PUBLIC_SUPPORT_EMAIL}
+# Repository link in the top-right corner; only an https URL shows the badge.
+ARG NEXT_PUBLIC_REPO_URL=
+ENV NEXT_PUBLIC_REPO_URL=${NEXT_PUBLIC_REPO_URL}
 
 RUN npm run build
 

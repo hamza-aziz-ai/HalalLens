@@ -57,3 +57,10 @@
     transform: translateY(0);
   }
 }
+
+/* GitHub badge (components/github-badge.tsx): dark icon on the light theme. */
+html[data-theme="light"] .github-badge {
+  color: #0f172a;
+  background-color: rgb(255 255 255 / 0.8);
+  border-color: rgb(15 23 42 / 0.15);
+}
