@@ -55,7 +55,7 @@ flowchart TB
     REC["`**billing-reconcile** job: every 15 min`"]
     PRE["`**preflight**, one-shot: Postgres and the R2 bucket reachable`"]
     MIG["`**migrations**, one-shot: applies pending SQL files`"]
-    PG[("`**postgres 14**: named volume postgres_data`")]
+    PG[("`**postgres 17**: named volume postgres17_data`")]
   end
 
   subgraph EXT["`**External services**`"]
@@ -313,7 +313,7 @@ flowchart TB
 
   subgraph VOL["`**Named volumes**: survive container replacement, not VM loss`"]
     direction TB
-    PGV[("`**postgres_data**: the database files`")]
+    PGV[("`**postgres17_data**: the database files (postgres_data keeps the 14 files for rollback, D-029)`")]
     CACHE[("`**api_cache**: vendor caches, Indian Stock API monthly counter`")]
     OTH[("`**logs_data, caddy_data, caddy_config, ollama_data**`")]
   end
@@ -359,7 +359,7 @@ Key: green boxes are the containers that write; grey cylinders are Postgres doma
 | Feedback | `feedback_reports`, `feedback_events` | api (public create, admin triage) | api (admins; the reporter by tracking token) |
 | Legacy | `user_subscriptions` | nothing (pre-ledger, kept for history) | nothing |
 | Objects in R2 | Filing PDFs; `backups/postgres/<db>-<timestamp>.dump` | ingestion (PDFs); backup (daily `pg_dump`, deletes dumps older than 14 days after a successful upload) | restore by hand ([README_ops.md](../README_ops.md)) |
-| Named volumes | `postgres_data`, `api_cache`, `logs_data`, `caddy_data`, `caddy_config`, `ollama_data` | the container that mounts each | the same container; they survive container replacement, not the loss of the VM |
+| Named volumes | `postgres17_data` (the old `postgres_data` holds the Postgres 14 files until the upgrade retention ends, D-029), `api_cache`, `logs_data`, `caddy_data`, `caddy_config`, `ollama_data` | the container that mounts each | the same container; they survive container replacement, not the loss of the VM |
 
 ## Trust boundaries [B]
 

@@ -23,6 +23,12 @@ SCHEMA_FILE="${SCHEMA_FILE:-database/schema.sql}"
 if [[ -f "$SCHEMA_FILE" ]]; then
   base_table="$(psql "$DATABASE_URL" -tA -c "SELECT to_regclass('public.financial_snapshots')" || true)"
   if [[ -z "$base_table" || "$base_table" == "null" ]]; then
+    # Production sets REQUIRE_EXISTING_DB=1 after the first install: an empty
+    # database there means a wrong or new volume, not a fresh install.
+    if [[ "${REQUIRE_EXISTING_DB:-0}" == "1" ]]; then
+      echo "refusing to create the schema on an empty database: REQUIRE_EXISTING_DB=1; restore the data first" >&2
+      exit 1
+    fi
     echo "Applying base schema from $SCHEMA_FILE"
     psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$SCHEMA_FILE"
   fi

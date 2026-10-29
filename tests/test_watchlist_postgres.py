@@ -5,7 +5,7 @@ Opt-in: skipped unless HALALLENS_TEST_PG_DSN points at a throwaway database
 mocks, so this is the narrow exception to "tests need no live Postgres"
 (docs/TESTING.md). Example:
 
-    docker run -d --rm --name wl-pg -e POSTGRES_PASSWORD=pw -p 55432:5432 postgres:14
+    docker run -d --rm --name wl-pg -e POSTGRES_PASSWORD=pw -p 55432:5432 postgres:17.11-trixie
     HALALLENS_TEST_PG_DSN=postgresql://postgres:pw@localhost:55432/postgres pipenv run pytest tests/test_watchlist_postgres.py -v
 """
 

@@ -29,7 +29,7 @@ Auto-merge stays held until these land, in order. "Complete enough" means every 
 1. Measurement: coverage floors above, `pip check`, unused `zod` removed.
 2. HTTP and security contracts (done; the `/alerts/check` fix landed in PR #115): `TestClient(app)` with lifespan; route-tier matrix (anonymous / free / paid / admin, expired sessions, ownership, 401/403/422/429, CORS, nullable verdict JSON); a test that fails when a route has no tier; `/alerts/check` defects fixed.
 3. Billing contracts: real HMAC with dummy secrets; tampered or unsigned bodies; wrong owner, amount or currency; duplicate and concurrent settlement; webhook vs browser ordering; trial reuse.
-4. Real SQL and migrations: disposable Postgres 14 service in CI; bootstrap, seeded prior-schema upgrade, rerun, schema comparison; integration tests selected explicitly (ordinary tests stay offline).
+4. Real SQL and migrations: disposable Postgres 17 service in CI (the production version, D-029); bootstrap, seeded prior-schema upgrade, rerun, schema comparison; integration tests selected explicitly (ordinary tests stay offline).
 5. Input to verdict: PDF/XBRL/JSON/CSV fixtures through the real parsers into the engine (ingestion runs on the request path); `_detect_scale` fixed with a regression test (done in PR #158); one success and one failure cycle per scheduler.
 6. UI: Jest contracts for `lib/api.ts` and auth/billing helpers, every verdict state; a small Playwright smoke on the served static export.
 7. Packaging: build the three Docker images; container smoke (startup, `/openapi.json`, a real screening request).

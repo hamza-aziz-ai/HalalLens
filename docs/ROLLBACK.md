@@ -32,6 +32,7 @@ How to undo a change. The risky ones first.
 | Billing ledger and reconciliation (D-024, D-025) | Fix forward. Migrations `20261029_subscription_grants`, `_v2_payment_refunds`, `_v3_billing_reconcile`, `_v4_refund_actions` are additive, but older code would ignore grants and refund records and overwrite access. To stop the reconciler alone: `docker compose -f docker-compose-prod.yml stop billing-reconcile` (no data is lost; it resumes from its checkpoint). |
 | Cloudflare maintenance Worker                  | Remove the `halallens.in/*` route in the Cloudflare dashboard; the site works without it |
 | Auth hardening (D-020)                         | Do not revert the code alone: the migration revoked unproven admins and every session. Fix forward; if an admin is locked out, prove the mailbox with a reset link or Google sign-in. A full revert also needs `ALTER TABLE users DROP COLUMN email_verified_at; DROP TABLE auth_tokens;` and re-setting `is_admin` by hand. |
+| Postgres 14 -> 17 upgrade (D-029)              | Before the cutover: the way back at each checkpoint in README_ops ("Postgres major upgrade"). After it: `scripts/deploy.sh <previous tag>` boots 14 on the untouched `postgres_data` volume with the data as of the freeze; writes made on 17 are lost unless dumped and restored into 14 by hand (README_ops). Keep the old volume and the off-site dump for 14 days. |
 
 ## Prefer a switch over a deploy
 There is no feature flag for the verdict. The safest brake is to keep the new engine un-deployed outside the cutover window.

@@ -263,3 +263,16 @@ One entry per decision, newest last. Model for every entry below: Claude Sonnet 
 - **Trade-off:** Readers follow one more link for setup and API detail; inbound links and the route-tier test message now point at `docs/guides/API.md`; the README notes and the guides can drift if the same-PR rule is skipped. Lines that were already stale when moved still need their own fix.
 - **Revisit if:** the guides outgrow plain Markdown (search, versioned docs), or the project goes private and needs a separate public landing page.
 
+## D-029: Postgres 14 -> 17 by dump and restore into a new volume
+
+- **Date:** 2026-10-29   Model: Claude Opus 5.5 (plan reviewed by the 5-advisor council; Codex was at its usage limit)
+- **Context:** Production ran `postgres:14` (14.24); 14 reaches end of life on 2026-11-12. The backups are written by the API image's `pg_dump` 17, which a 14 server's own tools cannot read, so the restore path already needed a workaround. The database is 21 MB, one role (`halallens`, the image's bootstrap superuser, owns everything), initdb-default settings, no init scripts.
+- **Options:**
+  1. `pg_dump` 14 data and `pg_restore` it into 17 on a new volume, keeping the old volume untouched
+  2. `pg_upgrade` (copy or `--link`) between two data directories
+  3. Bump the image in place on the same volume
+  4. Logical replication from 14 to 17, then switch over
+- **Chosen:** 1. `docker-compose-prod.yml` runs `postgres:17.11-trixie` on the new volume `postgres17_data`; `postgres_data` stays on disk, unreferenced, as the rollback. `scripts/run_migrations.sh` gains an opt-in `REQUIRE_EXISTING_DB=1` (set in production) that refuses to create the schema on an empty database, so a deploy that lands on an empty volume fails instead of starting an empty site. Runbook with checkpoints in README_ops ("Postgres major upgrade").
+- **Why:** At 21 MB the dump and single-transaction restore take seconds, so downtime is minutes; the old volume is an instant, tested rollback (`scripts/deploy.sh <old tag>`); the dump also goes off-site first. `pg_upgrade` needs both major versions' binaries in one container (the official images ship one); 3 cannot work (17 refuses a 14 data directory); 4 is a lot of moving parts for 21 MB.
+- **Trade-off:** Minutes of downtime (maintenance page, uptime alerts); a rollback after the cutover loses writes made on 17 unless they are dumped and restored into 14 by hand; the old volume and the off-site dump use disk until the 14-day retention ends.
+- **Revisit if:** the database grows to where a dump and restore no longer fit a short window (then `pg_upgrade --link` or logical replication), or the next major upgrade is due (consider a reusable script and a CI upgrade drill then).
