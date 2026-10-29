@@ -17,6 +17,10 @@ import requests
 logger = logging.getLogger(__name__)
 
 
+# 200 pages x 50 rows covers the busiest results days (one-day chunks).
+MAX_PAGES = 200
+
+
 class BSEAnnouncementsFetcher:
     """
     Production-ready BSE announcements fetcher using proven API endpoints.
@@ -99,32 +103,35 @@ class BSEAnnouncementsFetcher:
             search_type: str = 'P'
     ) -> List[Dict]:
         """Fetch single date chunk with proper BSE pagination."""
-        announcements = []
-        page_no = 1
+        params = {
+            'strCat': category,
+            'strPrevDate': from_date_bse,
+            'strScrip': '',
+            'strSearch': search_type,
+            'strToDate': to_date_bse,
+            'strType': 'C',
+            'PageSize': 50
+        }
+        return self._fetch_pages(url, params)
 
-        while True:
-            params = {
-                'pageno': page_no,
-                'strCat': category,
-                'strPrevDate': from_date_bse,
-                'strScrip': '',
-                'strSearch': search_type,
-                'strToDate': to_date_bse,
-                'strType': 'C',
-                'PageSize': 50
-            }
-
+    def _fetch_pages(self, url: str, params: Dict, max_pages: int = MAX_PAGES) -> List[Dict]:
+        """Follow ``pageno`` until a page is empty, repeats the previous page,
+        or ``max_pages`` is reached (a guard against an endless loop when the
+        server ignores ``pageno``)."""
+        announcements: List[Dict] = []
+        previous = None
+        for page_no in range(1, max_pages + 1):
             logger.info(f"Fetching page {page_no}...")
-            data = self._make_request(url, params)
-
-            if data and 'Table' in data and data['Table']:
-                page_announcements = data['Table']
-                announcements.extend(page_announcements)
-                logger.info(f"Page {page_no}: Retrieved {len(announcements)} announcements")
-                page_no += 1
-            else:
+            data = self._make_request(url, {**params, 'pageno': page_no})
+            page = data.get('Table') if data else None
+            if not page or page == previous:
                 logger.info(f"No more data found. Total pages processed: {page_no - 1}")
                 break
+            announcements.extend(page)
+            previous = page
+            logger.info(f"Page {page_no}: Retrieved {len(announcements)} announcements")
+        else:
+            logger.warning(f"Stopped after {max_pages} pages; results may be incomplete")
 
         logger.info(f"Total announcements retrieved: {len(announcements)}")
         return announcements
@@ -174,7 +181,6 @@ class BSEAnnouncementsFetcher:
         url = f"{self.api_base}/AnnSubCategoryGetData/w"
 
         params = {
-            'pageno': 1,
             'strCat': '-1',
             'strPrevDate': from_date,
             'strScrip': script_code,
@@ -186,14 +192,9 @@ class BSEAnnouncementsFetcher:
 
         logger.info(f"Fetching announcements for script code: {script_code}")
 
-        data = self._make_request(url, params)
-        if data and 'Table' in data:
-            announcements = data['Table']
-            logger.info(f"Retrieved {len(announcements)} announcements for {script_code}")
-            return announcements
-        else:
-            logger.error(f"Failed to retrieve announcements for {script_code}")
-            return []
+        announcements = self._fetch_pages(url, params)
+        logger.info(f"Retrieved {len(announcements)} announcements for {script_code}")
+        return announcements
 
     def get_corporate_actions(self, script_code: str = "") -> List[Dict]:
         """
