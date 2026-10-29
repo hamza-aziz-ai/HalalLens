@@ -31,22 +31,61 @@ export function clearAuthToken() {
   logClientEvent("info", "auth.token.cleared");
 }
 
-export async function registerUser(email: string, password: string) {
-  try {
-    const result = await request<AuthResponse>("/auth/register", {
-      method: "POST",
-      body: JSON.stringify({ email, password }),
-    });
-    saveAuthToken(result.token);
-    logClientEvent("info", "auth.register.success", { email });
-    return result.user;
-  } catch (error) {
-    logClientEvent("warning", "auth.register.failed", {
-      email,
-      error: error instanceof Error ? error.message : String(error),
-    });
-    throw error;
+type AccountEmailResponse = { status: string; detail: string };
+
+/** Email-first sign-up: the server emails a link; the password is chosen there. */
+export async function registerUser(email: string) {
+  const result = await request<AccountEmailResponse>("/auth/register", {
+    method: "POST",
+    body: JSON.stringify({ email }),
+  });
+  logClientEvent("info", "auth.register.requested");
+  return result.detail;
+}
+
+/** Emails a set-password link (or a sign-up link when there is no account). */
+export async function requestPasswordReset(email: string) {
+  const result = await request<AccountEmailResponse>("/auth/password/forgot", {
+    method: "POST",
+    body: JSON.stringify({ email }),
+  });
+  logClientEvent("info", "auth.reset.requested");
+  return result.detail;
+}
+
+/** Finishes sign-up from the emailed link and signs the new account in. */
+export async function confirmSignup(token: string, password: string) {
+  const result = await request<AuthResponse>("/auth/signup/confirm", {
+    method: "POST",
+    body: JSON.stringify({ token, password }),
+  });
+  saveAuthToken(result.token);
+  logClientEvent("info", "auth.signup.confirmed");
+  return result.user;
+}
+
+/** Sets a new password from the emailed link; every session is signed out. */
+export async function resetPassword(token: string, password: string) {
+  await request<{ status: string }>("/auth/password/reset", {
+    method: "POST",
+    body: JSON.stringify({ token, password }),
+  });
+  logClientEvent("info", "auth.reset.completed");
+}
+
+/**
+ * Reads a one-time proof from the URL fragment (never the query string) and
+ * removes it from the address bar and history straight away.
+ */
+export function takeFragmentParam(name: string): string | null {
+  if (typeof window === "undefined") return null;
+  const hash = window.location.hash;
+  if (!hash || hash.length < 2) return null;
+  const value = new URLSearchParams(hash.substring(1)).get(name);
+  if (value) {
+    window.history.replaceState(null, "", window.location.pathname);
   }
+  return value;
 }
 
 export async function loginUser(email: string, password: string) {

@@ -77,6 +77,7 @@ from config import (
     RATE_LIMIT_WRITE_PER_HOUR,
     TRUST_PROXY_HEADERS,
 )
+from api.mailer import send_email
 from api.security import (
     RateLimitRule,
     SlidingWindowRateLimiter,
@@ -218,6 +219,7 @@ class UserProfile(BaseModel):
     full_name: Optional[str] = None
     avatar_url: Optional[str] = None
     is_admin: bool = False
+    email_verified: bool = False
 
 
 class AuthTokenResponse(BaseModel):
@@ -229,11 +231,22 @@ class AuthTokenResponse(BaseModel):
 
 
 class RegisterRequest(BaseModel):
-    """Payload for user registration."""
+    """Email-first sign-up (and password-reset request): only the address.
+
+    The password is chosen after the mailbox is proven, on the emailed link.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     email: str
+
+
+class TokenPasswordRequest(BaseModel):
+    """An emailed proof plus the password the mailbox owner chooses."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    token: str = Field(..., min_length=20, max_length=200)
     password: str
 
 
@@ -539,6 +552,13 @@ RATE_LIMITER = SlidingWindowRateLimiter()
 RATE_LIMIT_RULES: Dict[str, RateLimitRule] = {
     "auth_login": RateLimitRule(RATE_LIMIT_LOGIN_PER_MINUTE, 60.0),
     "auth_register": RateLimitRule(RATE_LIMIT_REGISTER_PER_HOUR, 3600.0),
+    # Account emails (sign-up / reset links): per address, a 60 s cooldown and
+    # a global cap, on top of the per-IP auth_register bucket.
+    # ponytail: per-process limiter (one API worker); move to Redis to scale.
+    "auth_email_address": RateLimitRule(3, 3600.0),
+    "auth_email_cooldown": RateLimitRule(1, 60.0),
+    "auth_email_global": RateLimitRule(200, 3600.0),
+    "auth_token_confirm": RateLimitRule(20, 3600.0),
     "public_compute": RateLimitRule(RATE_LIMIT_PUBLIC_PER_MINUTE, 60.0),
     "metered": RateLimitRule(RATE_LIMIT_METERED_PER_MINUTE, 60.0),
     "anon_write": RateLimitRule(RATE_LIMIT_WRITE_PER_HOUR, 3600.0),
@@ -645,23 +665,12 @@ def _normalize_email(value: str) -> str:
     return (value or "").strip().lower()
 
 
-def _is_admin_email(email: str) -> bool:
-    if not email:
-        return False
-    return _normalize_email(email) in set(ADMIN_EMAILS)
+def _admin_allowlist() -> List[str]:
+    """ADMIN_EMAILS, normalised. An address on it becomes admin only when its
+    mailbox is proven (sign-up link, password reset or Google sign-in), never
+    because someone typed it; the database methods apply this."""
 
-
-def _apply_admin_flag(user_row: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-    if not user_row:
-        return user_row
-    if not _is_admin_email(user_row.get("email", "")):
-        return user_row
-    if user_row.get("is_admin"):
-        return user_row
-    _get_db().set_user_admin(user_row["id"], True)
-    updated = dict(user_row)
-    updated["is_admin"] = True
-    return updated
+    return [_normalize_email(email) for email in ADMIN_EMAILS if email]
 
 
 def _hash_password(password: str) -> str:
@@ -683,6 +692,7 @@ def _serialize_user_profile(row: Dict[str, Any]) -> UserProfile:
         full_name=row.get("full_name"),
         avatar_url=row.get("avatar_url"),
         is_admin=bool(row.get("is_admin")),
+        email_verified=bool(row.get("email_verified_at")),
     )
 
 
@@ -734,6 +744,9 @@ def _require_session(authorization: Optional[str]) -> Tuple[str, Dict[str, Any]]
         if expires_at < datetime.now(timezone.utc):
             _get_db().delete_session(token_hash)
             raise HTTPException(status_code=401, detail="Session expired")
+    if not session.get("email_verified_at"):
+        # Fail closed: every session belongs to a proven mailbox.
+        raise HTTPException(status_code=401, detail="Email not verified")
     return token_hash, session
 
 
@@ -745,11 +758,8 @@ def _require_admin(authorization: Optional[str], feature: str) -> Dict[str, Any]
     queue exposes other users' contact details.
     """
 
-    _, session = _require_session(authorization)
-    if session.get("is_admin") or _is_admin_email(session.get("email", "")):
-        user_id = session.get("user_id")
-        if user_id and not session.get("is_admin"):
-            _get_db().set_user_admin(user_id, True)
+    _, session = _require_session(authorization)  # verified email required
+    if session.get("is_admin"):
         return session
     raise HTTPException(status_code=403, detail=f"{feature} requires an admin account")
 
@@ -765,11 +775,6 @@ def _ensure_razorpay_enabled() -> None:
 
 def _subscription_active(session: Dict[str, Any]) -> bool:
     if session.get("is_admin"):
-        return True
-    if _is_admin_email(session.get("email", "")):
-        user_id = session.get("user_id")
-        if user_id:
-            _get_db().set_user_admin(user_id, True)
         return True
     plan = (session.get("plan") or "free").lower()
     status = (session.get("subscription_status") or "inactive").lower()
@@ -1079,8 +1084,11 @@ def _build_google_redirect(
     return f"{base}/login#{params}"
 
 
-def _placeholder_password_hash() -> str:
-    return _hash_password(secrets.token_urlsafe(32))
+def _build_auth_error_redirect(code: str, redirect_base: Optional[str] = None) -> str:
+    """Send a failed Google sign-in back to the login page with a reason code."""
+
+    base = (redirect_base or "").rstrip("/") or f"{(FRONTEND_BASE_URL or '').rstrip('/')}/login"
+    return f"{base}#{urlencode({'error': code})}"
 
 
 def _get_db() -> BSEDatabaseManager:
@@ -2478,18 +2486,27 @@ async def auth_google_callback(code: str, state: str):
     sub = profile.get("sub")
     if not email or not sub:
         raise HTTPException(status_code=400, detail="Google profile missing identifiers")
-    if profile.get("email_verified") is False:
+    if profile.get("email_verified") is not True:
+        # A missing claim is not proof of the mailbox.
         raise HTTPException(status_code=403, detail="Google email not verified")
 
-    placeholder_hash = _placeholder_password_hash()
-    user_row = _get_db().upsert_google_user(
+    status, user_row = _get_db().google_sign_in(
         email=email,
         google_sub=sub,
-        password_hash=placeholder_hash,
         full_name=profile.get("name"),
         avatar_url=profile.get("picture"),
+        admin_emails=_admin_allowlist(),
     )
-    user_row = _apply_admin_flag(user_row)
+    if status == "email_in_use":
+        # Never attach Google to an existing account by email: the account
+        # owner signs in (or resets the password) and links Google from there.
+        return RedirectResponse(
+            _build_auth_error_redirect("account_exists", redirect_base), status_code=302
+        )
+    if not user_row.get("email_verified_at"):
+        return RedirectResponse(
+            _build_auth_error_redirect("verify_email", redirect_base), status_code=302
+        )
     _get_db().touch_user_login(user_row["id"])
     api_logger.info("Google SSO user upserted id=%s email=%s", user_row["id"], email)
     token, expires_at = _issue_session(user_row["id"])
@@ -2508,72 +2525,211 @@ def _validate_email(email: str) -> str:
     return email
 
 
-@app.post("/auth/register", response_model=AuthTokenResponse)
-async def auth_register(
-    payload: RegisterRequest, request: Request = None
-) -> AuthTokenResponse:
-    """Register a new user and issue a session token."""
+SIGNUP_TOKEN_TTL = timedelta(hours=1)
+RESET_TOKEN_TTL = timedelta(minutes=30)
+ACCOUNT_EMAIL_ACCEPTED = {
+    "status": "check_email",
+    "detail": "If the address can receive mail, a link is on its way. It expires soon; check spam too.",
+}
 
+
+def _frontend_link(path: str, param: str, token: str) -> str:
+    """Emailed link with the proof in the URL fragment, which never reaches a
+    server, proxy or Cloudflare log; the page posts it to the API."""
+
+    base = (FRONTEND_BASE_URL or "").rstrip("/")
+    if not base:
+        raise HTTPException(status_code=500, detail="FRONTEND_BASE_URL is not configured")
+    return f"{base}{path}#{urlencode({param: token})}"
+
+
+def _send_account_email(email: str) -> None:
+    """Email the right proof for ``email`` and never reveal which one it was.
+
+    - no account: a sign-up link (the password is chosen on that page);
+    - an account that can hold a password: a set-password link, which also
+      proves the mailbox, revokes every session and replaces any password a
+      pre-registration chose;
+    - a Google-only account: a reminder to use Google (it never gains a
+      password through email).
+
+    The token is stored (as a digest) before sending; a mail failure is
+    logged and the caller still answers with the same generic response.
+    """
+
+    db = _get_db()
+    user = db.get_user_by_email(email)
+    now = datetime.now(timezone.utc)
+    if user is None:
+        token = secrets.token_urlsafe(32)
+        db.issue_auth_token(
+            purpose="signup",
+            email=email,
+            user_id=None,
+            token_digest=hash_session_token(token),
+            expires_at=now + SIGNUP_TOKEN_TTL,
+        )
+        subject = "Finish creating your HalalLens account"
+        body = (
+            "Someone (hopefully you) asked to create a HalalLens account with this address.\n\n"
+            f"Choose your password here (the link works once, for 1 hour):\n{_frontend_link('/verify/', 'signup', token)}\n\n"
+            "If this was not you, ignore this email; no account is created."
+        )
+    elif user.get("provider") == "google":
+        subject = "Sign in to HalalLens with Google"
+        body = (
+            "This address belongs to a HalalLens account that signs in with Google.\n\n"
+            "Use \"Continue with Google\" on the sign-in page. If this was not you, ignore this email."
+        )
+    else:
+        token = secrets.token_urlsafe(32)
+        db.issue_auth_token(
+            purpose="reset_password",
+            email=email,
+            user_id=user["id"],
+            token_digest=hash_session_token(token),
+            expires_at=now + RESET_TOKEN_TTL,
+        )
+        subject = "Set your HalalLens password"
+        body = (
+            "Someone (hopefully you) asked to set the password of the HalalLens account for this address.\n\n"
+            f"Choose a new password here (the link works once, for 30 minutes):\n{_frontend_link('/reset/', 'reset', token)}\n\n"
+            "Setting it signs out every device. If this was not you, ignore this email; nothing changes."
+        )
+    try:
+        send_email(email, subject, body)
+    except Exception:
+        api_logger.exception("Account email failed (user id=%s)", user["id"] if user else None)
+
+
+def _account_email_request(email_raw: str, request: Optional[Request]) -> Dict[str, str]:
     _enforce_rate_limit("auth_register", _client_identity(request))
-    email = _validate_email(_normalize_email(payload.email))
-    policy_error = password_policy_error(payload.password)
+    email = _validate_email(_normalize_email(email_raw))
+    _enforce_rate_limit("auth_email_address", email)
+    _enforce_rate_limit("auth_email_cooldown", email)
+    _enforce_rate_limit("auth_email_global", "all")
+    _send_account_email(email)
+    return ACCOUNT_EMAIL_ACCEPTED
+
+
+@app.post("/auth/register", status_code=202)
+async def auth_register(payload: RegisterRequest, request: Request = None) -> Dict[str, str]:
+    """Start an email-first sign-up: email a link; the account is created there.
+
+    The answer is the same whether or not the address already has an account.
+    """
+
+    return _account_email_request(payload.email, request)
+
+
+@app.post("/auth/password/forgot", status_code=202)
+async def auth_password_forgot(payload: RegisterRequest, request: Request = None) -> Dict[str, str]:
+    """Email a set-password link (or a sign-up link when there is no account)."""
+
+    return _account_email_request(payload.email, request)
+
+
+def _require_password_policy(password: str) -> None:
+    policy_error = password_policy_error(password)
     if policy_error:
         raise HTTPException(status_code=400, detail=policy_error)
-    if _get_db().get_user_by_email(email):
-        raise HTTPException(status_code=409, detail="Email already registered")
 
-    password_hash = _hash_password(payload.password)
-    user_row = _get_db().create_user(
-        email=email,
-        password_hash=password_hash,
-        is_admin=_is_admin_email(email),
+
+INVALID_LINK = "This link is invalid, already used or expired. Request a new one."
+
+
+@app.post("/auth/signup/confirm", response_model=AuthTokenResponse)
+async def auth_signup_confirm(
+    payload: TokenPasswordRequest, request: Request = None
+) -> AuthTokenResponse:
+    """Create the account from a sign-up link, with the password chosen now."""
+
+    _enforce_rate_limit("auth_token_confirm", _client_identity(request))
+    _require_password_policy(payload.password)
+    status, user_row = _get_db().complete_signup(
+        token_digest=hash_session_token(payload.token),
+        password_hash=_hash_password(payload.password),
+        admin_emails=_admin_allowlist(),
     )
-    api_logger.info("Registered user id=%s email=%s", user_row["id"], email)
+    if status == "invalid_token":
+        raise HTTPException(status_code=400, detail=INVALID_LINK)
+    if status == "email_in_use":
+        raise HTTPException(
+            status_code=409,
+            detail="An account with this email already exists. Sign in, or use 'Forgot password'.",
+        )
+    api_logger.info("Registered user id=%s (email verified)", user_row["id"])
     token, expires_at = _issue_session(user_row["id"])
-    profile = _serialize_user_profile(user_row)
-    return AuthTokenResponse(token=token, expires_at=expires_at, user=profile)
+    return AuthTokenResponse(
+        token=token, expires_at=expires_at, user=_serialize_user_profile(user_row)
+    )
+
+
+@app.post("/auth/password/reset")
+async def auth_password_reset(
+    payload: TokenPasswordRequest, request: Request = None
+) -> Dict[str, str]:
+    """Set a new password from a reset link; signs out every session.
+
+    No session is issued: the user signs in with the new password.
+    """
+
+    _enforce_rate_limit("auth_token_confirm", _client_identity(request))
+    _require_password_policy(payload.password)
+    status, user_row = _get_db().complete_password_reset(
+        token_digest=hash_session_token(payload.token),
+        password_hash=_hash_password(payload.password),
+        admin_emails=_admin_allowlist(),
+    )
+    if status != "ok":
+        raise HTTPException(status_code=400, detail=INVALID_LINK)
+    api_logger.info("Password reset for user id=%s; sessions revoked", user_row["id"])
+    return {"status": "password_reset"}
 
 
 @app.post("/auth/login", response_model=AuthTokenResponse)
 async def auth_login(
     payload: LoginRequest, request: Request = None
 ) -> AuthTokenResponse:
-    """Authenticate an existing user."""
+    """Authenticate an existing, verified user."""
 
     _enforce_rate_limit("auth_login", _client_identity(request))
     email = _normalize_email(payload.email)
-    user_row = _get_db().get_user_by_email(email)
-    if not user_row:
-        # Burn equivalent CPU so response time does not reveal which addresses
-        # are registered.
-        dummy_verify(payload.password)
+
+    def check(stored_hash: Optional[str]) -> bool:
+        if not stored_hash:
+            # Unknown address or Google-only account: burn equivalent CPU so
+            # response time does not reveal which addresses are registered.
+            dummy_verify(payload.password)
+            return False
+        return _verify_password(payload.password, stored_hash)
+
+    def rehash(stored_hash: Optional[str]) -> Optional[str]:
+        # Transparent upgrade from the legacy 100k-iteration scheme, inside the
+        # same locked transaction as the password check.
+        return _hash_password(payload.password) if needs_rehash(stored_hash) else None
+
+    token = generate_session_token()
+    expires_at = datetime.now(timezone.utc) + timedelta(hours=AUTH_TOKEN_TTL_HOURS)
+    status, user_row = _get_db().login_with_password(
+        email=email,
+        check_password=check,
+        rehash=rehash,
+        session_digest=hash_session_token(token),
+        expires_at=expires_at,
+    )
+    if status == "bad_credentials":
         raise HTTPException(status_code=401, detail="Invalid email or password")
-    if not _verify_password(payload.password, user_row.get("password_hash")):
-        # Deliberately checked before the provider branch: answering "use Google
-        # sign-in" to an unauthenticated caller would confirm the address exists.
-        raise HTTPException(status_code=401, detail="Invalid email or password")
-    if user_row.get("provider") == "google":
+    if status == "unverified":
+        # Only after a correct password, so this does not reveal the address.
         raise HTTPException(
-            status_code=400, detail="Use Google sign-in for this account"
+            status_code=403,
+            detail="Email not verified. Use 'Forgot password' to confirm your email and set your password.",
         )
-
-    if needs_rehash(user_row.get("password_hash")):
-        # Transparent upgrade from the legacy 100k-iteration scheme.
-        try:
-            _get_db().update_user_password_hash(
-                user_row["id"], _hash_password(payload.password)
-            )
-        except Exception:  # pragma: no cover - upgrade is best-effort
-            api_logger.warning(
-                "Password hash upgrade failed for user id=%s", user_row["id"]
-            )
-
-    user_row = _apply_admin_flag(user_row)
-    _get_db().touch_user_login(user_row["id"])
-    api_logger.info("Login success id=%s email=%s", user_row["id"], email)
-    token, expires_at = _issue_session(user_row["id"])
-    profile = _serialize_user_profile(user_row)
-    return AuthTokenResponse(token=token, expires_at=expires_at, user=profile)
+    api_logger.info("Login success id=%s", user_row["id"])
+    return AuthTokenResponse(
+        token=token, expires_at=expires_at, user=_serialize_user_profile(user_row)
+    )
 
 
 @app.post("/auth/logout")
@@ -2591,8 +2747,7 @@ async def auth_me(authorization: Optional[str] = Header(None)) -> UserProfile:
     """Return the authenticated user's profile."""
 
     _, session = _require_session(authorization)
-    profile_row = _get_db().get_user_by_id(session["user_id"])
-    profile_row = _apply_admin_flag(profile_row) or {
+    profile_row = _get_db().get_user_by_id(session["user_id"]) or {
         "id": session["user_id"],
         "email": session["email"],
         "plan": session.get("plan", "free"),
@@ -2601,6 +2756,7 @@ async def auth_me(authorization: Optional[str] = Header(None)) -> UserProfile:
         "full_name": session.get("full_name"),
         "avatar_url": session.get("avatar_url"),
         "is_admin": session.get("is_admin", False),
+        "email_verified_at": session.get("email_verified_at"),
     }
     return _serialize_user_profile(profile_row)
 

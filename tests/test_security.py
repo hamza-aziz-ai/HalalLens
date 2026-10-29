@@ -102,6 +102,7 @@ class SessionDBStub:
             "subscription_renewal": None,
             "trial_used": False,
             "is_admin": self.is_admin,
+            "email_verified_at": expires_at,
         }
 
     def get_session(self, token):

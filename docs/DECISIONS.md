@@ -171,3 +171,17 @@ One entry per decision, newest last. Model for every entry below: Claude Sonnet 
 - **Trade-off:** Re-adding a symbol now keeps its baseline (it used to reset it). A delayed, stale verdict can still move a baseline backwards (needs verdict versioning). Email stays best-effort after the commit. One API worker remains the default because the rate limiter is per-process.
 - **Revisit if:** alerts move to a scheduled job, or verdicts get versions.
 
+## D-020: Email-first accounts, proven-mailbox admin, no Google linking by email
+
+- **Date:** 2026-10-29   Model: Claude Opus 5.5 (maintainer approved; design agreed with Codex in council)
+- **Context:** Sign-up never proved the email, yet an `ADMIN_EMAILS` address became admin at sign-up, login, `/auth/me` and two access checks; Google sign-in attached to any account with the same email and accepted a missing `email_verified`. Anyone could pre-register an address (even an admin's) and keep a known password after the owner later signed in with Google.
+- **Options:**
+  1. Verify after sign-up, keep the password chosen at sign-up
+  2. Email-first: the password is chosen on the emailed link
+  3. Keep auto-linking Google for verified accounts
+  4. Link Google only explicitly from a signed-in account
+- **Chosen:** 2 and 4. `email_verified_at` on users, `auth_tokens` (SHA-256 digest, purpose, single use, 1 h sign-up / 30 min reset). Sessions require a verified email; admin is granted from `ADMIN_EMAILS` only when the mailbox is proven. Reset replaces the password, verifies the email, revokes all sessions and other proofs in one transaction; login holds the same row lock from password check to session insert. The migration revokes every unproven admin and session.
+- **Why:** With option 1, a victim clicking a verification mail would verify an attacker's password (Codex). Implicit linking by email lets a squatter's account absorb the owner's Google identity. Mocks cannot prove the lock, so a real-Postgres test does (it fails without `FOR UPDATE`).
+- **Trade-off:** Password sign-up now needs working email. Existing users must re-prove their mailbox once. Google users with an email already used by a password account are refused until explicit linking (PR 3) exists. Generic responses mean a mistyped address gets no feedback.
+- **Revisit if:** a second sign-in provider is added, or email delivery becomes unreliable.
+

@@ -28,6 +28,7 @@ How to undo a change. The risky ones first.
 | Dependency cleanup (PR #74)                    | Revert; `Pipfile.lock` restores the old pins (re-adding torch is a multi-GB image) |
 | Release created by release-please              | Delete the GitHub Release and tag; revert the release PR commit                    |
 | Docs-only PRs                                  | Revert                                                                             |
+| Auth hardening (D-020)                         | Do not revert the code alone: the migration revoked unproven admins and every session. Fix forward; if an admin is locked out, prove the mailbox with a reset link or Google sign-in. A full revert also needs `ALTER TABLE users DROP COLUMN email_verified_at; DROP TABLE auth_tokens;` and re-setting `is_admin` by hand. |
 
 ## Prefer a switch over a deploy
 There is no feature flag for the verdict. The safest brake is to keep the new engine un-deployed outside the cutover window.

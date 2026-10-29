@@ -11,7 +11,7 @@ import logging
 import json
 from contextlib import contextmanager
 from datetime import datetime, date, timezone
-from typing import Dict, List, Optional, Sequence, Tuple, Any
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import pandas as pd
 import psycopg2
@@ -1944,7 +1944,7 @@ class BSEDatabaseManager:
                            subscription_status, subscription_renewal,
                            provider, google_sub, full_name, avatar_url,
                            plan_started_at, last_login, created_at, updated_at,
-                           is_admin, trial_used
+                           is_admin, trial_used, email_verified_at
                     FROM users
                     WHERE email = %(email)s
                     """,
@@ -1964,7 +1964,7 @@ class BSEDatabaseManager:
                            subscription_renewal, plan_started_at,
                            last_login, created_at, updated_at,
                            provider, google_sub, full_name, avatar_url,
-                           is_admin, trial_used
+                           is_admin, trial_used, email_verified_at
                     FROM users
                     WHERE id = %(user_id)s
                     """,
@@ -2023,106 +2023,276 @@ class BSEDatabaseManager:
                     return None
                 return dict(row)
 
-    def upsert_google_user(
+    _USER_COLUMNS = """id, email, plan, subscription_status, subscription_renewal,
+                       plan_started_at, last_login, created_at, updated_at,
+                       provider, google_sub, full_name, avatar_url, is_admin,
+                       trial_used, email_verified_at"""
+
+    def google_sign_in(
         self,
         *,
         email: str,
         google_sub: str,
-        password_hash: str,
-        full_name: Optional[str] = None,
-        avatar_url: Optional[str] = None,
-    ) -> Dict:
+        full_name: Optional[str],
+        avatar_url: Optional[str],
+        admin_emails: List[str],
+    ) -> Tuple[str, Optional[Dict]]:
+        """Resolve a Google sign-in whose email Google has verified.
+
+        Returns ("ok", user) or ("email_in_use", None). An account is matched
+        only by its Google subject; an existing account with the same email is
+        never linked implicitly (that let a pre-registered password account
+        absorb the real owner's Google sign-in). A match whose primary email is
+        this Google email is marked verified, and admin is granted only then.
+        """
+
         with self.get_connection() as conn:
             with conn.cursor() as cursor:
                 cursor.execute(
-                    """
-                    SELECT id, email, plan, subscription_status,
-                           subscription_renewal, plan_started_at,
-                           last_login, created_at, updated_at,
-                           provider, google_sub, full_name, avatar_url,
-                           is_admin, trial_used
-                    FROM users
-                    WHERE google_sub = %(google_sub)s
-                    """,
-                    {"google_sub": google_sub},
-                )
-                existing = cursor.fetchone()
-                if existing:
-                    return dict(existing)
-
-                cursor.execute(
-                    """
-                    SELECT id FROM users WHERE email = %(email)s
-                    """,
-                    {"email": email},
+                    f"SELECT {self._USER_COLUMNS} FROM users "
+                    "WHERE google_sub = %(sub)s FOR UPDATE",
+                    {"sub": google_sub},
                 )
                 row = cursor.fetchone()
                 if row:
-                    cursor.execute(
-                        """
-                        UPDATE users
-                        SET google_sub = %(google_sub)s,
-                            full_name = COALESCE(%(full_name)s, full_name),
-                            avatar_url = COALESCE(%(avatar_url)s, avatar_url),
-                            updated_at = NOW()
-                        WHERE id = %(user_id)s
-                        RETURNING id, email, plan, subscription_status,
-                                  subscription_renewal, plan_started_at,
-                                  last_login, created_at, updated_at,
-                                  provider, google_sub, full_name, avatar_url,
-                                  is_admin
-                        """,
-                        {
-                            "google_sub": google_sub,
-                            "full_name": full_name,
-                            "avatar_url": avatar_url,
-                            "user_id": row["id"],
-                        },
-                    )
-                    updated = cursor.fetchone()
+                    if row["email"] == email:
+                        cursor.execute(
+                            f"""
+                            UPDATE users
+                               SET email_verified_at = COALESCE(email_verified_at, NOW()),
+                                   is_admin = is_admin OR email = ANY(%(admins)s),
+                                   updated_at = NOW()
+                             WHERE id = %(id)s
+                            RETURNING {self._USER_COLUMNS}
+                            """,
+                            {"id": row["id"], "admins": list(admin_emails)},
+                        )
+                        row = cursor.fetchone()
                     conn.commit()
-                    return dict(updated)
+                    return "ok", dict(row)
 
                 cursor.execute(
-                    """
+                    "SELECT 1 FROM users WHERE email = %(email)s", {"email": email}
+                )
+                if cursor.fetchone():
+                    conn.commit()
+                    return "email_in_use", None
+
+                cursor.execute(
+                    f"""
                     INSERT INTO users (
-                        email,
-                        password_hash,
-                        provider,
-                        google_sub,
-                        full_name,
-                        avatar_url,
-                        plan,
-                        subscription_status,
-                        plan_started_at
+                        email, password_hash, provider, google_sub, full_name,
+                        avatar_url, plan, subscription_status, plan_started_at,
+                        email_verified_at, is_admin
                     ) VALUES (
-                        %(email)s,
-                        %(password_hash)s,
-                        'google',
-                        %(google_sub)s,
-                        %(full_name)s,
-                        %(avatar_url)s,
-                        'free',
-                        'active',
-                        NOW()
+                        %(email)s, NULL, 'google', %(sub)s, %(full_name)s,
+                        %(avatar_url)s, 'free', 'active', NOW(), NOW(),
+                        %(email)s = ANY(%(admins)s)
                     )
-                    RETURNING id, email, plan, subscription_status,
-                              subscription_renewal, plan_started_at,
-                              last_login, created_at, updated_at,
-                              provider, google_sub, full_name, avatar_url,
-                              is_admin
+                    ON CONFLICT DO NOTHING
+                    RETURNING {self._USER_COLUMNS}
                     """,
                     {
                         "email": email,
-                        "password_hash": password_hash,
-                        "google_sub": google_sub,
+                        "sub": google_sub,
                         "full_name": full_name,
                         "avatar_url": avatar_url,
+                        "admins": list(admin_emails),
                     },
                 )
                 created = cursor.fetchone()
                 conn.commit()
-                return dict(created)
+                if not created:  # a concurrent sign-up took the email or subject
+                    return "email_in_use", None
+                return "ok", dict(created)
+
+    def login_with_password(
+        self,
+        *,
+        email: str,
+        check_password: Callable[[Optional[str]], bool],
+        rehash: Callable[[Optional[str]], Optional[str]],
+        session_digest: str,
+        expires_at: datetime,
+    ) -> Tuple[str, Optional[Dict]]:
+        """Check a password and create a session in one transaction.
+
+        The user row stays locked (FOR UPDATE) from the password check through
+        the session insert, and a password reset takes the same lock, so a
+        login that verified the old password cannot leave a session behind
+        after the reset. Returns ("ok" | "bad_credentials" | "unverified", row).
+        """
+
+        with self.get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    f"SELECT {self._USER_COLUMNS}, password_hash FROM users "
+                    "WHERE email = %(email)s FOR UPDATE",
+                    {"email": email},
+                )
+                row = cursor.fetchone()
+                if not row or not check_password(row["password_hash"]):
+                    conn.rollback()
+                    return "bad_credentials", None
+                if not row["email_verified_at"]:
+                    conn.rollback()
+                    return "unverified", dict(row)
+                upgraded = rehash(row["password_hash"])
+                if upgraded:
+                    cursor.execute(
+                        "UPDATE users SET password_hash = %(h)s WHERE id = %(id)s",
+                        {"h": upgraded, "id": row["id"]},
+                    )
+                cursor.execute(
+                    "INSERT INTO user_sessions (token, user_id, expires_at) "
+                    "VALUES (%(token)s, %(id)s, %(expires_at)s)",
+                    {"token": session_digest, "id": row["id"], "expires_at": expires_at},
+                )
+                cursor.execute(
+                    "UPDATE users SET last_login = NOW(), updated_at = NOW() WHERE id = %(id)s",
+                    {"id": row["id"]},
+                )
+                conn.commit()
+                return "ok", dict(row)
+
+    def issue_auth_token(
+        self,
+        *,
+        purpose: str,
+        email: str,
+        user_id: Optional[int],
+        token_digest: str,
+        expires_at: datetime,
+    ) -> None:
+        """Store a new emailed proof; older unused ones for the same email and
+        purpose stop working, so only the latest link is valid."""
+
+        with self.get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "UPDATE auth_tokens SET consumed_at = NOW() "
+                    "WHERE email = %(email)s AND purpose = %(purpose)s AND consumed_at IS NULL",
+                    {"email": email, "purpose": purpose},
+                )
+                cursor.execute(
+                    "INSERT INTO auth_tokens (purpose, email, user_id, token_digest, expires_at) "
+                    "VALUES (%(purpose)s, %(email)s, %(user_id)s, %(digest)s, %(expires_at)s)",
+                    {
+                        "purpose": purpose,
+                        "email": email,
+                        "user_id": user_id,
+                        "digest": token_digest,
+                        "expires_at": expires_at,
+                    },
+                )
+                conn.commit()
+
+    _CONSUME_TOKEN_SQL = """
+        UPDATE auth_tokens SET consumed_at = NOW()
+         WHERE token_digest = %(digest)s AND purpose = %(purpose)s
+           AND consumed_at IS NULL AND expires_at > NOW()
+        RETURNING email, user_id
+    """
+
+    def complete_signup(
+        self,
+        *,
+        token_digest: str,
+        password_hash: str,
+        admin_emails: List[str],
+    ) -> Tuple[str, Optional[Dict]]:
+        """Consume a signup proof and create the verified account.
+
+        Returns ("ok", user), ("invalid_token", None) or ("email_in_use", None).
+        The password is chosen here, after the mailbox is proven, so nobody
+        can pre-register someone else's address with a password they know.
+        """
+
+        with self.get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    self._CONSUME_TOKEN_SQL, {"digest": token_digest, "purpose": "signup"}
+                )
+                token = cursor.fetchone()
+                if not token:
+                    conn.rollback()
+                    return "invalid_token", None
+                cursor.execute(
+                    f"""
+                    INSERT INTO users (
+                        email, password_hash, provider, plan, subscription_status,
+                        plan_started_at, email_verified_at, is_admin
+                    ) VALUES (
+                        %(email)s, %(hash)s, 'password', 'free', 'inactive',
+                        NOW(), NOW(), %(email)s = ANY(%(admins)s)
+                    )
+                    ON CONFLICT (email) DO NOTHING
+                    RETURNING {self._USER_COLUMNS}
+                    """,
+                    {"email": token["email"], "hash": password_hash, "admins": list(admin_emails)},
+                )
+                created = cursor.fetchone()
+                conn.commit()  # the proof is spent either way
+                if not created:
+                    return "email_in_use", None
+                return "ok", dict(created)
+
+    def complete_password_reset(
+        self,
+        *,
+        token_digest: str,
+        password_hash: str,
+        admin_emails: List[str],
+    ) -> Tuple[str, Optional[Dict]]:
+        """Consume a reset proof and replace the password, in one transaction.
+
+        Locks the user row (as login does), sets the password, marks the
+        email verified (the mailbox was just proven), grants admin from the
+        allowlist, revokes every session and every other unused proof.
+        Returns ("ok", user) or ("invalid_token", None).
+        """
+
+        with self.get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    self._CONSUME_TOKEN_SQL,
+                    {"digest": token_digest, "purpose": "reset_password"},
+                )
+                token = cursor.fetchone()
+                if not token or not token["user_id"]:
+                    conn.rollback()
+                    return "invalid_token", None
+                cursor.execute(
+                    "SELECT id, email FROM users WHERE id = %(id)s FOR UPDATE",
+                    {"id": token["user_id"]},
+                )
+                user = cursor.fetchone()
+                if not user or user["email"] != token["email"]:
+                    conn.rollback()
+                    return "invalid_token", None
+                cursor.execute(
+                    f"""
+                    UPDATE users
+                       SET password_hash = %(hash)s,
+                           email_verified_at = COALESCE(email_verified_at, NOW()),
+                           is_admin = is_admin OR email = ANY(%(admins)s),
+                           updated_at = NOW()
+                     WHERE id = %(id)s
+                    RETURNING {self._USER_COLUMNS}
+                    """,
+                    {"id": user["id"], "hash": password_hash, "admins": list(admin_emails)},
+                )
+                updated = cursor.fetchone()
+                cursor.execute(
+                    "DELETE FROM user_sessions WHERE user_id = %(id)s", {"id": user["id"]}
+                )
+                cursor.execute(
+                    "UPDATE auth_tokens SET consumed_at = NOW() "
+                    "WHERE user_id = %(id)s AND consumed_at IS NULL",
+                    {"id": user["id"]},
+                )
+                conn.commit()
+                return "ok", dict(updated)
 
     def touch_user_login(self, user_id: int) -> None:
         with self.get_connection() as conn:
@@ -2173,7 +2343,8 @@ class BSEDatabaseManager:
                         u.trial_used,
                         u.full_name,
                         u.avatar_url,
-                        u.is_admin
+                        u.is_admin,
+                        u.email_verified_at
                     FROM user_sessions s
                     JOIN users u ON u.id = s.user_id
                     WHERE s.token = %(token)s
