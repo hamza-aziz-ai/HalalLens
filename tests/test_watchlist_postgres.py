@@ -48,7 +48,9 @@ def storage():
     conn = psycopg2.connect(DSN)
     conn.autocommit = True
     with conn.cursor() as cur:
-        cur.execute("DROP TABLE IF EXISTS watchlist_entries; DROP TABLE IF EXISTS users;")
+        # Start from an empty schema: the auth and billing Postgres tests leave
+        # the full schema behind, whose foreign keys block dropping users alone.
+        cur.execute("DROP SCHEMA public CASCADE; CREATE SCHEMA public;")
         cur.execute("CREATE TABLE users (id SERIAL PRIMARY KEY, email TEXT)")
         cur.execute("INSERT INTO users (email) VALUES ('a@x'), ('b@x')")
         cur.execute(MIGRATION.read_text(encoding="utf-8"))

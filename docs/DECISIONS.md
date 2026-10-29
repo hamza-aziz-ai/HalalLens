@@ -225,3 +225,17 @@ One entry per decision, newest last. Model for every entry below: Claude Sonnet 
 - **Trade-off:** More review work per filing; no production filings to use until a data source is chosen; the model's usefulness is unproven until representative filings are tested; filing text goes to the cloud model (public or synthetic documents only).
 - **Revisit if:** confirmed selections show stable patterns worth promoting to scoped aliases, or PDF filings dominate the data source.
 
+## D-024: Paid access from a ledger of grants; purchases queue, nothing paid is discarded
+
+- **Date:** 2026-10-29   Model: Claude Opus 5.5 (maintainer's rules: a lower tier is a "Switch", Lifetime disables the timed plans, switching keeps the current period until it ends; design agreed with Codex in council, 3 rounds)
+- **Context:** Plans are one-time Razorpay Orders (no auto-debit). Every purchase overwrote `renewal = now + interval`: an Annual holder buying Starter lost about 11 months, an early renewal lost the remaining days, a Lifetime holder buying Starter dropped to 30 days, any refund dropped the whole account to free, and the order claim committed before the grant (a crash left a paid order without access).
+- **Options:**
+  1. `next_plan` / `next_period_end` columns on `users` (one queued period)
+  2. Stored period boundaries per purchase, rewritten on refunds
+  3. A ledger of grants (one per paid order, trial or pre-ledger period) with access derived by a fold
+  4. Razorpay Subscriptions (auto-debit) now
+- **Chosen:** 3. `subscription_grants` holds plan, duration (NULL = Lifetime), allocation time and refund state; `api/billing.py` lays grants end to end in allocation order (`start = max(allocated_at, previous end)`; a refunded grant ends at `max(start, min(natural end, revoked_at))`). Settlement, refunds, trials and projection refreshes each run in one transaction under a per-user row lock with the database clock; `users.plan`/`subscription_status`/`subscription_renewal` (now TIMESTAMPTZ) are a projection written only there. Orders keep immutable terms (plan, interval, payment id). Verify fetches the payment and grants only a captured payment matching the order's amount and currency; the webhook checks the same. Lifetime (active or scheduled) blocks purchases at order creation and, under the lock, turns a late capture into a `refund_due` order. Partial refunds accumulate; a grant is revoked when refunds reach the order amount. Labels come from `subscription_plans.rank`: Upgrade, Switch, Extend. A legacy grant preserves each existing period's exact end.
+- **Why:** A single renewal date cannot express "Annual until X, then Starter until Y" (1 is a one-slot queue that blocks concurrent checkouts). Deriving boundaries (3) needs no rewrite on refunds and no promotion job; Codex's counterexamples (refund after a queued purchase; refund of a queued purchase) fixed the fold to keep revoked grants with a clamped end. Auto-debit (4) adds mandates, failed-debit handling and cancellation, unrelated to keeping prepaid time.
+- **Trade-off:** Every access check after a period ends takes the user lock once to rebuild the projection; refunds of orders with no grant (refund-due, or pre-ledger orders that could not be linked) need manual review; payments stay manual (no renewal reminders yet).
+- **Revisit if:** auto-renewal is wanted (Razorpay Subscriptions: each charge becomes one grant), more API workers make the lock a bottleneck, or plans start to differ in features (labels and stacking then need per-feature rules).
+

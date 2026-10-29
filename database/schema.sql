@@ -176,7 +176,7 @@ CREATE TABLE IF NOT EXISTS users (
     is_admin BOOLEAN NOT NULL DEFAULT FALSE,
     plan TEXT NOT NULL DEFAULT 'free',
     subscription_status TEXT NOT NULL DEFAULT 'inactive',
-    subscription_renewal DATE,
+    subscription_renewal TIMESTAMPTZ,  -- projection of subscription_grants (D-024)
     trial_used BOOLEAN NOT NULL DEFAULT FALSE,
     email_verified_at TIMESTAMPTZ,
     plan_started_at TIMESTAMPTZ,
@@ -206,6 +206,7 @@ CREATE TABLE IF NOT EXISTS subscription_plans (
     trial_days INTEGER NOT NULL DEFAULT 0,
     features JSONB NOT NULL DEFAULT '{}'::jsonb,
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    rank INTEGER NOT NULL DEFAULT 0,  -- tier order for Upgrade / Switch / Extend
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -233,9 +234,34 @@ CREATE TABLE IF NOT EXISTS razorpay_orders (
     currency TEXT NOT NULL DEFAULT 'INR',
     status TEXT NOT NULL DEFAULT 'created',
     payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+    -- Purchase terms fixed at order creation; payment_id links refunds back.
+    plan_code TEXT REFERENCES subscription_plans(code),
+    interval_days INTEGER,
+    payment_id TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS razorpay_orders_payment_id_key
+    ON razorpay_orders (payment_id) WHERE payment_id IS NOT NULL;
+
+-- One row per paid order, trial or pre-ledger period (D-024). Access is the
+-- fold of these rows in allocation order (api/billing.py).
+CREATE TABLE IF NOT EXISTS subscription_grants (
+    id BIGSERIAL PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    plan_code TEXT NOT NULL REFERENCES subscription_plans(code),
+    source TEXT NOT NULL CHECK (source IN ('razorpay', 'trial', 'legacy')),
+    order_id TEXT UNIQUE REFERENCES razorpay_orders(order_id),
+    duration INTERVAL,                       -- NULL: Lifetime
+    allocated_at TIMESTAMPTZ NOT NULL,       -- set under the per-user lock
+    refunded_amount INTEGER NOT NULL DEFAULT 0,
+    revoked_at TIMESTAMPTZ,                  -- full refund
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_subscription_grants_user
+    ON subscription_grants (user_id, allocated_at, id);
 
 CREATE TABLE IF NOT EXISTS payment_events (
     id BIGSERIAL PRIMARY KEY,
@@ -252,36 +278,39 @@ CREATE TABLE IF NOT EXISTS payment_events (
 CREATE UNIQUE INDEX IF NOT EXISTS payment_events_provider_event_key
     ON payment_events (provider, event_id);
 
-INSERT INTO subscription_plans (code, name, price_inr, interval_days, trial_days, features)
+INSERT INTO subscription_plans (code, name, price_inr, interval_days, trial_days, features, rank)
 VALUES (
     'starter',
     'Starter',
     50,
     30,
     30,
-    '["instant_lookup","explain_why","governance_overrides","history","alerts"]'::jsonb
+    '["instant_lookup","explain_why","governance_overrides","history","alerts"]'::jsonb,
+    1
 )
 ON CONFLICT (code) DO NOTHING;
 
-INSERT INTO subscription_plans (code, name, price_inr, interval_days, trial_days, features)
+INSERT INTO subscription_plans (code, name, price_inr, interval_days, trial_days, features, rank)
 VALUES (
     'annual',
     'Annual',
     500,
     365,
     30,
-    '["instant_lookup","explain_why","governance_overrides","history","alerts"]'::jsonb
+    '["instant_lookup","explain_why","governance_overrides","history","alerts"]'::jsonb,
+    2
 )
 ON CONFLICT (code) DO NOTHING;
 
-INSERT INTO subscription_plans (code, name, price_inr, interval_days, trial_days, features)
+INSERT INTO subscription_plans (code, name, price_inr, interval_days, trial_days, features, rank)
 VALUES (
     'lifetime',
     'Lifetime',
     2000,
     0,
     0,
-    '["instant_lookup","explain_why","governance_overrides","history","alerts"]'::jsonb
+    '["instant_lookup","explain_why","governance_overrides","history","alerts"]'::jsonb,
+    3
 )
 ON CONFLICT (code) DO NOTHING;
 

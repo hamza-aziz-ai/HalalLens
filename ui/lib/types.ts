@@ -69,6 +69,24 @@ export type BillingPlan = {
   trial_days: number;
   features: string[];
   is_active: boolean;
+  rank: number;
+};
+
+// GET /billing/entitlement (api/app.py, D-024).
+export type EntitlementSegment = {
+  plan_code: string;
+  source: string;
+  start: string;
+  end: string | null; // null: Lifetime
+};
+
+export type Entitlement = {
+  plan: string;
+  subscription_status: string;
+  segments: EntitlementSegment[];
+  next_purchase_starts: string;
+  purchases_blocked: boolean;
+  auto_renewal: boolean;
 };
 
 export type RazorpayOrderResponse = {
