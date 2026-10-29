@@ -12,7 +12,7 @@ Read first: [ARCHITECTURE.md](ARCHITECTURE.md), [CONSTRAINTS.md](CONSTRAINTS.md)
 - Councils with Codex now always run to agreement (`max_rounds: 0`, maintainer's default, in CLAUDE.md).
 
 **In progress / next**
-- Refund test of the queued Starter (`pay_TtiiAAmu32yhEb`) in Razorpay Test Mode: the last unverified piece of the refund path (ASSUMPTIONS #19 refund half, #21, #22).
+- Done 2026-10-29: refund test of the queued Starter (`pay_TtiiAAmu32yhEb`): `refund.processed` revoked only that purchase, the Annual stayed (ASSUMPTIONS #19 verified). Still untested: automatic refunds against Razorpay (#21, #22), which need a real duplicate or Lifetime-conflict payment.
 - README restructure like Medical-ChatBot's (short front page with System Design and Solution Architecture diagrams, details in `docs/guides/`): in a separate PR.
 - DMARC to `p=quarantine` after about a week of clean reports (around 2026-11-05).
 - BSE data source (maintainer); known input-mapping defects to the council.
