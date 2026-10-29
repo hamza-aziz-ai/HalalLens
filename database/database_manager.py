@@ -2294,6 +2294,151 @@ class BSEDatabaseManager:
                 conn.commit()
                 return "ok", dict(updated)
 
+    def create_oauth_flow(
+        self,
+        *,
+        purpose: str,
+        state_digest: str,
+        browser_digest: str,
+        expires_at: datetime,
+        redirect: Optional[str] = None,
+        user_id: Optional[int] = None,
+        session_digest: Optional[str] = None,
+    ) -> None:
+        """Record a Google OAuth flow started by one browser (D-021)."""
+
+        with self.get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "DELETE FROM oauth_flows WHERE expires_at < NOW() - INTERVAL '1 day'"
+                )
+                cursor.execute(
+                    """
+                    INSERT INTO oauth_flows (purpose, state_digest, browser_digest, redirect,
+                                             user_id, session_digest, expires_at)
+                    VALUES (%(purpose)s, %(state)s, %(browser)s, %(redirect)s,
+                            %(user_id)s, %(session)s, %(expires_at)s)
+                    """,
+                    {
+                        "purpose": purpose,
+                        "state": state_digest,
+                        "browser": browser_digest,
+                        "redirect": redirect,
+                        "user_id": user_id,
+                        "session": session_digest,
+                        "expires_at": expires_at,
+                    },
+                )
+                conn.commit()
+
+    def consume_oauth_flow(self, *, state_digest: str, browser_digest: str) -> Optional[Dict]:
+        """Spend a flow at the callback: right state, same browser, once, in time."""
+
+        with self.get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    UPDATE oauth_flows SET callback_at = NOW()
+                     WHERE state_digest = %(state)s AND browser_digest = %(browser)s
+                       AND callback_at IS NULL AND expires_at > NOW()
+                    RETURNING id, purpose, redirect, user_id
+                    """,
+                    {"state": state_digest, "browser": browser_digest},
+                )
+                row = cursor.fetchone()
+                conn.commit()
+                return dict(row) if row else None
+
+    def record_link_identity(
+        self, *, flow_id: int, google_sub: str, google_email: str, link_code_digest: str
+    ) -> None:
+        """Store the Google identity a link flow proved; nothing is linked yet."""
+
+        with self.get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    UPDATE oauth_flows
+                       SET google_sub = %(sub)s, google_email = %(email)s,
+                           link_code_digest = %(code)s
+                     WHERE id = %(id)s AND purpose = 'link'
+                    """,
+                    {"sub": google_sub, "email": google_email, "code": link_code_digest, "id": flow_id},
+                )
+                conn.commit()
+
+    def complete_google_link(
+        self, *, link_code_digest: str, user_id: int, session_digest: str
+    ) -> Tuple[str, Optional[Dict]]:
+        """Link the proven Google identity to the account that started the flow.
+
+        Only the same user and the same, still valid session that started the
+        flow can finish it, so a victim who completes an attacker's link flow
+        in their own browser cannot attach their Google account to the
+        attacker's account. Returns ("ok", user) or ("invalid" | "conflict" |
+        "already_linked", None). Never merges accounts, never changes the
+        primary email or admin rights.
+        """
+
+        with self.get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT id, user_id, session_digest, google_sub FROM oauth_flows
+                     WHERE link_code_digest = %(code)s AND purpose = 'link'
+                       AND callback_at IS NOT NULL AND completed_at IS NULL
+                       AND expires_at > NOW()
+                     FOR UPDATE
+                    """,
+                    {"code": link_code_digest},
+                )
+                flow = cursor.fetchone()
+                if (
+                    not flow
+                    or flow["user_id"] != user_id
+                    or flow["session_digest"] != session_digest
+                    or not flow["google_sub"]
+                ):
+                    conn.rollback()
+                    return "invalid", None
+                cursor.execute(
+                    "SELECT 1 FROM user_sessions WHERE token = %(s)s AND user_id = %(u)s "
+                    "AND expires_at > NOW()",
+                    {"s": session_digest, "u": user_id},
+                )
+                if not cursor.fetchone():
+                    conn.rollback()
+                    return "invalid", None
+                cursor.execute(
+                    "SELECT id FROM users WHERE google_sub = %(sub)s", {"sub": flow["google_sub"]}
+                )
+                owner = cursor.fetchone()
+                if owner and owner["id"] != user_id:
+                    conn.rollback()
+                    return "conflict", None
+                cursor.execute(
+                    "SELECT google_sub FROM users WHERE id = %(id)s FOR UPDATE", {"id": user_id}
+                )
+                current = cursor.fetchone()
+                if current["google_sub"] and current["google_sub"] != flow["google_sub"]:
+                    conn.rollback()
+                    return "already_linked", None
+                cursor.execute(
+                    f"""
+                    UPDATE users SET google_sub = %(sub)s, updated_at = NOW()
+                     WHERE id = %(id)s
+                    RETURNING {self._USER_COLUMNS}
+                    """,
+                    {"sub": flow["google_sub"], "id": user_id},
+                )
+                user = cursor.fetchone()
+                cursor.execute(
+                    "UPDATE oauth_flows SET completed_at = NOW() WHERE id = %(id)s",
+                    {"id": flow["id"]},
+                )
+                conn.commit()
+                return "ok", dict(user)
+
     def touch_user_login(self, user_id: int) -> None:
         with self.get_connection() as conn:
             with conn.cursor() as cursor:

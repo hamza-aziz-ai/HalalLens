@@ -20,6 +20,7 @@ class AuthDB:
         self.users: Dict[int, Dict[str, Any]] = {}
         self.sessions: Dict[str, Dict[str, Any]] = {}
         self.tokens: List[Dict[str, Any]] = []
+        self.flows: List[Dict[str, Any]] = []
         self.next_id = 1
 
     # -- helpers for tests -------------------------------------------------
@@ -141,4 +142,45 @@ class AuthDB:
         for other in self.tokens:
             if other["user_id"] == user["id"] and not other["consumed_at"]:
                 other["consumed_at"] = _now()
+        return "ok", dict(user)
+
+    # -- OAuth flows (D-021) -------------------------------------------------
+    def _flows(self):
+        return self.flows
+
+    def create_oauth_flow(self, *, purpose, state_digest, browser_digest, expires_at,
+                          redirect=None, user_id=None, session_digest=None):
+        self._flows().append({
+            "id": len(self._flows()) + 1, "purpose": purpose, "state": state_digest,
+            "browser": browser_digest, "redirect": redirect, "user_id": user_id,
+            "session": session_digest, "expires_at": expires_at, "callback_at": None,
+            "completed_at": None, "google_sub": None, "code": None,
+        })
+
+    def consume_oauth_flow(self, *, state_digest, browser_digest):
+        for flow in self._flows():
+            if (flow["state"] == state_digest and flow["browser"] == browser_digest
+                    and not flow["callback_at"] and flow["expires_at"] > _now()):
+                flow["callback_at"] = _now()
+                return {k: flow[k] for k in ("id", "purpose", "redirect", "user_id")}
+        return None
+
+    def record_link_identity(self, *, flow_id, google_sub, google_email, link_code_digest):
+        flow = self._flows()[flow_id - 1]
+        flow.update(google_sub=google_sub, google_email=google_email, code=link_code_digest)
+
+    def complete_google_link(self, *, link_code_digest, user_id, session_digest):
+        flow = next((f for f in self._flows() if f["code"] == link_code_digest and f["purpose"] == "link"
+                     and f["callback_at"] and not f["completed_at"] and f["expires_at"] > _now()), None)
+        if (not flow or flow["user_id"] != user_id or flow["session"] != session_digest
+                or session_digest not in self.sessions):
+            return "invalid", None
+        owner = next((u for u in self.users.values() if u["google_sub"] == flow["google_sub"]), None)
+        if owner and owner["id"] != user_id:
+            return "conflict", None
+        user = self.users[user_id]
+        if user["google_sub"] and user["google_sub"] != flow["google_sub"]:
+            return "already_linked", None
+        user["google_sub"] = flow["google_sub"]
+        flow["completed_at"] = _now()
         return "ok", dict(user)

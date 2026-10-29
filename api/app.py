@@ -12,7 +12,6 @@ from typing import Any, Dict, List, Optional, Tuple, Literal, Deque
 from collections import deque
 
 import asyncio
-import base64
 import hashlib
 import hmac
 import logging
@@ -24,7 +23,7 @@ import re
 from concurrent.futures import ThreadPoolExecutor
 import requests
 from urllib.parse import urlencode, urlsplit, urlunsplit
-from fastapi import FastAPI, HTTPException, Header, Request
+from fastapi import FastAPI, HTTPException, Header, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -60,7 +59,6 @@ from config import (
     GOOGLE_CLIENT_ID,
     GOOGLE_CLIENT_SECRET,
     GOOGLE_REDIRECT_URI,
-    OAUTH_STATE_SECRET,
     FRONTEND_BASE_URL,
     ADMIN_EMAILS,
     RAZORPAY_KEY_ID,
@@ -220,6 +218,7 @@ class UserProfile(BaseModel):
     avatar_url: Optional[str] = None
     is_admin: bool = False
     email_verified: bool = False
+    google_linked: bool = False
 
 
 class AuthTokenResponse(BaseModel):
@@ -239,6 +238,22 @@ class RegisterRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     email: str
+
+
+class LinkStartRequest(BaseModel):
+    """Fresh re-authentication before linking a Google account."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    password: str
+
+
+class LinkConfirmRequest(BaseModel):
+    """The one-time code the link callback put in the account page's fragment."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    code: str = Field(..., min_length=20, max_length=200)
 
 
 class TokenPasswordRequest(BaseModel):
@@ -656,8 +671,10 @@ narrator = NarrationEngine(
 GOOGLE_AUTH_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token"
 GOOGLE_USERINFO_ENDPOINT = "https://openidconnect.googleapis.com/v1/userinfo"
-GOOGLE_STATE_TTL = timedelta(minutes=10)
-GOOGLE_STATE_CACHE: Dict[str, Dict[str, Optional[str]]] = {}
+OAUTH_FLOW_TTL = timedelta(minutes=10)
+#: Short-lived HttpOnly cookie that binds a Google OAuth flow to the browser
+#: that started it (D-021).
+OAUTH_BROWSER_COOKIE = "hl_oauth"
 RAZORPAY_API_BASE = "https://api.razorpay.com/v1"
 
 
@@ -693,6 +710,7 @@ def _serialize_user_profile(row: Dict[str, Any]) -> UserProfile:
         avatar_url=row.get("avatar_url"),
         is_admin=bool(row.get("is_admin")),
         email_verified=bool(row.get("email_verified_at")),
+        google_linked=bool(row.get("google_sub")),
     )
 
 
@@ -862,97 +880,55 @@ def _sanitize_google_redirect(value: Optional[str]) -> Optional[str]:
     return normalized
 
 
-def _google_state_secret() -> str:
-    return (OAUTH_STATE_SECRET or GOOGLE_CLIENT_SECRET or "").strip()
+def _oauth_cookie_path(request: Optional[Request]) -> str:
+    # Behind Caddy the API lives under /api (uvicorn --root-path), and the
+    # browser sends the cookie only to the Google auth routes.
+    root = (request.scope.get("root_path", "") if request is not None else "").rstrip("/")
+    return f"{root}/auth/google"
 
 
-def _build_google_state(redirect: Optional[str]) -> str:
-    secret = _google_state_secret()
-    if not secret:
-        state = secrets.token_urlsafe(32)
-        _store_google_state(state, redirect)
-        return state
-    now = datetime.now(timezone.utc)
-    payload = {
-        "nonce": secrets.token_urlsafe(16),
-        "created": now.isoformat(),
-        "redirect": redirect,
-    }
-    payload_json = json.dumps(payload, separators=(",", ":"), ensure_ascii=True)
-    payload_b64 = (
-        base64.urlsafe_b64encode(payload_json.encode("utf-8"))
-        .decode("ascii")
-        .rstrip("=")
+def _oauth_cookie_secure() -> bool:
+    return (FRONTEND_BASE_URL or "").lower().startswith("https://")
+
+
+def _start_oauth_flow(
+    response: Response,
+    request: Optional[Request],
+    *,
+    purpose: str,
+    redirect: Optional[str] = None,
+    user_id: Optional[int] = None,
+    session_digest: Optional[str] = None,
+) -> str:
+    """Create a single-use flow bound to this browser; return Google's URL.
+
+    The state sent to Google and a second random value set as an HttpOnly,
+    SameSite=Lax cookie are stored only as digests. The callback must present
+    both, once, within OAUTH_FLOW_TTL, so a state cannot be replayed or
+    finished in another browser (login CSRF / session swap).
+    """
+
+    state = secrets.token_urlsafe(32)
+    browser = secrets.token_urlsafe(32)
+    _get_db().create_oauth_flow(
+        purpose=purpose,
+        state_digest=hash_session_token(state),
+        browser_digest=hash_session_token(browser),
+        expires_at=datetime.now(timezone.utc) + OAUTH_FLOW_TTL,
+        redirect=redirect,
+        user_id=user_id,
+        session_digest=session_digest,
     )
-    signature = hmac.new(
-        secret.encode("utf-8"),
-        payload_b64.encode("ascii"),
-        hashlib.sha256,
-    ).hexdigest()
-    return f"{payload_b64}.{signature}"
-
-
-def _store_google_state(state: str, redirect: Optional[str]) -> None:
-    now = datetime.now(timezone.utc)
-    GOOGLE_STATE_CACHE[state] = {
-        "created": now.isoformat(),
-        "redirect": redirect,
-    }
-    for key, entry in list(GOOGLE_STATE_CACHE.items()):
-        created_raw = entry.get("created")
-        if not created_raw:
-            GOOGLE_STATE_CACHE.pop(key, None)
-            continue
-        try:
-            created = datetime.fromisoformat(created_raw)
-        except ValueError:
-            GOOGLE_STATE_CACHE.pop(key, None)
-            continue
-        if now - created > GOOGLE_STATE_TTL:
-            GOOGLE_STATE_CACHE.pop(key, None)
-
-
-def _consume_google_state(state: str) -> Optional[str]:
-    entry = GOOGLE_STATE_CACHE.pop(state, None)
-    if entry:
-        created_raw = entry.get("created")
-        if not created_raw:
-            raise HTTPException(status_code=400, detail="Invalid OAuth state")
-        created = datetime.fromisoformat(created_raw)
-        if datetime.now(timezone.utc) - created > GOOGLE_STATE_TTL:
-            raise HTTPException(status_code=400, detail="Expired OAuth state")
-        return entry.get("redirect")
-
-    secret = _google_state_secret()
-    if not secret:
-        raise HTTPException(status_code=400, detail="Invalid OAuth state")
-    parts = state.split(".", 1)
-    if len(parts) != 2:
-        raise HTTPException(status_code=400, detail="Invalid OAuth state")
-    payload_b64, signature = parts
-    expected = hmac.new(
-        secret.encode("utf-8"),
-        payload_b64.encode("ascii"),
-        hashlib.sha256,
-    ).hexdigest()
-    if not hmac.compare_digest(expected, signature):
-        raise HTTPException(status_code=400, detail="Invalid OAuth state")
-    padding = "=" * (-len(payload_b64) % 4)
-    try:
-        payload_raw = base64.urlsafe_b64decode(
-            (payload_b64 + padding).encode("ascii")
-        ).decode("utf-8")
-        payload = json.loads(payload_raw)
-    except (ValueError, json.JSONDecodeError):
-        raise HTTPException(status_code=400, detail="Invalid OAuth state")
-    created_raw = payload.get("created")
-    if not created_raw:
-        raise HTTPException(status_code=400, detail="Invalid OAuth state")
-    created = datetime.fromisoformat(created_raw)
-    if datetime.now(timezone.utc) - created > GOOGLE_STATE_TTL:
-        raise HTTPException(status_code=400, detail="Expired OAuth state")
-    redirect = payload.get("redirect")
-    return _sanitize_google_redirect(redirect)
+    response.set_cookie(
+        OAUTH_BROWSER_COOKIE,
+        browser,
+        max_age=int(OAUTH_FLOW_TTL.total_seconds()),
+        httponly=True,
+        secure=_oauth_cookie_secure(),
+        samesite="lax",
+        path=_oauth_cookie_path(request),
+    )
+    return _build_google_authorization_url(state)
 
 
 def _build_google_authorization_url(state: str) -> str:
@@ -961,8 +937,8 @@ def _build_google_authorization_url(state: str) -> str:
         "redirect_uri": GOOGLE_REDIRECT_URI,
         "response_type": "code",
         "scope": "openid email profile",
-        "access_type": "offline",
-        "prompt": "consent",
+        # Identity only: no refresh token is requested or stored.
+        "prompt": "select_account",
         "state": state,
     }
     return f"{GOOGLE_AUTH_ENDPOINT}?{urlencode(params)}"
@@ -2463,20 +2439,92 @@ async def narrate(
 
 
 @app.get("/auth/google/start")
-async def auth_google_start(redirect: Optional[str] = None):
-    """Initiate Google OAuth login."""
+async def auth_google_start(redirect: Optional[str] = None, request: Request = None):
+    """Initiate Google OAuth login, bound to this browser."""
 
     _ensure_google_oauth_enabled()
-    state = _build_google_state(_sanitize_google_redirect(redirect))
-    return RedirectResponse(_build_google_authorization_url(state), status_code=307)
+    response = RedirectResponse("", status_code=307)
+    response.headers["location"] = _start_oauth_flow(
+        response, request, purpose="login", redirect=_sanitize_google_redirect(redirect)
+    )
+    return response
+
+
+@app.post("/auth/google/link/start")
+async def auth_google_link_start(
+    payload: LinkStartRequest,
+    request: Request,
+    response: Response,
+    authorization: Optional[str] = Header(None),
+) -> Dict[str, str]:
+    """Begin linking a Google account to the signed-in, verified account.
+
+    Requires the account password again (fresh re-authentication). The flow
+    records this user and this session; only they can confirm it later.
+    """
+
+    session_digest, session = _require_session(authorization)
+    _ensure_google_oauth_enabled()
+    _enforce_rate_limit("auth_login", f"user:{session['user_id']}")
+    user = _get_db().get_user_by_email(session["email"])
+    stored_hash = (user or {}).get("password_hash")
+    if not stored_hash:
+        raise HTTPException(
+            status_code=400,
+            detail="This account has no password. Use 'Forgot password' to set one first.",
+        )
+    if not _verify_password(payload.password, stored_hash):
+        raise HTTPException(status_code=401, detail="Password is incorrect")
+    url = _start_oauth_flow(
+        response, request, purpose="link", user_id=session["user_id"], session_digest=session_digest
+    )
+    return {"url": url}
+
+
+@app.post("/auth/google/link/confirm", response_model=UserProfile)
+async def auth_google_link_confirm(
+    payload: LinkConfirmRequest, authorization: Optional[str] = Header(None)
+) -> UserProfile:
+    """Finish a link: only the user and session that started it can."""
+
+    session_digest, session = _require_session(authorization)
+    status, user_row = _get_db().complete_google_link(
+        link_code_digest=hash_session_token(payload.code),
+        user_id=session["user_id"],
+        session_digest=session_digest,
+    )
+    if status == "conflict":
+        raise HTTPException(status_code=409, detail="That Google account is linked to another HalalLens account.")
+    if status == "already_linked":
+        raise HTTPException(status_code=409, detail="This account is already linked to a different Google account.")
+    if status != "ok":
+        raise HTTPException(
+            status_code=400,
+            detail="This link expired or was started from another session. Start again from your account page.",
+        )
+    api_logger.info("Google account linked to user id=%s", user_row["id"])
+    return _serialize_user_profile(user_row)
 
 
 @app.get("/auth/google/callback")
-async def auth_google_callback(code: str, state: str):
-    """Handle Google's OAuth redirect, issue HalalLens session, and forward to the dashboard."""
+async def auth_google_callback(code: str, state: str, request: Request = None):
+    """Handle Google's redirect for a login or link flow started in this browser."""
 
     _ensure_google_oauth_enabled()
-    redirect_base = _consume_google_state(state)
+    browser = request.cookies.get(OAUTH_BROWSER_COOKIE) if request is not None else None
+    flow = (
+        _get_db().consume_oauth_flow(
+            state_digest=hash_session_token(state), browser_digest=hash_session_token(browser)
+        )
+        if browser
+        else None
+    )
+    if not flow:
+        raise HTTPException(
+            status_code=400,
+            detail="Google sign-in expired or was opened in another browser. Please start again.",
+        )
+    redirect_base = _sanitize_google_redirect(flow.get("redirect"))
     token_data = _exchange_google_code(code)
     access_token = token_data.get("access_token")
     if not access_token:
@@ -2490,6 +2538,26 @@ async def auth_google_callback(code: str, state: str):
         # A missing claim is not proof of the mailbox.
         raise HTTPException(status_code=403, detail="Google email not verified")
 
+    if flow["purpose"] == "link":
+        # Prove the Google identity only; the signed-in session confirms it.
+        link_code = secrets.token_urlsafe(32)
+        _get_db().record_link_identity(
+            flow_id=flow["id"],
+            google_sub=sub,
+            google_email=email,
+            link_code_digest=hash_session_token(link_code),
+        )
+        base = (FRONTEND_BASE_URL or "").rstrip("/")
+        response = RedirectResponse(f"{base}/account/#{urlencode({'link': link_code})}", status_code=302)
+    else:
+        response = _google_login_response(email, sub, profile, redirect_base)
+    response.delete_cookie(OAUTH_BROWSER_COOKIE, path=_oauth_cookie_path(request))
+    return response
+
+
+def _google_login_response(
+    email: str, sub: str, profile: Dict[str, Any], redirect_base: Optional[str]
+) -> RedirectResponse:
     status, user_row = _get_db().google_sign_in(
         email=email,
         google_sub=sub,
@@ -2499,7 +2567,7 @@ async def auth_google_callback(code: str, state: str):
     )
     if status == "email_in_use":
         # Never attach Google to an existing account by email: the account
-        # owner signs in (or resets the password) and links Google from there.
+        # owner signs in and links Google from the account page.
         return RedirectResponse(
             _build_auth_error_redirect("account_exists", redirect_base), status_code=302
         )
@@ -2508,12 +2576,9 @@ async def auth_google_callback(code: str, state: str):
             _build_auth_error_redirect("verify_email", redirect_base), status_code=302
         )
     _get_db().touch_user_login(user_row["id"])
-    api_logger.info("Google SSO user upserted id=%s email=%s", user_row["id"], email)
+    api_logger.info("Google SSO sign-in id=%s", user_row["id"])
     token, expires_at = _issue_session(user_row["id"])
-    return RedirectResponse(
-        _build_google_redirect(token, expires_at, redirect_base),
-        status_code=302,
-    )
+    return RedirectResponse(_build_google_redirect(token, expires_at, redirect_base), status_code=302)
 
 
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s.]+(\.[^@\s.]+)+$")

@@ -74,6 +74,27 @@ export async function resetPassword(token: string, password: string) {
 }
 
 /**
+ * Starts linking a Google account (password required again). The API sets a
+ * short-lived cookie that binds the flow to this browser; same-origin /api is
+ * what lets the browser keep it.
+ */
+export async function startGoogleLink(password: string) {
+  const result = await request<{ url: string }>("/auth/google/link/start", {
+    method: "POST",
+    body: JSON.stringify({ password }),
+  });
+  return result.url;
+}
+
+/** Finishes a link from the code Google's callback put in the fragment. */
+export async function confirmGoogleLink(code: string) {
+  return request<import("./types").UserProfile>("/auth/google/link/confirm", {
+    method: "POST",
+    body: JSON.stringify({ code }),
+  });
+}
+
+/**
  * Reads a one-time proof from the URL fragment (never the query string) and
  * removes it from the address bar and history straight away.
  */

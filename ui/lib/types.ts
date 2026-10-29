@@ -259,4 +259,5 @@ export type UserProfile = {
   avatar_url?: string | null;
   is_admin?: boolean;
   email_verified?: boolean;
+  google_linked?: boolean;
 };

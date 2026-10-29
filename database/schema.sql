@@ -322,4 +322,22 @@ CREATE TABLE IF NOT EXISTS auth_tokens (
 );
 CREATE INDEX IF NOT EXISTS idx_auth_tokens_email_purpose ON auth_tokens (email, purpose);
 
+-- Browser-bound, single-use Google OAuth flows (migration 20261029_oauth_flows.sql).
+CREATE TABLE IF NOT EXISTS oauth_flows (
+    id BIGSERIAL PRIMARY KEY,
+    purpose TEXT NOT NULL CHECK (purpose IN ('login', 'link')),
+    state_digest TEXT NOT NULL UNIQUE,
+    browser_digest TEXT NOT NULL,
+    redirect TEXT,
+    user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+    session_digest TEXT,
+    google_sub TEXT,
+    google_email TEXT,
+    link_code_digest TEXT UNIQUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    expires_at TIMESTAMPTZ NOT NULL,
+    callback_at TIMESTAMPTZ,
+    completed_at TIMESTAMPTZ
+);
+
 COMMIT;

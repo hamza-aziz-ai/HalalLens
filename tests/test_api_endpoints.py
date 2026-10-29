@@ -192,9 +192,13 @@ def test_google_start_requires_config(monkeypatch):
     monkeypatch.setattr(
         api_module, "GOOGLE_REDIRECT_URI", "http://localhost/callback", raising=False
     )
+    from tests.auth_fake import AuthDB
+
+    monkeypatch.setattr(api_module, "_get_db", lambda: AuthDB())
     response = _run(api_module.auth_google_start())
     assert response.status_code == 307
     assert "accounts.google.com" in response.headers["location"]
+    assert "hl_oauth=" in response.headers["set-cookie"]
 
 
 class FeedbackDBStub:
