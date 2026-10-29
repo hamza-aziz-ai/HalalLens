@@ -79,15 +79,16 @@ def _pay(fake, order_id, payment_id, event="payment.captured"):
     return _webhook({"event": event, "payload": {"payment": {"entity": _captured(order, payment_id)}}})
 
 
-def _refund(fake, order_id, refund_id, amount=None, refunded_total=None):
+def _refund(fake, order_id, refund_id, amount=None, refunded_total=None, payment_id=None):
     order = fake.orders[order_id]
-    payment = {"id": order["payment_id"], "order_id": order_id, "amount": order["amount"]}
+    pid = payment_id or order["payment_id"]
+    payment = {"id": pid, "order_id": order_id, "amount": order["amount"]}
     if refunded_total is not None:
         payment["amount_refunded"] = refunded_total
     return _webhook({
         "event": "refund.processed",
         "payload": {
-            "refund": {"entity": {"id": refund_id, "payment_id": order["payment_id"],
+            "refund": {"entity": {"id": refund_id, "payment_id": pid,
                                   "amount": order["amount"] if amount is None else amount}},
             "payment": {"entity": payment},
         },
@@ -277,12 +278,60 @@ def test_partial_refunds_revoke_only_when_they_reach_the_full_amount(fake):
     assert fake.users[42]["plan"] == "free"
 
 
-def test_a_refund_before_capture_stops_a_later_grant(fake):
-    order = fake.add_order("order_1", "starter")
-    order["payment_id"] = "pay_aaaaaa1"
-    assert _refund(fake, "order_1", "rfnd_1") == {"status": "blocked"}
-    assert _pay(fake, "order_1", "pay_aaaaaa1") == {"status": "ok"}
+def test_a_payment_refunded_before_settlement_never_funds_the_order(fake):
+    fake.add_order("order_1", "starter")
+    assert _refund(fake, "order_1", "rfnd_1", payment_id="pay_aaaaaa1") == {"status": "unsettled"}
+    assert _pay(fake, "order_1", "pay_aaaaaa1") == {"status": "refunded_payment"}
     assert fake.grants == []
+    # Another attempt on the same order can still fund it.
+    assert _pay(fake, "order_1", "pay_bbbbbb2") == {"status": "granted"}
+
+
+def test_a_partial_refund_before_settlement_does_not_block_the_order(fake):
+    fake.add_order("order_1", "starter")  # 5000 paise
+    assert _refund(fake, "order_1", "rfnd_1", amount=1000, payment_id="pay_aaaaaa1") == {"status": "unsettled"}
+    assert _pay(fake, "order_1", "pay_aaaaaa1") == {"status": "granted"}
+
+
+def test_refunding_a_duplicate_payment_never_revokes_the_plan(fake):
+    # Two captured payments on one order: only the first funded the grant.
+    fake.add_order("order_1", "annual")
+    _pay(fake, "order_1", "pay_first01")
+    assert _refund(fake, "order_1", "rfnd_dup", payment_id="pay_second2") == {"status": "other_payment"}
+    assert fake.users[42]["plan"] == "annual"
+    assert fake.orders["order_1"]["status"] == "paid"
+
+
+def test_overlapping_cumulative_evidence_is_not_double_counted(fake):
+    # Refund 1 arrives late carrying a cumulative total that already includes
+    # refund 2; the old max(previous + delta, cumulative) overshot here.
+    fake.add_order("order_1", "annual")  # 50000 paise
+    _pay(fake, "order_1", "pay_annual1")
+    assert _refund(fake, "order_1", "rfnd_2", amount=20000) == {"status": "partial"}
+    assert _refund(fake, "order_1", "rfnd_1", amount=15000, refunded_total=35000) == {"status": "partial"}
+    assert fake.users[42]["plan"] == "annual"  # 35000 of 50000 refunded
+    assert _refund(fake, "order_1", "rfnd_3", amount=15000) == {"status": "revoked"}
+
+
+def test_refund_of_a_refund_due_payment_closes_it_without_touching_access(fake):
+    fake.add_order("o_life", "lifetime")
+    fake.add_order("o_s", "starter")
+    _pay(fake, "o_life", "pay_life1")
+    _pay(fake, "o_s", "pay_start1")
+    assert _refund(fake, "o_s", "rfnd_s") == {"status": "refund_due_closed"}
+    assert fake.orders["o_s"]["status"] == "refunded" and fake.users[42]["plan"] == "lifetime"
+
+
+def test_refund_of_a_pre_ledger_grant_goes_to_review(fake):
+    # Migrated (legacy) grant: its funding payment was never recorded.
+    order = fake.add_order("order_old", "annual")
+    order["status"] = "paid"
+    fake.grants.append({"id": 1, "user_id": 42, "plan_code": "annual", "source": "legacy",
+                        "order_id": "order_old", "duration": timedelta(days=365),
+                        "allocated_at": fake.now, "refunded_amount": 0, "revoked_at": None})
+    fake.refresh_entitlement(42, api_module.billing.project)
+    assert _refund(fake, "order_old", "rfnd_x", payment_id="pay_unknown") == {"status": "needs_review"}
+    assert fake.users[42]["plan"] == "annual"
 
 
 def test_refund_without_an_order_entity_is_found_by_payment_id(fake):
