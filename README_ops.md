@@ -35,6 +35,17 @@ Store secrets in a `.env` file, Docker secrets, or whichever secret manager your
 
 5. Start the ingestion scheduler (systemd or `docker compose run --rm ingestion`). Watch `/ops/metrics` and the ingestion heartbeat for failures.
 
+### PostgreSQL backups and restore
+
+The `backup` service in `docker-compose-prod.yml` runs `jobs.backup_postgres` once a day (`BACKUP_INTERVAL_HOURS`, default 24). Each run writes a `pg_dump --format=custom` of the app database to `backups/postgres/<db>-<UTC timestamp>.dump` in `MINIO_BUCKET` (R2 in production), then deletes backups under that prefix older than `BACKUP_RETENTION_DAYS` (default 14). Old copies are deleted only after a successful upload; a failed run logs `Backup failed`, notifies through the ops notifier and retries after an hour. The dumps hold user accounts (emails, password hashes, session digests): keep the bucket private and the token scoped to it.
+
+- Back up now: `docker compose -f docker-compose-prod.yml run --rm backup python3 -m jobs.backup_postgres` (one run; omit `--loop`).
+- Restore: download a `.dump` from the bucket (Cloudflare dashboard, or any S3 client), then stop the writers and restore into the running Postgres:
+  1. `docker compose -f docker-compose-prod.yml stop api ingestion evaluation backup`
+  2. `docker compose -f docker-compose-prod.yml exec -T postgres pg_restore --clean --if-exists --no-owner -U "$POSTGRES_USER" -d "$POSTGRES_DB" < halallens.dump`
+  3. `docker compose -f docker-compose-prod.yml up -d`
+- Test a restore into a scratch database before relying on it (`createdb` a new name, restore there, compare row counts).
+
 ### Indian Stock API quota
 
 The vendor plan is small (the free plan allows 500 requests per month). Every vendor call goes through `market_data/indian_api.py::_request_json`, which enforces `INDIAN_API_MONTHLY_LIMIT` (production default 450) with a counter in `cache/indian_api_quota.json` in the persistent `api_cache` volume, so the cap survives restarts. At the cap the app logs `Indian API monthly limit reached` and falls back to stored data and the free Bhavcopy files. In production the ingestion and evaluation schedulers run with the vendor turned off, so the quota is spent only on users' on-demand lookups. The API key is sent only in the `X-API-Key` header, never in a URL.
