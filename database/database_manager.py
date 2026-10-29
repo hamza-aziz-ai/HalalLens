@@ -2797,7 +2797,7 @@ class BSEDatabaseManager:
                 # Any purchase consumes the free trial.
                 self._write_projection(cursor, user_id, projection, trial_used=True)
                 conn.commit()
-                return "granted", projection
+                return "granted", {**projection, "granted_plan": order["plan_code"]}
 
     def refund_razorpay_payment(
         self,

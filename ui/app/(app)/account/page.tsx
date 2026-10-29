@@ -12,6 +12,7 @@ import {
   purchaseLabel,
   startTrial,
   verifyRazorpayPayment,
+  waitForOrderSettlement,
 } from "@/lib/billing";
 import { logoutUser } from "@/lib/auth";
 import { GoogleLinkCard } from "@/components/google-link-card";
@@ -68,7 +69,10 @@ export default function AccountPage() {
   const planName = (code: string) => billingPlans.find((p) => p.code === code)?.name ?? code;
   const running = entitlement?.segments[0] ?? null;
   const queued = entitlement?.segments.slice(1) ?? [];
-  const currentRank = running ? billingPlans.find((p) => p.code === running.plan_code)?.rank ?? 0 : 0;
+  // A purchase follows the LAST paid plan (running or queued), so labels compare
+  // against that one: with Annual then Starter queued, Starter is "Extend".
+  const lastPaid = entitlement?.segments[entitlement.segments.length - 1] ?? null;
+  const currentRank = lastPaid ? billingPlans.find((p) => p.code === lastPaid.plan_code)?.rank ?? 0 : 0;
   // While a timed plan runs, a purchase made now starts when the paid time
   // already bought runs out (the API's next_purchase_starts).
   const startsLater = running?.end && entitlement ? entitlement.next_purchase_starts : null;
@@ -81,11 +85,12 @@ export default function AccountPage() {
       await loadRazorpayScript();
       const order = await createRazorpayOrder(plan.code);
 
+      // null: the checkout closed without its success callback.
       const paymentResult = await new Promise<{
         razorpay_payment_id: string;
         razorpay_order_id: string;
         razorpay_signature: string;
-      }>((resolve, reject) => {
+      } | null>((resolve, reject) => {
         if (!window.Razorpay) {
           reject(new Error("Razorpay script failed to load."));
           return;
@@ -103,8 +108,9 @@ export default function AccountPage() {
           },
           theme: { color: "#06b6d4" },
           modal: {
-            // Closing the checkout must end the wait, or the button stays busy.
-            ondismiss: () => reject(new Error("Payment cancelled. No money was taken.")),
+            // Closing the checkout ends the wait. It is not proof of a cancel:
+            // a payment finished on the bank's page never calls `handler`.
+            ondismiss: () => resolve(null),
           },
         };
         const razorpay = new window.Razorpay(options);
@@ -115,11 +121,24 @@ export default function AccountPage() {
         razorpay.open();
       });
 
-      await verifyRazorpayPayment({
-        razorpay_order_id: paymentResult.razorpay_order_id,
-        razorpay_payment_id: paymentResult.razorpay_payment_id,
-        razorpay_signature: paymentResult.razorpay_signature,
-      });
+      if (paymentResult) {
+        await verifyRazorpayPayment({
+          razorpay_order_id: paymentResult.razorpay_order_id,
+          razorpay_payment_id: paymentResult.razorpay_payment_id,
+          razorpay_signature: paymentResult.razorpay_signature,
+        });
+      } else {
+        setUpgradeMessage("Checking your payment…");
+        const status = await waitForOrderSettlement(order.order_id);
+        if (status === "refund_due") {
+          throw new Error("Lifetime access already covers your account, so this payment will be refunded.");
+        }
+        if (status !== "paid") {
+          throw new Error(
+            "No completed payment yet. If you did pay, your plan appears here within a few minutes; otherwise no money was taken.",
+          );
+        }
+      }
 
       await refresh();
       await loadEntitlement();
@@ -282,7 +301,7 @@ export default function AccountPage() {
           {billingPlans.map((plan) => {
             // Lifetime active or scheduled covers every plan (the API refuses the order).
             const isLifetimeUser = Boolean(entitlement?.purchases_blocked);
-            const isCurrentPlan = running?.plan_code === plan.code;
+            const extendsLastPlan = lastPaid?.plan_code === plan.code;
             const showTrial = plan.trial_days > 0 && trialEligible;
             const isAnnual = plan.interval_days >= 365 && plan.interval_days > 0;
             const disableUpgrade = upgradeLoading || billingLoading || isLifetimeUser;
@@ -348,7 +367,7 @@ export default function AccountPage() {
                         </button>
                         {startsLater && (
                           <p className={clsx("text-[11px]", mutedTextClass)}>
-                            {isCurrentPlan ? "Adds to your plan; " : ""}starts {formatDate(startsLater)}
+                            {extendsLastPlan ? "Adds to your plan; " : ""}starts {formatDate(startsLater)}
                           </p>
                         )}
                       </>
