@@ -68,11 +68,27 @@ Calling ollama.com directly with an API key needs paid credits (HTTP 402); the s
 
 The vendor plan is small (the free plan allows 500 requests per month). Every vendor call goes through `market_data/indian_api.py::_request_json`, which enforces `INDIAN_API_MONTHLY_LIMIT` (production default 450) with a counter in `cache/indian_api_quota.json` in the persistent `api_cache` volume, so the cap survives restarts. At the cap the app logs `Indian API monthly limit reached` and falls back to stored data and the free Bhavcopy files. In production the ingestion and evaluation schedulers run with the vendor turned off, so the quota is spent only on users' on-demand lookups. The API key is sent only in the `X-API-Key` header, never in a URL.
 
+### Production deploys (`scripts/deploy.sh`)
+
+On the server, from the checkout that holds `.env` (production: `/opt/halallens`):
+
+```bash
+git fetch --tags && git checkout vX.Y.Z   # first time only, to get the script
+scripts/deploy.sh vX.Y.Z
+```
+
+The script checks out the release tag (compose file, Caddyfile, migrations), then:
+
+- **Pull mode** (recommended): with `IMAGE_REPOSITORY` in `.env` (e.g. `ghcr.io/<owner>` or `docker.io/<namespace>`), it pulls `halallens-api` and `halallens-ui` for that tag: the images CI tested, smoke-tested, Trivy-scanned and published with SBOM and provenance. Nothing is built on the server. Wait for the release's Publish images run to finish first; if the tag is not published yet, the pull fails before anything is restarted.
+- **Build mode** (default): without `IMAGE_REPOSITORY`, it builds the images on the server from the tag.
+
+Either way it starts the stack, waits for the API health check, prints the service states and smoke-tests `/api/health`, `/api/openapi.json`, `/` and `/products/` through Caddy; a non-200 makes it exit non-zero. **Rollback:** run it again with the previous tag (migrations are forward-only: see `docs/ROLLBACK.md`). The dashboard's support address is part of the UI image: the publish workflow bakes in the repository variable `SUPPORT_EMAIL`, and build mode uses `SUPPORT_EMAIL` from `.env` (default `support@<HALAL_APP_DOMAIN>`).
+
 ### Published images
 
 `publish-images.yml` runs when release-please publishes a release, or by hand (Actions → Publish images → Run workflow, with an existing tag) to retry. It waits for CI to pass on the released commit, builds `halallens-api` and `halallens-ui` natively for amd64 and arm64, runs the container and Caddy smoke tests, scans with Trivy (fails on fixable CRITICAL findings; HIGH and unfixed CRITICAL are listed in the run summary; reviewed exceptions go in `.trivyignore` with a reason and expiry), then pushes `vX.Y.Z-amd64` and `vX.Y.Z-arm64`, joins them into `vX.Y.Z`, and moves `latest` only for the newest release. A version tag that already exists is never overwritten.
 
-- GHCR (`ghcr.io/<owner>/halallens-*`) needs no setup. New packages start private: make each one public once under the repository's Packages → Package settings.
+- GHCR (`ghcr.io/<owner>/halallens-*`) needs no setup. New packages start private: make each one public once under the repository's Packages → Package settings (the HalalLens packages already allow anonymous pulls).
 - Docker Hub needs the repository variable `DOCKERHUB_NAMESPACE` (account name) and the secret `DOCKERHUB_TOKEN` (an access token with Read & Write) in the `publish` environment, which only `main` and `v*` tags may use. Without them only GHCR is published.
 
 ### Images and volume ownership
