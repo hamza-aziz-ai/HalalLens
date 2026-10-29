@@ -185,3 +185,17 @@ One entry per decision, newest last. Model for every entry below: Claude Sonnet 
 - **Trade-off:** Password sign-up now needs working email. Existing users must re-prove their mailbox once. Google users with an email already used by a password account are refused until explicit linking (PR 3) exists. Generic responses mean a mistyped address gets no feedback.
 - **Revisit if:** a second sign-in provider is added, or email delivery becomes unreliable.
 
+## D-021: Browser-bound Google OAuth flows and explicit account linking
+
+- **Date:** 2026-10-29   Model: Claude Opus 5.5 (maintainer approved; design agreed with Codex in council)
+- **Context:** The OAuth `state` was HMAC-signed and reusable for 10 minutes, not tied to the browser, so an attacker could complete their own Google sign-in in a victim's browser (login CSRF). D-020 stopped linking Google by email, so a user whose Google email differs needed an explicit, safe way to link.
+- **Options:**
+  1. Keep the signed state, add a nonce cache
+  2. Store each flow in Postgres, bind it to the browser with a short-lived cookie
+  3. Link Google from the callback using the state alone
+  4. Callback only proves the Google identity; the signed-in session confirms the link
+- **Chosen:** 2 and 4. `oauth_flows` stores digests of the state and of a random `hl_oauth` cookie (HttpOnly, SameSite=Lax, Secure on https, path `/api/auth/google`, 10 minutes); the callback needs both, once. Linking: `POST /auth/google/link/start` (session + password again) records the user and session; the callback stores the Google identity and a one-time code in the account page's fragment; `POST /auth/google/link/confirm` links only for that same user and still-valid session. `OAUTH_STATE_SECRET` is no longer used. The Google request no longer asks for offline access.
+- **Why:** A flow started in one browser cannot be finished in another, and a victim who completes an attacker's link flow cannot attach their Google identity to the attacker's account (no cookie, and the confirm needs the attacker's session in the victim's browser).
+- **Trade-off:** Needs the UI and API on one origin (production `/api`); a split-origin dev setup can sign in with Google but not link. A Google account links to one HalalLens account; no merges. Flows live in the database (cleaned after a day).
+- **Revisit if:** the mobile app ships (its OAuth would use PKCE with an app-bound redirect), or the API moves to its own origin.
+

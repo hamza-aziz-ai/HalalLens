@@ -37,6 +37,7 @@ def db():
         cur.execute("DROP SCHEMA public CASCADE; CREATE SCHEMA public;")
         cur.execute((ROOT / "database/schema.sql").read_text(encoding="utf-8"))
         cur.execute((ROOT / "database/migrations/20261029_auth_email_verification.sql").read_text(encoding="utf-8"))
+        cur.execute((ROOT / "database/migrations/20261029_oauth_flows.sql").read_text(encoding="utf-8"))
 
     @contextmanager
     def get_connection():
@@ -183,3 +184,43 @@ def test_migration_revokes_unproven_admins_and_sessions(db):
         cur.execute((ROOT / "database/migrations/20261029_auth_email_verification.sql").read_text(encoding="utf-8"))
     assert _count(admin, "SELECT count(*) FROM users WHERE is_admin") == 0
     assert _count(admin, "SELECT count(*) FROM user_sessions") == 0
+
+
+def _flow(manager, purpose="login", state="st", browser="br", minutes=10, **kw):
+    manager.create_oauth_flow(purpose=purpose, state_digest=state, browser_digest=browser,
+                              expires_at=datetime.now(timezone.utc) + timedelta(minutes=minutes), **kw)
+
+
+def test_oauth_flow_needs_the_same_browser_once_and_in_time(db):
+    manager, _admin = db
+    _flow(manager)
+    assert manager.consume_oauth_flow(state_digest="st", browser_digest="other") is None
+    assert manager.consume_oauth_flow(state_digest="st", browser_digest="br")["purpose"] == "login"
+    assert manager.consume_oauth_flow(state_digest="st", browser_digest="br") is None
+    _flow(manager, state="old", minutes=-1)
+    assert manager.consume_oauth_flow(state_digest="old", browser_digest="br") is None
+
+
+def test_link_completes_only_for_the_starting_session(db):
+    manager, admin = db
+    user_id = _add_user(admin, "me@example.com", password_hash="h")
+    other_id = _add_user(admin, "other@example.com", password_hash="h", google_sub="taken-sub")
+    future = datetime.now(timezone.utc) + timedelta(days=1)
+    with admin.cursor() as cur:
+        cur.execute("INSERT INTO user_sessions (token, user_id, expires_at) VALUES ('sess-a', %s, %s), ('sess-b', %s, %s)",
+                    (user_id, future, user_id, future))
+    _flow(manager, purpose="link", user_id=user_id, session_digest="sess-a")
+    flow = manager.consume_oauth_flow(state_digest="st", browser_digest="br")
+    manager.record_link_identity(flow_id=flow["id"], google_sub="g-me", google_email="me@gmail.com",
+                                 link_code_digest="code")
+    assert manager.complete_google_link(link_code_digest="code", user_id=user_id, session_digest="sess-b")[0] == "invalid"
+    assert manager.complete_google_link(link_code_digest="code", user_id=other_id, session_digest="sess-a")[0] == "invalid"
+    status, user = manager.complete_google_link(link_code_digest="code", user_id=user_id, session_digest="sess-a")
+    assert status == "ok" and user["google_sub"] == "g-me" and user["email"] == "me@example.com"
+    assert manager.complete_google_link(link_code_digest="code", user_id=user_id, session_digest="sess-a")[0] == "invalid"
+
+    _flow(manager, purpose="link", state="st2", user_id=user_id, session_digest="sess-a")
+    flow = manager.consume_oauth_flow(state_digest="st2", browser_digest="br")
+    manager.record_link_identity(flow_id=flow["id"], google_sub="taken-sub", google_email="x@gmail.com",
+                                 link_code_digest="code2")
+    assert manager.complete_google_link(link_code_digest="code2", user_id=user_id, session_digest="sess-a")[0] == "conflict"

@@ -257,33 +257,59 @@ def test_admin_address_is_not_promoted_by_login_me_or_admin_checks(db):
 
 @pytest.fixture
 def google(db, monkeypatch):
+    """Drive Google sign-in and linking through HTTP, cookies included."""
+
+    from fastapi.testclient import TestClient
+
     monkeypatch.setattr(api_module, "GOOGLE_CLIENT_ID", "cid")
     monkeypatch.setattr(api_module, "GOOGLE_CLIENT_SECRET", "secret")
-    monkeypatch.setattr(api_module, "GOOGLE_REDIRECT_URI", "https://app.example.test/api/auth/google/callback")
+    monkeypatch.setattr(api_module, "GOOGLE_REDIRECT_URI", "https://app.example.test/auth/google/callback")
     monkeypatch.setattr(api_module, "_exchange_google_code", lambda code: {"access_token": "t"})
     profile = {}
     monkeypatch.setattr(api_module, "_fetch_google_profile", lambda token: dict(profile))
 
-    def sign_in(**claims):
-        profile.clear()
-        profile.update({"email_verified": True, "name": "N"}, **claims)
-        api_module.GOOGLE_STATE_CACHE.clear()
-        api_module._store_google_state("state", None)
-        response = _run(api_module.auth_google_callback(code="c", state="state"))
-        return parse_qs(urlsplit(response.headers["location"]).fragment)
+    class Google:
+        def __init__(self):
+            self.browser = TestClient(api_module.app, base_url="https://app.example.test")
 
-    return sign_in
+        def new_browser(self):
+            return TestClient(api_module.app, base_url="https://app.example.test")
+
+        @staticmethod
+        def state_of(url):
+            return parse_qs(urlsplit(url).query)["state"][0]
+
+        def start(self, browser=None):
+            response = (browser or self.browser).get("/auth/google/start", follow_redirects=False)
+            assert response.status_code == 307
+            cookie = response.headers["set-cookie"].lower()
+            assert "httponly" in cookie and "samesite=lax" in cookie and "secure" in cookie
+            return self.state_of(response.headers["location"])
+
+        def callback(self, state, browser=None, **claims):
+            profile.clear()
+            profile.update({"email_verified": True, "name": "N"}, **claims)
+            return (browser or self.browser).get(
+                f"/auth/google/callback?code=c&state={state}", follow_redirects=False
+            )
+
+        def sign_in(self, **claims):
+            response = self.callback(self.start(), **claims)
+            if response.status_code != 302:
+                return response
+            return parse_qs(urlsplit(response.headers["location"]).fragment)
+
+    return Google()
 
 
-@pytest.mark.parametrize("claim", [{}, {"email_verified": False}, {"email_verified": "true"}])
+@pytest.mark.parametrize("claim", [None, False, "true"])
 def test_google_requires_an_explicitly_verified_email(google, claim):
-    with pytest.raises(HTTPException) as excinfo:
-        google(email="g@example.com", sub="s1", **{"email_verified": None, **claim})
-    assert excinfo.value.status_code == 403
+    response = google.sign_in(email="g@example.com", sub="s1", email_verified=claim)
+    assert response.status_code == 403
 
 
 def test_google_creates_a_verified_account_and_proves_an_admin_address(db, google):
-    fragment = google(email=ADMIN, sub="s1")
+    fragment = google.sign_in(email=ADMIN, sub="s1")
     assert "token" in fragment
     user = db.get_user_by_email(ADMIN)
     assert user["email_verified_at"] and user["is_admin"] and user["password_hash"] is None
@@ -291,7 +317,7 @@ def test_google_creates_a_verified_account_and_proves_an_admin_address(db, googl
 
 def test_google_never_attaches_to_an_existing_account_by_email(db, google):
     squatter = db.add_user("victim@example.com", password_hash=api_module._hash_password("Attacker-pass-1!"))
-    fragment = google(email="victim@example.com", sub="victim-sub")
+    fragment = google.sign_in(email="victim@example.com", sub="victim-sub")
     assert fragment == {"error": ["account_exists"]}
     assert db.users[squatter["id"]]["google_sub"] is None
     assert db.sessions == {}
@@ -300,13 +326,108 @@ def test_google_never_attaches_to_an_existing_account_by_email(db, google):
 def test_google_sign_in_verifies_an_already_linked_account(db, google):
     # The maintainer's case: password account linked to Google before this fix.
     owner = db.add_user(ADMIN, password_hash="x", google_sub="owner-sub")
-    fragment = google(email=ADMIN, sub="owner-sub")
-    assert "token" in fragment
+    assert "token" in google.sign_in(email=ADMIN, sub="owner-sub")
     assert db.users[owner["id"]]["email_verified_at"] and db.users[owner["id"]]["is_admin"]
 
 
 def test_linked_account_with_another_primary_email_is_not_verified_by_google(db, google):
     db.add_user("primary@example.com", password_hash="x", google_sub="sub-x")
-    fragment = google(email="other@gmail.com", sub="sub-x")
-    assert fragment == {"error": ["verify_email"]}
+    assert google.sign_in(email="other@gmail.com", sub="sub-x") == {"error": ["verify_email"]}
     assert db.sessions == {}
+
+
+# ---------------------------------------------------------------------------
+# Browser-bound, single-use OAuth flows (D-021)
+# ---------------------------------------------------------------------------
+
+
+def test_callback_in_another_browser_is_refused(db, google):
+    # Login CSRF: an attacker's own state completed in the victim's browser.
+    state = google.start()
+    response = google.callback(state, browser=google.new_browser(), email="a@example.com", sub="s")
+    assert response.status_code == 400
+    assert db.sessions == {} and db.get_user_by_email("a@example.com") is None
+
+
+def test_state_works_once(db, google):
+    state = google.start()
+    assert google.callback(state, email="a@example.com", sub="s").status_code == 302
+    assert google.callback(state, email="a@example.com", sub="s").status_code == 400
+
+
+def test_expired_flow_is_refused(db, google):
+    state = google.start()
+    db.flows[0]["expires_at"] = datetime.now(timezone.utc) - timedelta(seconds=1)
+    assert google.callback(state, email="a@example.com", sub="s").status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# Explicit "Link Google account"
+# ---------------------------------------------------------------------------
+
+
+def _signed_in(db, email="me@example.com"):
+    db.add_user(email, password_hash=api_module._hash_password(PASSWORD), verified=True)
+    return _login(email).token
+
+
+def _start_link(google, token, password=PASSWORD, browser=None):
+    return (browser or google.browser).post(
+        "/auth/google/link/start", json={"password": password},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+
+def _confirm_link(google, token, code):
+    return google.browser.post(
+        "/auth/google/link/confirm", json={"code": code},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+
+def _link_code(google, token, **claims):
+    started = _start_link(google, token)
+    assert started.status_code == 200
+    response = google.callback(google.state_of(started.json()["url"]), **claims)
+    assert response.status_code == 302
+    location = response.headers["location"]
+    assert location.startswith("https://app.example.test/account/#link=")
+    return parse_qs(urlsplit(location).fragment)["link"][0]
+
+
+def test_linking_needs_the_password_again_and_the_same_session(db, google):
+    token = _signed_in(db)
+    assert _start_link(google, token, password="Wrong-pass-123!").status_code == 401
+    code = _link_code(google, token, email="me.other@gmail.com", sub="google-me")
+    assert db.by_email("me@example.com")["google_sub"] is None  # callback links nothing
+    other_session = _login("me@example.com").token
+    assert _confirm_link(google, other_session, code).status_code == 400
+    linked = _confirm_link(google, token, code)
+    assert linked.status_code == 200 and linked.json()["google_linked"] is True
+    user = db.by_email("me@example.com")
+    assert user["google_sub"] == "google-me" and user["email"] == "me@example.com"
+    assert _confirm_link(google, token, code).status_code == 400  # single use
+
+
+def test_victim_cannot_be_linked_to_an_attackers_account(db, google):
+    # The attacker starts a link from their account and sends the Google URL
+    # to the victim, whose browser lacks the attacker's flow cookie.
+    attacker = _signed_in(db, "attacker@example.com")
+    started = _start_link(google, attacker)
+    response = google.callback(google.state_of(started.json()["url"]), browser=google.new_browser(),
+                               email="victim@gmail.com", sub="victim-sub")
+    assert response.status_code == 400
+    assert db.by_email("attacker@example.com")["google_sub"] is None
+
+
+def test_a_google_account_links_to_one_hallens_account_only(db, google):
+    db.add_user("first@example.com", password_hash="x", verified=True, google_sub="shared-sub")
+    token = _signed_in(db)
+    code = _link_code(google, token, email="shared@gmail.com", sub="shared-sub")
+    assert _confirm_link(google, token, code).status_code == 409
+
+
+def test_account_without_a_password_cannot_start_a_link(db, google):
+    user = db.add_user("g@example.com", provider="google", verified=True, google_sub="g1")
+    token, _ = api_module._issue_session(user["id"])
+    assert _start_link(google, token).status_code == 400

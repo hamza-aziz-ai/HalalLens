@@ -95,6 +95,8 @@ ROUTES = {
     ("POST", "/narrate"): ("paid", "/narrate", SCORE_BODY),
     ("GET", "/auth/google/start"): ("public", "/auth/google/start", None),
     ("GET", "/auth/google/callback"): ("public", "/auth/google/callback?code=c&state=s", None),
+    ("POST", "/auth/google/link/start"): ("authenticated", "/auth/google/link/start", {"password": "StrongPass123!"}),
+    ("POST", "/auth/google/link/confirm"): ("authenticated", "/auth/google/link/confirm", {"code": "c" * 43}),
     ("POST", "/auth/register"): ("public", "/auth/register", {"email": "new@example.invalid"}),
     ("POST", "/auth/password/forgot"): ("public", "/auth/password/forgot", {"email": "new@example.invalid"}),
     ("POST", "/auth/signup/confirm"): (

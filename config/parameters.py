@@ -89,7 +89,6 @@ INDIAN_API_OVERRIDE_TOLERANCE = _as_float(
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
 GOOGLE_REDIRECT_URI = os.getenv("GOOGLE_REDIRECT_URI")
-OAUTH_STATE_SECRET = os.getenv("OAUTH_STATE_SECRET")
 HALAL_APP_DOMAIN = os.getenv("HALAL_APP_DOMAIN", "").strip()
 # The only origin Google sign-in may hand a token to. Without an explicit value
 # it is the app domain when one is configured, else the local dev UI.
