@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.1](https://github.com/hamza-aziz-ai/HalalLens/compare/v0.6.0...v0.6.1) (2026-10-29)
+
+
+### Bug Fixes
+
+* **ui:** manual analysis no longer fails for free users on the paid /narrate call ([#155](https://github.com/hamza-aziz-ai/HalalLens/issues/155)) ([08bebb3](https://github.com/hamza-aziz-ai/HalalLens/commit/08bebb30761c7c34c95bd018e6f0fac982f683b2))
+
 ## [0.6.0](https://github.com/hamza-aziz-ai/HalalLens/compare/v0.5.3...v0.6.0) (2026-10-29)
 
 
