@@ -22,6 +22,11 @@ RUN npm run build
 
 FROM caddy:2.11.6-alpine
 
+# Take the base image's Alpine security fixes at build time (e.g. brotli-libs
+# CVE-2026-111497 failed the v0.7.0 publish scan), so the image does not wait
+# for the next Caddy release.
+RUN apk upgrade --no-cache
+
 # Caddy keeps its state under XDG directories; /tmp is writable for any user.
 ENV XDG_CONFIG_HOME=/tmp/caddy-config \
     XDG_DATA_HOME=/tmp/caddy-data
