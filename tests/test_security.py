@@ -544,9 +544,14 @@ def test_refund_webhook_revokes_access(billing_db, monkeypatch):
     )
     assert billing_db.users[42]["plan"] == "starter"
 
+    # A real refund event carries the SAME payment id as the purchase (which
+    # is already recorded under it) plus the refund entity.
     event = {
         "event": "refund.processed",
-        "payload": {"payment": {"entity": {"id": "pay_refund", "order_id": "order_1"}}},
+        "payload": {
+            "refund": {"entity": {"id": "rfnd_1", "payment_id": "pay_1"}},
+            "payment": {"entity": {"id": "pay_1", "order_id": "order_1"}},
+        },
     }
 
     class _WebhookRequest:

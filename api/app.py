@@ -3197,11 +3197,21 @@ async def razorpay_webhook(request: Request) -> Dict[str, str]:
         # Order already settled elsewhere; fall through to record the event.
 
     if event_type in RAZORPAY_REVOKE_EVENTS and user_id:
+        # Key the revocation by the refund (or Razorpay's per-event id), never by
+        # the payment id: the purchase was already recorded under the payment id,
+        # so reusing it hit the (provider, event_id) unique index, the insert was
+        # skipped and the plan was never revoked.
+        refund_entity = (entities.get("refund") or {}).get("entity") or {}
+        revoke_key = (
+            refund_entity.get("id")
+            or request.headers.get("X-Razorpay-Event-Id")
+            or f"{event_type}:{payment_id}"
+        )
         recorded = db.record_payment_event(
             user_id=user_id,
             provider="razorpay",
             event_type=event_type,
-            event_id=payment_id,
+            event_id=revoke_key,
             payload=event,
         )
         if recorded:
