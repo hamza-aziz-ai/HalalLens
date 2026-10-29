@@ -4,6 +4,7 @@ import PolicyLayout, {
   policyListClass,
   policyTitleClass,
 } from "@/components/policy-layout";
+import SupportEmail from "@/components/support-email";
 
 export default function TermsPage() {
   return (
@@ -71,12 +72,7 @@ export default function TermsPage() {
         <h2 className={policyTitleClass}>Contact</h2>
         <p className={`${policyBodyClass} mt-3`}>
           Reach us at{" "}
-          <a
-            href="mailto:contact@nourvix.com"
-            className="text-cyan-200 hover:text-cyan-100"
-          >
-            contact@nourvix.com
-          </a>{" "}
+          <SupportEmail className="text-cyan-200 hover:text-cyan-100" />{" "}
           for questions about these terms.
         </p>
       </section>

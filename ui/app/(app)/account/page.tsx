@@ -79,10 +79,15 @@ export default function AccountPage() {
             email: user.email,
           },
           theme: { color: "#06b6d4" },
+          modal: {
+            // Closing the checkout must end the wait, or the button stays busy.
+            ondismiss: () => reject(new Error("Payment cancelled. No money was taken.")),
+          },
         };
         const razorpay = new window.Razorpay(options);
         razorpay.on("payment.failed", (response: any) => {
-          reject(response.error || new Error("Payment failed."));
+          // Razorpay puts the reason in error.description, not error.message.
+          reject(new Error(response?.error?.description || "Payment failed. No money was taken."));
         });
         razorpay.open();
       });

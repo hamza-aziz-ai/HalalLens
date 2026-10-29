@@ -4,6 +4,7 @@ import PolicyLayout, {
   policyListClass,
   policyTitleClass,
 } from "@/components/policy-layout";
+import SupportEmail from "@/components/support-email";
 
 export default function PrivacyPage() {
   return (
@@ -54,12 +55,7 @@ export default function PrivacyPage() {
         <h2 className={policyTitleClass}>Contact</h2>
         <p className={`${policyBodyClass} mt-3`}>
           Questions about privacy can be sent to{" "}
-          <a
-            href="mailto:contact@nourvix.com"
-            className="text-cyan-200 hover:text-cyan-100"
-          >
-            contact@nourvix.com
-          </a>
+          <SupportEmail className="text-cyan-200 hover:text-cyan-100" />
           .
         </p>
       </section>
