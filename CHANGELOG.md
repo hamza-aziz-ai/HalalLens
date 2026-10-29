@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.0](https://github.com/hamza-aziz-ai/HalalLens/compare/v0.9.0...v0.10.0) (2026-10-29)
+
+
+### Features
+
+* **ops:** pull-only deploys from the published images, with the deploy script in the repository ([#180](https://github.com/hamza-aziz-ai/HalalLens/issues/180)) ([2a6b991](https://github.com/hamza-aziz-ai/HalalLens/commit/2a6b991ef7cfa666241764ff06fe98cc7e5247ae))
+
 ## [0.9.0](https://github.com/hamza-aziz-ai/HalalLens/compare/v0.8.0...v0.9.0) (2026-10-29)
 
 
