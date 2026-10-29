@@ -87,7 +87,7 @@ SCORE_BODY = {
 }
 
 # (method, route path) -> (tier, concrete URL, JSON body). Keep in step with the
-# "API and security model" table in README.md; test_every_route_has_a_tier
+# route-tier table in docs/guides/API.md ("API and security model"); test_every_route_has_a_tier
 # fails when a route is added without an entry here.
 ROUTES = {
     ("GET", "/health"): ("public", "/health", None),
@@ -252,7 +252,7 @@ def test_every_route_has_a_tier():
     }
     assert actual == set(ROUTES), (
         "Route table drifted. New routes need a deliberate tier "
-        f"(README 'API and security model'): missing={sorted(actual - set(ROUTES))} "
+        f"(docs/guides/API.md 'API and security model'): missing={sorted(actual - set(ROUTES))} "
         f"stale={sorted(set(ROUTES) - actual)}"
     )
 

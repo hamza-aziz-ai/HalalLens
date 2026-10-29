@@ -1,0 +1,11 @@
+# CI, automation and releases
+
+How changes are checked, merged and released. Back to the [README](../../README.md).
+
+- **CI** (`.github/workflows/ci.yml`): `backend` (pytest), `ui` (lint, jest, build) and `secrets` (gitleaks over full history). Actions are pinned by SHA; the token is read-only.
+- **`main` is protected by a ruleset:** pull request required (squash merge), the three checks above must pass; the repository owner can bypass for hotfixes.
+- **Dependabot** runs monthly and groups its PRs, titled `build(deps): ...`. Per ecosystem (GitHub Actions, UI, Python): one minor/patch group (UI splits dev and runtime), one group for majors, and one for security updates, which Dependabot raises separately as advisories appear. Auto-merge covers GitHub Actions and UI dev minor/patch, plus patch-level security updates for Actions and the UI; UI runtime minors, Python and every major wait for a human. Majors of the UI framework stack (Next, React, TypeScript, eslint, jest, Testing Library, Tailwind) and `@types/node` are ignored until their planned upgrade (types follow the Node 24 runtime).
+- **Docs-only PRs auto-merge** (`docs-automerge.yml`): when every changed file is Markdown under `docs/` or `Documentations/`, a README or `CHANGELOG.md`, the PR squash-merges once `backend`, `ui` and `secrets` pass. `AGENTS.md` and `CLAUDE.md` stay manual. The rule runs from `main` (`pull_request_target`), so a PR cannot change the rule that judges it.
+- **Releases (automatic):** release-please opens a release PR from Conventional Commit titles on `main` (`feat:` bumps the minor version, `fix:` the patch; `build:`, `ci:` and `docs:` do not release). With `RELEASE_PLEASE_TOKEN` in the `release` environment (usable only from `main`), CI runs on that PR and it auto-merges when green; the merge tags `vX.Y.Z`, updates `CHANGELOG.md` and publishes the GitHub Release. A release is a tag and notes only: nothing is deployed. Squash-merge PRs so each change appears once in the changelog. Without the secret the release PR must be merged by hand.
+- **No GitHub Pages:** the static Pages build (`nextjs.yml`) was removed on 2026-10-28 because it was never wired to an API. **The UI ships only with the Docker deployment** (`ui` service), built with `NEXT_PUBLIC_HALAL_API_BASE_URL`.
+- No container registry or API deployment workflow exists yet.

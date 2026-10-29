@@ -250,3 +250,16 @@ One entry per decision, newest last. Model for every entry below: Claude Sonnet 
 - **Trade-off:** refunds of migrated (pre-ledger) purchases need a human; one more table.
 - **Revisit if:** live payments start (automatic refunds need their own reviewed switch), or refund volume makes manual review heavy.
 
+## D-026: A short README with two diagrams; detail moves to docs/guides/
+
+- **Date:** 2026-10-29   Model: Claude Opus 5.5 (maintainer: match the sister project Medical-ChatBot's README layout)
+- **Context:** The README had grown to about 230 lines mixing the pitch, setup, the route-tier table, Docker, CI and a long limitations list, with badges and one plain module diagram. A buyer or reviewer could not see in one screen what happens to a request or how code reaches the live site, and every new feature added another section.
+- **Options:**
+  1. Keep one long README and add the two diagrams to it
+  2. A short README (status, intro, System Design and Solution Architecture diagrams with numbered notes, quick start, documentation table, three known limitations) with the rest moved verbatim into `docs/guides/`
+  3. A generated documentation site (MkDocs or similar)
+- **Chosen:** 2. Guides: `SCREENING.md` (what exists, the method, the full limitations list), `SETUP.md`, `API.md`, `DOCKER.md`, `CI-CD.md`, `STRUCTURE.md`; each opens with its purpose and a link back to the README. No badges or screenshots; hand-written Mermaid with markdown-string labels, `classDef` colours and a key under each diagram. The README and the affected guide change in the same PR as the behaviour they describe.
+- **Why:** Same shape as Medical-ChatBot, so both projects read the same way; the two diagrams answer the whiteboard questions (how a verdict is made, how a release reaches production) without notes; a moved section keeps its exact text, so nothing is lost.
+- **Trade-off:** Readers follow one more link for setup and API detail; inbound links and the route-tier test message now point at `docs/guides/API.md`; the README notes and the guides can drift if the same-PR rule is skipped. Lines that were already stale when moved still need their own fix.
+- **Revisit if:** the guides outgrow plain Markdown (search, versioned docs), or the project goes private and needs a separate public landing page.
+
