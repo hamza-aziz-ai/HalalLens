@@ -129,8 +129,24 @@ Then sign in by hand and open a filing; `/api/health/billing` must report `ok` a
 
 ### Billing (Razorpay, one-time purchases)
 
-Plans are one-time Razorpay Orders; nothing renews automatically. Each paid order, trial and pre-ledger period is a row in `subscription_grants`, and access is derived from them (D-024): a purchase made while paid time runs starts when it ends, a refund removes only its own purchase's time.
+Plans are one-time Razorpay Orders; nothing renews automatically. Each paid order, trial and pre-ledger period is a row in `subscription_grants`, and access is derived from them (D-024): a timed purchase (Starter, Annual) made while timed paid time runs starts when it ends, a refund removes only its own purchase's time. Lifetime takes effect when paid: it is the current plan from its settlement time, any timed grants keep their dates underneath, and refunding the Lifetime returns whatever timed access remains (with its original end) or leaves the account free (D-024 amendment, 2026-10-30).
 
+- **Lifetime takes effect when paid (one-off repair after deploying it):** the API rewrites a stored projection only after its renewal date passes, so an account that bought Lifetime under the old rule keeps showing its timed plan (for example Annual until 2027) until then. After deploying, re-project every user with a Lifetime grant through the locked `refresh_entitlement`; it prints each user id and the projection written (`plan` should be `lifetime` for an unrefunded Lifetime). It changes only the `users` projection, never a grant, and is safe to run again:
+
+  ```bash
+  docker compose -f docker-compose-prod.yml run --rm --no-deps --entrypoint python3 billing-reconcile -c '
+  from api import billing
+  from database.database_manager import BSEDatabaseManager
+  db = BSEDatabaseManager(min_connections=1, max_connections=2)
+  with db.get_connection() as conn, conn.cursor() as cur:
+      cur.execute("SELECT DISTINCT user_id FROM subscription_grants WHERE duration IS NULL ORDER BY user_id")
+      user_ids = [row["user_id"] for row in cur.fetchall()]
+  for user_id in user_ids:
+      print(user_id, db.refresh_entitlement(user_id, billing.project))
+  '
+  ```
+
+  **Rollback:** deploy the previous tag (`scripts/deploy.sh <previous tag>`), then run the same command so the projection follows the old rule again (Lifetime queued behind the timed plan). No data changes either way: grants are the truth and both rules read the same rows.
 - **Before deploying the first release with D-024**, apply `database/migrations/20261029_subscription_grants.sql` (it is idempotent, and creates a legacy grant that keeps each current subscriber's exact end date). Rehearsed on a restored production copy on 2026-10-29.
 - **Refund due:** if a payment lands while Lifetime already covers the user (two checkouts were open), the order gets status `refund_due`, nothing is granted, and the API logs `REFUND DUE`. Under TEST keys the reconciler refunds it automatically (see Automatic refunds below); otherwise refund it in the Razorpay dashboard: `SELECT order_id, user_id, amount, payment_id FROM razorpay_orders WHERE status = 'refund_due';`
 - **Refunds that match no grant** (refund-due orders, or old orders the migration could not link) are logged `matches no grant: review by hand`; adjust access by hand only after checking the user's grants.
