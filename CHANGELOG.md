@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.20.0](https://github.com/hamza-aziz-ai/HalalLens/compare/v0.19.1...v0.20.0) (2026-10-29)
+
+
+### Features
+
+* **alerts:** compliance-flip emails go to subscribers ([#236](https://github.com/hamza-aziz-ai/HalalLens/issues/236)) ([1ac3219](https://github.com/hamza-aziz-ai/HalalLens/commit/1ac32191a9f558f604a3463e16a13622bfce13f7))
+
 ## [0.19.1](https://github.com/hamza-aziz-ai/HalalLens/compare/v0.19.0...v0.19.1) (2026-10-29)
 
 
