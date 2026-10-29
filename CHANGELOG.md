@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.0](https://github.com/hamza-aziz-ai/HalalLens/compare/v0.7.2...v0.8.0) (2026-10-29)
+
+
+### Features
+
+* **auth:** browser-bound Google sign-in and explicit "Link Google account" ([#173](https://github.com/hamza-aziz-ai/HalalLens/issues/173)) ([5fb2f0d](https://github.com/hamza-aziz-ai/HalalLens/commit/5fb2f0d6e2d0e0ecaa3773d78762f07835f19134))
+
 ## [0.7.2](https://github.com/hamza-aziz-ai/HalalLens/compare/v0.7.1...v0.7.2) (2026-10-29)
 
 
