@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.19.1](https://github.com/hamza-aziz-ai/HalalLens/compare/v0.19.0...v0.19.1) (2026-10-29)
+
+
+### Bug Fixes
+
+* **billing:** no price window without credit, no conflict for a zero-credit source ([#234](https://github.com/hamza-aziz-ai/HalalLens/issues/234)) ([3629640](https://github.com/hamza-aziz-ai/HalalLens/commit/36296402c820da6708c2e9326cf3d99d4b5c9fa0))
+
 ## [0.19.0](https://github.com/hamza-aziz-ai/HalalLens/compare/v0.18.1...v0.19.0) (2026-10-29)
 
 
