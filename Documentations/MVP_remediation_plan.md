@@ -1,5 +1,7 @@
 # MVP Remediation Plan (Updated)
 
+> **Status (2026-10-29): kept as history; the section statuses below are not maintained.** Since it was written: Bhavcopy quotes persist in `bhavcopy_quotes`, market-data failures are recorded in `data_quality_issues` and alert ops after `MARKET_FAILURE_ALERT_THRESHOLD` failures, XBRL/JSON parsing exists in `etl/financial_data_processor.py`, `/ops/metrics` and an uptime workflow exist. Not built: a fallback-reason display, email/Slack notifications when feedback tickets update, a metrics dashboard. Current state and next steps live in `docs/HANDOVER.md`.
+
 This plan tracks the remaining work after the current feature rollout.
 
 ## 1. Market-data resilience

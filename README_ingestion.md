@@ -21,15 +21,18 @@ psql -h <db-host> -U $POSTGRES_USER -d <db> -c "\dt"
 Run the BSE ingestion CLI to fetch announcements and extract financial snapshots:
 
 ```bash
-pipenv run python jobs/ingest_bse.py --from-date 20250701 --to-date 20250702 --save-cache
+pipenv run python -m jobs.ingest_bse --from-date 20250701 --to-date 20250702 --save-cache
 ```
 
 Options:
+- `--from-date`, `--to-date`: `YYYYMMDD` or `YYYY-MM-DD` (default yesterday to today).
 - `--save-cache`: stores raw announcements JSON under `cache/` for auditing.
 - `--download-dir`, `--cache-dir`: override default directories if needed.
 - `--category`: pass BSE category filters (default `-1` for all).
 
 Successful runs will log the number of announcements inserted, snapshots stored, and processor stats.
+
+BSE answers 403 to the production server (an Oracle Cloud address) for announcements, so production ingestion currently stores no filings; a permitted data source is the maintainer's decision (`docs/HANDOVER.md`).
 
 ## 3. Verify via API
 

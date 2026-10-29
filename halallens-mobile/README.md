@@ -22,9 +22,9 @@ flutter run
 
 ## Notes
 
-- Base API URL is configured in `lib/core/services/app_config.dart`.
+- The base API URL is meant to live in `lib/core/services/app_config.dart`, which is not in this repository.
 - Override API URL at build time:
   ```bash
   flutter run --dart-define=HALALLENS_API_BASE_URL=http://YOUR_IP:8001
   ```
-- Authentication token storage uses `flutter_secure_storage`.
+- `pubspec.yaml` declares `flutter_secure_storage` for authentication token storage.

@@ -1,15 +1,17 @@
 # Subscription Enablement Plan
 
+> **Status (2026-10-29): partly done; the billing model is superseded by D-024 and D-025** (`docs/DECISIONS.md`): plans are one-time Razorpay purchases on a ledger of grants (`subscription_grants`), purchases queue behind paid time, nothing renews automatically, a reconciler settles missed webhooks and refunds, and automatic refunds run under TEST keys only. Payments run against Razorpay test keys. The remaining gaps below are not built; renewal-related items do not apply while there is no auto-renewal.
+
 ## Current state
 
 1. **User accounts + auth**
-   - Email/password login and Google SSO are live.
-   - Session tokens are issued by the API and persisted in web/mobile.
+   - Email-first sign-up (D-020) and Google SSO (D-021) are live.
+   - Session tokens are issued by the API and kept by the web dashboard (the mobile app has no source in this repo).
 
 2. **Billing integration**
    - Razorpay order creation + verification endpoints exist.
-   - The web dashboard exposes upgrade + 1-month trial flows for Starter/Annual and a Lifetime purchase. (The mobile app has no source in this repo.)
-   - Razorpay webhook handler updates subscription state.
+   - The web dashboard exposes upgrade + 30-day trial flows for Starter/Annual and a Lifetime purchase. (The mobile app has no source in this repo.)
+   - The Razorpay webhook and the reconciler record grants and refunds; `users.plan` and `subscription_status` are a projection of the grants (D-024).
 
 3. **Feature gating**
    - Premium features (instant lookup, history, narration, watchlists and alerts) are enforced in the API and surfaced in UI copy. Governance overrides are admin-only, not a paid feature.
