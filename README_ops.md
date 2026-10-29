@@ -35,6 +35,10 @@ Store secrets in a `.env` file, Docker secrets, or whichever secret manager your
 
 5. Start the ingestion scheduler (systemd or `docker compose run --rm ingestion`). Watch `/ops/metrics` and the ingestion heartbeat for failures.
 
+### Uptime check
+
+`.github/workflows/uptime.yml` requests `<UPTIME_URL>/api/health` every 30 minutes (three tries, 20 s apart). A failure opens one issue labelled `uptime`, or comments on the open one, which notifies the repository's watchers; the next success closes it. Set the repository variable `UPTIME_URL` (e.g. `https://halallens.in`) to turn it on; without it the job is skipped. GitHub disables scheduled workflows after 60 days without repository activity, so re-enable it under Actions if that happens. It checks only that the site answers, not that ingestion or backups ran: read those in the service logs.
+
 ### PostgreSQL backups and restore
 
 The `backup` service in `docker-compose-prod.yml` runs `jobs.backup_postgres` once a day (`BACKUP_INTERVAL_HOURS`, default 24). Each run writes a `pg_dump --format=custom` of the app database to `backups/postgres/<db>-<UTC timestamp>.dump` in `MINIO_BUCKET` (R2 in production), then deletes backups under that prefix older than `BACKUP_RETENTION_DAYS` (default 14). Old copies are deleted only after a successful upload; a failed run logs `Backup failed`, notifies through the ops notifier and retries after an hour. The dumps hold user accounts (emails, password hashes, session digests): keep the bucket private and the token scoped to it.
