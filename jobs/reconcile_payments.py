@@ -4,9 +4,10 @@
 Payments complete at Razorpay even while this server is down, and Razorpay
 stops retrying a failing webhook after 24 hours. This job finds what the
 webhook and the browser missed and applies it through the same locked
-database methods. It only reads from Razorpay: refunds it decides are owed
-(duplicate captures, Lifetime conflicts) are tracked for the automatic-refund
-step (PR C) or a human.
+database methods. Refunds it decides are owed (duplicate captures, Lifetime
+conflicts) are requested automatically with TEST keys only (refund_actions:
+the request is persisted before it is sent and retried with the same
+X-Refund-Idempotency key and body); with live keys they stay for a human.
 
 Each run (one at a time, guarded by a Postgres advisory lock):
   1. refunds, then payments, created in [checkpoint - 30 min, now - 10 min]
@@ -14,7 +15,8 @@ Each run (one at a time, guarded by a Postgres advisory lock):
      backlog catches up over several runs); a stream's checkpoint advances
      only after its whole window was applied or durably tracked;
   2. one older day re-swept as a historical audit;
-  3. tracked items due for another look, fetched by id.
+  3. tracked items due for another look, fetched by id;
+  4. automatic refunds (TEST keys only): new requests, retries, polling.
 Discovery is best effort over Razorpay's list APIs (filtered by creation
 time); completeness beyond the overlap and the audit is not guaranteed.
 
@@ -29,6 +31,7 @@ import logging
 import os
 import time
 import traceback
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional
 
@@ -43,22 +46,25 @@ LAG = timedelta(minutes=10)
 MAX_WINDOW = timedelta(days=7)
 AUDIT_DAY = timedelta(days=1)
 FOLLOW_UP_BATCH = 50
+REFUND_BATCH = 20
 FAST_RECHECK = 15 * 60      # pending items younger than a week
 SLOW_RECHECK = 24 * 3600    # older pending items, and items waiting for a refund or a human
 REALERT_AFTER = timedelta(days=1)
 CLAIMABLE = ("created", "attempted")
 
 # Reasons that need someone (PR C's automatic refunds, or the maintainer).
-ALERT_REASONS = {"mismatch", "duplicate", "refund_due", "legacy_review", "failed_refund", "lookup_error"}
+ALERT_REASONS = {"mismatch", "duplicate", "refund_due", "legacy_review", "failed_refund", "lookup_error",
+                 "partial_refund_review"}
 
 
 class Reconciler:
     """One reconciliation pass. ``db`` is BSEDatabaseManager (or the test fake)."""
 
-    def __init__(self, db, client, notify: Callable[[str, str, Optional[str]], None]):
+    def __init__(self, db, client, notify: Callable[[str, str, Optional[str]], None], *, auto_refunds: bool = False):
         self.db = db
         self.client = client
         self.notify = notify
+        self.auto_refunds = auto_refunds  # True only for rzp_test_ keys (run_once)
         self.summary: Dict[str, int] = {}
 
     def _count(self, key: str) -> None:
@@ -113,11 +119,7 @@ class Reconciler:
         if not order:
             self._resolve("refund", refund_id)  # not one of this app's orders
             return
-        result, _ = self.db.refund_razorpay_payment(
-            order_id=order["order_id"], payment_id=payment_id, refund_id=refund_id,
-            refund_amount=int(refund.get("amount") or 0), event_type="reconcile.refund.processed",
-            payload=refund, project=billing.project,
-        )
+        result = self._record_refund({**refund, "payment_id": payment_id}, order["order_id"])
         if result == "needs_review":
             result = self._bind_legacy(order, now) or result
         if result == "needs_review":
@@ -132,11 +134,7 @@ class Reconciler:
     def _sync_payment_refunds(self, payment: Dict[str, Any], order: Dict[str, Any], now) -> None:
         for refund in self.client.list_payment_refunds(payment["id"]):
             if refund.get("status") == "processed":
-                self.db.refund_razorpay_payment(
-                    order_id=order["order_id"], payment_id=payment["id"], refund_id=refund["id"],
-                    refund_amount=int(refund.get("amount") or 0),
-                    event_type="reconcile.refund.processed", payload=refund, project=billing.project,
-                )
+                self._record_refund({**refund, "payment_id": payment["id"]}, order["order_id"])
             elif refund.get("status") == "pending":
                 self._track("refund", refund["id"], order["order_id"], "pending", "pending", now)
 
@@ -222,6 +220,125 @@ class Reconciler:
         else:
             self._track("payment", payment_id, order["order_id"], "duplicate", status, now)
 
+    # --- automatic refunds (TEST keys only; PR C of D-025) -------------------------------
+
+    def _record_refund(self, refund: Dict[str, Any], order_id: str) -> str:
+        """Apply one processed refund, then bring its payment's action and obligation up to date."""
+
+        key = (refund.get("notes") or {}).get("halallens_refund_key")
+        if key:
+            # Our own request, found by the sweep or a poll before its response
+            # was stored (lost response): link it so the action can complete.
+            action = self.db.get_refund_action(refund["payment_id"])
+            if action and action["idempotency_key"] == key and not action["provider_refund_id"]:
+                self.db.update_refund_action(action["id"], state="created", provider_refund_id=refund["id"])
+        result, _ = self.db.refund_razorpay_payment(
+            order_id=order_id, payment_id=refund["payment_id"], refund_id=refund["id"],
+            refund_amount=int(refund.get("amount") or 0), event_type="reconcile.refund.processed",
+            payload=refund, project=billing.project,
+        )
+        self.db.sync_refund_action(refund["payment_id"])
+        return result
+
+    def _refund_phase(self, now: datetime) -> None:
+        for obligation in self.db.open_refund_obligations(REFUND_BATCH):
+            self._open_refund(obligation, now)
+        for action in self.db.refund_actions_due(REFUND_BATCH):
+            if action["state"] == "requested":
+                self._attempt_refund(action, now)
+            else:
+                self._poll_refund(action, now)
+
+    def _open_refund(self, obligation: Dict[str, Any], now: datetime) -> None:
+        payment_id, order_id, reason = obligation["payment_id"], obligation["order_id"], obligation["reason"]
+        payment = self.client.fetch_payment(payment_id)
+        refunds = self.client.list_payment_refunds(payment_id)
+        if payment.get("status") != "captured" or int(payment.get("amount_refunded") or 0) > 0 or refunds:
+            # Some refund already exists or is underway: record what is processed;
+            # anything short of a full refund is for a human, never resized.
+            order = self.db.get_razorpay_order(order_id)
+            for refund in refunds:
+                if refund.get("status") == "processed" and order:
+                    self._record_refund(refund, order_id)
+            if not self.db.sync_refund_action(payment_id)["obligation_settled"]:
+                self._track("payment", payment_id, order_id, "partial_refund_review", payment.get("status"), now)
+            return
+        key = str(uuid.uuid4())
+        body = {
+            "amount": int(payment["amount"]),
+            "speed": "normal",
+            "notes": {"reason": reason, "order_id": order_id, "halallens_refund_key": key,
+                      "source": "halallens-reconciler"},
+        }
+        status, action = self.db.create_refund_intent(
+            payment_id=payment_id, order_id=order_id, reason=reason, amount=int(payment["amount"]),
+            currency=str(payment.get("currency") or "INR"), idempotency_key=key, request_body=body,
+        )
+        if status == "ineligible":
+            self._track("payment", payment_id, order_id, "legacy_review", "refund no longer eligible", now)
+            return
+        if action["state"] == "requested":
+            self._attempt_refund(action, now)
+
+    def _block(self, action, why: str, now) -> None:
+        self.db.update_refund_action(action["id"], state="blocked", error=why[:300], retry_after_seconds=SLOW_RECHECK)
+        self._count("refund_blocked")
+        self.notify("error", f"Automatic refund blocked for payment {action['payment_id']}: {why}",
+                    "Refund by hand in the Razorpay dashboard; the reconciler then settles the obligation.")
+
+    def _adopt(self, action, refund, now) -> None:
+        if refund["payment_id"] != action["payment_id"] or int(refund.get("amount") or 0) != int(action["amount"]):
+            self._block(action, f"refund {refund.get('id')} does not match the request", now)
+            return
+        if refund.get("status") == "failed":
+            self.db.update_refund_action(action["id"], state="failed", provider_refund_id=refund["id"],
+                                         error="refund failed at Razorpay", retry_after_seconds=SLOW_RECHECK)
+            self.notify("error", f"Automatic refund {refund['id']} failed", "Refund by hand; no automatic retry.")
+            return
+        self.db.update_refund_action(action["id"], state="created", provider_refund_id=refund["id"])
+        if refund.get("status") == "processed":
+            self._record_refund(refund, action["order_id"])
+        self._count("refund_created")
+
+    def _attempt_refund(self, action: Dict[str, Any], now: datetime) -> None:
+        """POST the stored request, unless an earlier attempt already created the refund."""
+
+        mine = [r for r in self.client.list_payment_refunds(action["payment_id"])
+                if (r.get("notes") or {}).get("halallens_refund_key") == action["idempotency_key"]]
+        if len(mine) > 1:
+            self._block(action, f"{len(mine)} refunds carry this request's key", now)
+            return
+        if mine:
+            self._adopt(action, mine[0], now)
+            return
+        try:
+            refund = self.client.create_refund(action["payment_id"], action["request_body"], action["idempotency_key"])
+        except RazorpayError as exc:
+            if exc.auth_failure:
+                raise
+            body = (exc.body or "").lower()
+            if exc.status == 409 and "progress" in body:
+                self.db.update_refund_action(action["id"], error="in progress at Razorpay", retry_after_seconds=FAST_RECHECK)
+            elif exc.status == 409:
+                self._block(action, "same key sent with different parameters (409)", now)
+            elif exc.status is None or exc.status == 429 or exc.status >= 500 or exc.status == 200:
+                # Unknown outcome: the next run looks for the refund first, then re-sends the same request.
+                self.db.update_refund_action(action["id"], error=str(exc)[:300], retry_after_seconds=FAST_RECHECK)
+            else:
+                # A 4xx is not proof either way; the lookup above found nothing, so a human decides.
+                self._block(action, f"Razorpay refused the refund: {exc}", now)
+            return
+        self._adopt(action, refund, now)
+
+    def _poll_refund(self, action: Dict[str, Any], now: datetime) -> None:
+        refund = self.client.fetch_refund(action["provider_refund_id"])
+        if refund.get("status") == "processed":
+            self._record_refund(refund, action["order_id"])
+        elif refund.get("status") == "failed":
+            self._adopt(action, refund, now)  # marks failed and alerts
+        else:
+            self.db.update_refund_action(action["id"], retry_after_seconds=FAST_RECHECK)
+
     # --- the run -----------------------------------------------------------------------------
 
     def _sweep(self, kind: str, start: datetime, end: datetime, now: datetime) -> None:
@@ -263,6 +380,8 @@ class Reconciler:
             self.db.save_reconcile_progress(audit_before=audit_start)
             for item in self.db.due_billing_items(FOLLOW_UP_BATCH):
                 self._follow_up(item, now)
+            if self.auto_refunds:
+                self._refund_phase(now)
         except RazorpayError as exc:
             error = str(exc)[:500]
             self.db.save_reconcile_progress(error=error)
@@ -322,7 +441,9 @@ def run_once() -> Optional[Dict[str, int]]:
                 now = cur.fetchone()[0]
                 notifier = OpsNotifier(component="billing-reconcile")
                 summary = Reconciler(
-                    db, RazorpayClient(RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET), notifier.notify
+                    db, RazorpayClient(RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET), notifier.notify,
+                    # Automatic refunds are TEST-only by code; live needs its own reviewed change.
+                    auto_refunds=RAZORPAY_KEY_ID.startswith("rzp_test_"),
                 ).run(now)
                 logger.info("Reconciliation finished: %s", summary or "nothing to do")
                 return summary

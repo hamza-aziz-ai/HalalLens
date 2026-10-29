@@ -1949,6 +1949,34 @@ async def healthcheck() -> Dict[str, str]:
     return {"status": "ok"}
 
 
+#: The reconciler runs every 15 minutes; older than this means it stopped.
+BILLING_HEARTBEAT_MAX_AGE = 3600
+
+
+@app.get("/health/billing")
+async def billing_heartbeat(response: Response) -> Dict[str, Any]:
+    """Payment reconciler heartbeat, for the uptime workflow (D-025).
+
+    Public and read-only: only a status and an age (database clock). "ok"
+    means the job ran within the hour, not that no billing item is open.
+    """
+
+    response.headers["Cache-Control"] = "no-store"
+    if not _razorpay_enabled():
+        return {"status": "disabled"}
+    try:
+        beat = _get_db().read_reconcile_heartbeat()
+    except Exception:  # DB down or table missing: the probe must fail
+        api_logger.exception("Billing heartbeat read failed")
+        raise HTTPException(status_code=503, detail="Heartbeat unavailable")
+    age = beat.get("age")
+    if age is None:
+        return {"status": "never", "last_success_age_seconds": None}
+    age = float(age)
+    stale = age > BILLING_HEARTBEAT_MAX_AGE or age < -60  # a future timestamp is wrong too
+    return {"status": "stale" if stale else "ok", "last_success_age_seconds": int(age)}
+
+
 class NarrationResponse(BaseModel):
     """Response model for narrator endpoint."""
 
@@ -3254,15 +3282,20 @@ async def razorpay_webhook(request: Request) -> Dict[str, str]:
             or request.headers.get("X-Razorpay-Event-Id")
             or f"{event_type}:{payment_id}"
         )
+        refunded_payment = refund_entity.get("payment_id") or payment_entity.get("id")
         result, info = db.refund_razorpay_payment(
             order_id=order_id,
-            payment_id=refund_entity.get("payment_id") or payment_entity.get("id"),
+            payment_id=refunded_payment,
             refund_id=refund_id,
             refund_amount=int(refund_entity.get("amount") or 0),
             event_type=event_type,
             payload=event,
             project=billing.project,
         )
+        if refunded_payment and result != "unknown":
+            # Settles an automatic refund request and the payment's refund
+            # obligation, whichever path recorded the refund (D-025).
+            db.sync_refund_action(refunded_payment)
         if result == "needs_review":
             api_logger.warning(
                 "Refund %s for order %s: funding payment unknown, review by hand", refund_id, info["order_id"]

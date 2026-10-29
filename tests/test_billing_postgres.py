@@ -347,3 +347,59 @@ def test_the_advisory_lock_lets_only_one_run_through(db):
     finally:
         first.close()
         second.close()
+
+
+def _duplicate_on_real_sql(manager, admin):
+    user_id = _user(admin)
+    _order(admin, user_id, "order_1", "annual")
+    _settle(manager, "order_1", "pay_1")
+    return user_id
+
+
+def _intent(manager, key, reason="duplicate", payment_id="pay_2", amount=50000):
+    return manager.create_refund_intent(
+        payment_id=payment_id, order_id="order_1", reason=reason, amount=amount, currency="INR",
+        idempotency_key=key, request_body={"amount": amount, "notes": {"halallens_refund_key": key}},
+    )
+
+
+def test_one_refund_intent_per_payment_even_under_concurrency(db):
+    manager, admin = db
+    _duplicate_on_real_sql(manager, admin)
+    results = []
+    threads = [threading.Thread(target=lambda i=i: results.append(_intent(manager, f"key-{i}"))) for i in range(6)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    statuses = sorted(r[0] for r in results)
+    assert statuses == ["created"] + ["existing"] * 5
+    keys = {r[1]["idempotency_key"] for r in results}
+    assert len(keys) == 1  # every caller got the one stored request
+
+
+def test_refund_intents_require_a_proven_duplicate_and_matching_terms(db):
+    manager, admin = db
+    _duplicate_on_real_sql(manager, admin)
+    assert _intent(manager, "k1", payment_id="pay_1")[0] == "ineligible"  # the funding payment itself
+    assert _intent(manager, "k2", amount=100)[0] == "ineligible"          # wrong amount
+    assert _intent(manager, "k3", reason="refund_due")[0] == "ineligible"  # order is not refund_due
+
+
+def test_refund_action_state_never_moves_backwards_and_manual_refunds_settle_the_obligation(db):
+    manager, admin = db
+    _duplicate_on_real_sql(manager, admin)
+    manager.track_billing_item(kind="payment", provider_id="pay_2", order_id="order_1", reason="duplicate",
+                               last_status="captured", recheck_after_seconds=0)
+    _, action = _intent(manager, "k1")
+    assert manager.update_refund_action(action["id"], state="blocked")["state"] == "blocked"
+    assert manager.update_refund_action(action["id"], state="created")["state"] == "blocked"
+    # Two manual partial refunds of the duplicate: open after the first, settled after both.
+    assert _refund(manager, "order_1", "pay_2", "rfnd_m1", 20000) == "other_payment"
+    assert manager.sync_refund_action("pay_2")["obligation_settled"] is False
+    assert _refund(manager, "order_1", "pay_2", "rfnd_m2", 30000) == "other_payment"
+    synced = manager.sync_refund_action("pay_2")
+    assert synced["obligation_settled"] is True and synced["action_state"] == "blocked"
+    with admin.cursor() as cur:
+        cur.execute("SELECT resolved_at FROM billing_tracked WHERE provider_id = 'pay_2'")
+        assert cur.fetchone()[0] is not None

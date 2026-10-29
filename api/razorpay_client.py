@@ -1,6 +1,7 @@
 """Razorpay REST access shared by the API and the payment reconciler (D-025).
 
-Read-only (GET) except order creation, which stays in api/app.py. Raises
+GET calls plus create_refund (used only by the reconciler's automatic
+refunds, TEST keys only). Order creation stays in api/app.py. Raises
 RazorpayError instead of HTTPException so jobs can use it; the API maps
 errors to HTTP itself.
 """
@@ -18,9 +19,10 @@ PAGE_SIZE = 100  # Razorpay's maximum `count` for list endpoints
 class RazorpayError(Exception):
     """A failed or malformed Razorpay response. ``status`` is None for network errors."""
 
-    def __init__(self, message: str, status: Optional[int] = None):
+    def __init__(self, message: str, status: Optional[int] = None, body: str = ""):
         super().__init__(message)
         self.status = status
+        self.body = body  # Razorpay's error text, e.g. to tell the two 409s apart
 
     @property
     def auth_failure(self) -> bool:
@@ -38,15 +40,32 @@ class RazorpayClient:
             resp = requests.get(f"{self.base}{path}", params=params, auth=self.auth, timeout=self.timeout)
         except requests.RequestException as exc:
             raise RazorpayError(f"GET {path}: {exc}") from exc
+        return self._parse(f"GET {path}", resp)
+
+    @staticmethod
+    def _parse(what: str, resp) -> Dict[str, Any]:
         if resp.status_code != 200:
-            raise RazorpayError(f"GET {path}: HTTP {resp.status_code}", resp.status_code)
+            raise RazorpayError(f"{what}: HTTP {resp.status_code}", resp.status_code, resp.text[:500])
         try:
             body = resp.json()
         except ValueError as exc:
-            raise RazorpayError(f"GET {path}: response is not JSON", resp.status_code) from exc
+            raise RazorpayError(f"{what}: response is not JSON", resp.status_code) from exc
         if not isinstance(body, dict):
-            raise RazorpayError(f"GET {path}: unexpected response shape", resp.status_code)
+            raise RazorpayError(f"{what}: unexpected response shape", resp.status_code)
         return body
+
+    def create_refund(self, payment_id: str, body: Dict[str, Any], idempotency_key: str) -> Dict[str, Any]:
+        """POST a refund. Retries must send the same key AND body (X-Refund-Idempotency)."""
+
+        path = f"/payments/{payment_id}/refund"
+        try:
+            resp = requests.post(
+                f"{self.base}{path}", json=body, auth=self.auth, timeout=self.timeout,
+                headers={"X-Refund-Idempotency": idempotency_key},
+            )
+        except requests.RequestException as exc:
+            raise RazorpayError(f"POST {path}: {exc}") from exc
+        return self._parse(f"POST {path}", resp)
 
     def _items(self, path: str, params: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
         items = self._get(path, params).get("items")
