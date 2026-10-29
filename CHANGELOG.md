@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.17.4](https://github.com/hamza-aziz-ai/HalalLens/compare/v0.17.3...v0.17.4) (2026-10-29)
+
+
+### Bug Fixes
+
+* **etl:** leave unestablished liquid-asset and income inputs missing instead of guessing (D-028) ([#220](https://github.com/hamza-aziz-ai/HalalLens/issues/220)) ([27177bb](https://github.com/hamza-aziz-ai/HalalLens/commit/27177bb9a8c52cd0c6619618d713ad93029f8b39))
+
 ## [0.17.3](https://github.com/hamza-aziz-ai/HalalLens/compare/v0.17.2...v0.17.3) (2026-10-29)
 
 
