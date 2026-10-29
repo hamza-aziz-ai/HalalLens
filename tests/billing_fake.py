@@ -20,6 +20,9 @@ PLANS = {
     "lifetime": {"code": "lifetime", "name": "Lifetime", "price_inr": 2000, "interval_days": 0, "trial_days": 0, "rank": 3},
 }
 CLAIMABLE = ("created", "attempted")
+#: Pricing columns of an ordinary (uncredited) order (D-030).
+_ORDINARY_TERMS = {"list_amount": None, "credit_amount": 0, "priced_at": None, "price_valid_until": None,
+                   "credit_version": None, "credit_detail": None, "refund_due_reason": None}
 
 
 class BillingFake:
@@ -41,6 +44,7 @@ class BillingFake:
         self.grants: List[Dict[str, Any]] = []
         self.events: List[Dict[str, Any]] = []
         self.refunds: Dict[str, Dict[str, Any]] = {}  # payment_refunds, by refund id
+        self.tracked: Dict[tuple, Dict[str, Any]] = {}  # billing_tracked, by (kind, provider id)
 
     # --- helpers for tests -------------------------------------------------
     def advance(self, days: float) -> None:
@@ -58,6 +62,8 @@ class BillingFake:
             "plan_code": plan_code,
             "interval_days": plan["interval_days"],
             "payment_id": None,
+            **_ORDINARY_TERMS,
+            "list_amount": plan["price_inr"] * 100,
         }
         return self.orders[order_id]
 
@@ -82,12 +88,35 @@ class BillingFake:
 
     # --- writes ---------------------------------------------------------------
     def create_razorpay_order(self, *, user_id, order_id, amount, currency, status, payload,
-                              plan_code=None, interval_days=None):
-        self.orders[order_id] = {
+                              plan_code=None, interval_days=None, **terms):
+        order = {
             "order_id": order_id, "user_id": user_id, "amount": amount, "currency": currency,
             "status": status, "payload": payload, "plan_code": plan_code,
-            "interval_days": interval_days, "payment_id": None,
+            "interval_days": interval_days, "payment_id": None, **_ORDINARY_TERMS, **terms,
         }
+        # The CHECK constraint of razorpay_orders.
+        assert order["list_amount"] is None or order["amount"] == order["list_amount"] - order["credit_amount"]
+        self.orders[order_id] = order
+
+    def get_credit_funding(self, user_id):
+        actions = getattr(self, "actions", {})
+        funding = {}
+        for o in self.orders.values():
+            if o["user_id"] != user_id or not o["payment_id"]:
+                continue
+            pending = any(
+                r["resolved_at"] is None and (r.get("order_id") == o["order_id"] or pid == o["payment_id"])
+                for (_, pid), r in self.tracked.items()
+            ) or (o["payment_id"] in actions and actions[o["payment_id"]]["obligation_settled_at"] is None)
+            funding[o["order_id"]] = {
+                "order_id": o["order_id"], "amount": o["amount"], "currency": o["currency"], "status": o["status"],
+                "payment_id": o["payment_id"], "refunded": self._refunded_total(o["payment_id"]),
+                "refund_pending": pending,
+            }
+        return funding
+
+    def quote_upgrade(self, user_id, quote):
+        return quote(self._grants_of(user_id), self.get_credit_funding(user_id), self.now), self.now
 
     def record_payment_event(self, *, user_id, provider, event_type, event_id, payload):
         return self._event(user_id, event_type, event_id)
@@ -107,7 +136,7 @@ class BillingFake:
         return [g for g in self.grants if g["user_id"] == user_id]
 
     def settle_razorpay_order(self, *, order_id, payment_id, expected_user_id, event_type, payload,
-                              project, lifetime_held):
+                              project, lifetime_held, payment_created_at=None, credit_refusal=None):
         order = self.orders.get(order_id)
         if not order or (expected_user_id is not None and order["user_id"] != expected_user_id):
             return "missing", None
@@ -117,8 +146,14 @@ class BillingFake:
         if self._refunded_total(payment_id) >= order["amount"]:
             self._event(user_id, event_type, payment_id)
             return "refunded_payment", dict(order)
-        if lifetime_held(self._grants_of(user_id)):
-            order.update(status="refund_due", payment_id=payment_id)
+        reason = "lifetime_held" if lifetime_held(self._grants_of(user_id)) else None
+        if reason is None and order.get("credit_version") is not None:
+            if payment_created_at is None or credit_refusal is None:
+                return "retry", dict(order)
+            reason = credit_refusal(dict(order), self._grants_of(user_id), self.get_credit_funding(user_id),
+                                    payment_created_at)
+        if reason is not None:
+            order.update(status="refund_due", payment_id=payment_id, refund_due_reason=reason)
             self._event(user_id, event_type, payment_id)
             return "refund_due", dict(order)
         days = int(order["interval_days"] or 0)
@@ -170,6 +205,18 @@ class BillingFake:
             order["status"] = "refunded"
         projection = project(self._grants_of(user_id), self.now)
         self._write_projection(user_id, projection)
+        conflicts = sorted(
+            o["order_id"] for o in self.orders.values()
+            if o["user_id"] == user_id and o.get("credit_version") is not None and o["status"] == "paid"
+            and any(s["payment_id"] == funding for s in (o.get("credit_detail") or {}).get("sources", []))
+        )
+        if conflicts:
+            self.tracked.setdefault(("credit_conflict", refund_id), {
+                "kind": "credit_conflict", "provider_id": refund_id, "order_id": conflicts[0],
+                "reason": "credit_conflict", "first_seen": self.now, "attempts": 1, "last_notified_at": self.now,
+                "next_check_at": self.now, "resolved_at": None,
+            })
+            projection = {**projection, "credit_conflicts": conflicts}
         return ("revoked" if revoke else "partial"), projection
 
     def sync_refund_action(self, payment_id):
@@ -204,7 +251,6 @@ class ReconcileFake(BillingFake):
         super().__init__()
         self.state = {"payments_checkpoint": None, "refunds_checkpoint": None, "audit_before": None,
                       "last_success_at": None, "last_error": None}
-        self.tracked: Dict[tuple, Dict[str, Any]] = {}
         self.actions: Dict[str, Dict[str, Any]] = {}  # refund_actions, by payment id
 
     def add_order(self, order_id, plan_code, user_id=42):
@@ -253,7 +299,8 @@ class ReconcileFake(BillingFake):
         self.tracked[(kind, provider_id)]["last_notified_at"] = self.now
 
     def due_billing_items(self, limit):
-        due = [dict(r) for r in self.tracked.values() if r["resolved_at"] is None and r["next_check_at"] <= self.now]
+        due = [dict(r) for r in self.tracked.values() if r["resolved_at"] is None and r["next_check_at"] <= self.now
+               and r["kind"] != "credit_conflict"]
         return sorted(due, key=lambda r: r["next_check_at"])[:limit]
 
     def open_items(self):

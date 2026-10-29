@@ -238,8 +238,19 @@ CREATE TABLE IF NOT EXISTS razorpay_orders (
     plan_code TEXT REFERENCES subscription_plans(code),
     interval_days INTEGER,
     payment_id TEXT,
+    -- Pricing terms (D-030): amount (charged) = list_amount - credit_amount.
+    -- credit_version NULL: an ordinary or pre-credit order (no credit checks).
+    list_amount INTEGER,
+    credit_amount INTEGER NOT NULL DEFAULT 0,
+    priced_at TIMESTAMPTZ,
+    price_valid_until TIMESTAMPTZ,      -- the price binds attempts created by then
+    credit_version INTEGER,
+    credit_detail JSONB,                -- {"sources": [...]}: per-source evidence
+    refund_due_reason TEXT,             -- lifetime_held | price_expired | credit_changed
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT razorpay_orders_credit_terms_check
+        CHECK (list_amount IS NULL OR (credit_amount >= 0 AND amount = list_amount - credit_amount))
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS razorpay_orders_payment_id_key
@@ -289,8 +300,11 @@ INSERT INTO billing_reconcile_state (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
 
 -- billing_tracked: everything the reconciler must look at again (pending at
 -- Razorpay, or needing a refund or a human). Rows are never resolved by age.
+-- credit_conflict (D-030): a refund of a payment that funded a settled
+-- credited order's credit; alert only, resolved by a human.
 CREATE TABLE IF NOT EXISTS billing_tracked (
-    kind TEXT NOT NULL CHECK (kind IN ('payment', 'refund', 'order')),
+    kind TEXT NOT NULL CONSTRAINT billing_tracked_kind_check
+        CHECK (kind IN ('payment', 'refund', 'order', 'credit_conflict')),
     provider_id TEXT NOT NULL,
     order_id TEXT,
     reason TEXT NOT NULL,

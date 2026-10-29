@@ -13,7 +13,7 @@ import json
 from datetime import timedelta
 
 import pytest
-from fastapi import HTTPException
+from fastapi import HTTPException, Response
 
 from tests.billing_fake import BillingFake
 
@@ -103,7 +103,7 @@ def _verify(fake, monkeypatch, order_id, payment_id, payment=None):
 
 
 def _entitlement(fake):
-    return _run(api_module.billing_entitlement(authorization="Bearer t"))
+    return _run(api_module.billing_entitlement(Response(), authorization="Bearer t"))
 
 
 # --- exactly once ------------------------------------------------------------

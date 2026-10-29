@@ -36,7 +36,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional
 
 from api import billing
-from api.razorpay_client import RazorpayClient, RazorpayError, payment_terms_match
+from api.razorpay_client import RazorpayClient, RazorpayError, payment_created_at, payment_terms_match
 
 logger = logging.getLogger("billing-reconcile")
 
@@ -106,7 +106,13 @@ class Reconciler:
     def handle_refund(self, refund: Dict[str, Any], now: datetime) -> None:
         refund_id, payment_id, status = refund["id"], refund.get("payment_id"), refund.get("status")
         if status == "pending":
-            self._track("refund", refund_id, None, "pending", status, now)
+            # Name the order, so upgrade credit treats its payment as refund-pending (D-030).
+            order_id = None
+            if payment_id:
+                paid = self.client.fetch_payment(payment_id)
+                order = self.db.get_razorpay_order(paid.get("order_id")) if paid.get("order_id") else None
+                order_id = order["order_id"] if order else None
+            self._track("refund", refund_id, order_id, "pending", status, now)
             return
         if status == "failed":
             self._track("refund", refund_id, None, "failed_refund", status, now)
@@ -192,7 +198,11 @@ class Reconciler:
                 order_id=order_id, payment_id=payment_id, expected_user_id=None,
                 event_type="reconcile.payment.captured", payload=payment,
                 project=billing.project, lifetime_held=billing.lifetime_held,
+                payment_created_at=payment_created_at(payment), credit_refusal=billing.credit_refusal,
             )
+            if result == "retry":  # credited order, attempt time unknown: look again by id
+                self._track("payment", payment_id, order_id, "pending", "created_at missing", now)
+                return
             if result == "granted":
                 self._webhook_missed(f"payment {payment_id} (granted)")
                 self._resolve("payment", payment_id)
@@ -232,12 +242,22 @@ class Reconciler:
             action = self.db.get_refund_action(refund["payment_id"])
             if action and action["idempotency_key"] == key and not action["provider_refund_id"]:
                 self.db.update_refund_action(action["id"], state="created", provider_refund_id=refund["id"])
-        result, _ = self.db.refund_razorpay_payment(
+        result, info = self.db.refund_razorpay_payment(
             order_id=order_id, payment_id=refund["payment_id"], refund_id=refund["id"],
             refund_amount=int(refund.get("amount") or 0), event_type="reconcile.refund.processed",
             payload=refund, project=billing.project,
         )
         self.db.sync_refund_action(refund["payment_id"])
+        conflicts = info.get("credit_conflicts") if isinstance(info, dict) else None
+        if conflicts:
+            # Alert only (D-030): the credit is not clawed back; a human decides.
+            self._count("credit_conflict")
+            self.notify(
+                "error",
+                f"Billing needs attention: credit_conflict (refund {refund['id']}, order {conflicts[0]})",
+                "A refunded payment funded upgrade credit on a settled Lifetime order. See README_ops, "
+                "Billing (credit_conflict). Tracked in billing_tracked until resolved by hand.",
+            )
         return result
 
     def _refund_phase(self, now: datetime) -> None:

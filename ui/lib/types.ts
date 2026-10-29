@@ -87,16 +87,33 @@ export type Entitlement = {
   next_purchase_starts: string;
   purchases_blocked: boolean;
   auto_renewal: boolean;
+  /** Lifetime price after upgrade credit (D-030); null when Lifetime is held or not sold. */
+  lifetime_quote?: LifetimeQuote | null;
+};
+
+/** Amounts in paise: amount = list_amount - credit_amount. */
+export type LifetimeQuote = {
+  plan_code: string;
+  list_amount: number;
+  credit_amount: number;
+  amount: number;
+  /** Payable below one rupee: no checkout, contact support. */
+  blocked: boolean;
+  valid_for_seconds: number;
 };
 
 export type RazorpayOrderResponse = {
   key_id: string;
   order_id: string;
+  /** Charged amount in paise. */
   amount: number;
   currency: string;
   plan_code: string;
   plan_name: string;
   email: string;
+  list_amount?: number;
+  credit_amount?: number;
+  price_valid_until?: string | null;
 };
 
 export type Filing = {

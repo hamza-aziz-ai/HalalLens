@@ -2699,16 +2699,26 @@ class BSEDatabaseManager:
         payload: Dict[str, Any],
         plan_code: Optional[str] = None,
         interval_days: Optional[int] = None,
+        list_amount: Optional[int] = None,
+        credit_amount: int = 0,
+        priced_at: Optional[datetime] = None,
+        price_valid_until: Optional[datetime] = None,
+        credit_version: Optional[int] = None,
+        credit_detail: Optional[Dict[str, Any]] = None,
     ) -> None:
+        """Store an order with its fixed terms; pricing terms (D-030) only on insert."""
+
         with self.get_connection() as conn:
             with conn.cursor() as cursor:
                 cursor.execute(
                     """
                     INSERT INTO razorpay_orders (
-                        order_id, user_id, amount, currency, status, payload, plan_code, interval_days
+                        order_id, user_id, amount, currency, status, payload, plan_code, interval_days,
+                        list_amount, credit_amount, priced_at, price_valid_until, credit_version, credit_detail
                     ) VALUES (
                         %(order_id)s, %(user_id)s, %(amount)s, %(currency)s, %(status)s, %(payload)s,
-                        %(plan_code)s, %(interval_days)s
+                        %(plan_code)s, %(interval_days)s, %(list_amount)s, %(credit_amount)s, %(priced_at)s,
+                        %(price_valid_until)s, %(credit_version)s, %(credit_detail)s
                     )
                     ON CONFLICT (order_id) DO UPDATE
                     SET status = EXCLUDED.status,
@@ -2724,17 +2734,27 @@ class BSEDatabaseManager:
                         "payload": Json(payload),
                         "plan_code": plan_code,
                         "interval_days": interval_days,
+                        "list_amount": list_amount,
+                        "credit_amount": int(credit_amount),
+                        "priced_at": priced_at,
+                        "price_valid_until": price_valid_until,
+                        "credit_version": credit_version,
+                        "credit_detail": None if credit_detail is None else Json(credit_detail),
                     },
                 )
                 conn.commit()
+
+    _ORDER_COLUMNS = (
+        "order_id, user_id, amount, currency, status, payload, plan_code, interval_days, payment_id, "
+        "list_amount, credit_amount, priced_at, price_valid_until, credit_version, credit_detail, refund_due_reason"
+    )
 
     def get_razorpay_order(self, order_id: str) -> Optional[Dict]:
         with self.get_connection() as conn:
             with conn.cursor() as cursor:
                 cursor.execute(
-                    """
-                    SELECT order_id, user_id, amount, currency, status, payload, plan_code,
-                           interval_days, payment_id
+                    f"""
+                    SELECT {self._ORDER_COLUMNS}
                     FROM razorpay_orders
                     WHERE order_id = %(order_id)s
                     """,
@@ -2821,6 +2841,52 @@ class BSEDatabaseManager:
         return (dict(user) if user else None), grants, now
 
     @staticmethod
+    def _credit_funding(cursor, user_id: int) -> Dict[str, Dict]:
+        """Funding facts of the user's paid orders, for upgrade credit (D-030).
+
+        refunded: processed refunds of the funding payment (payment_refunds is
+        the record; grant.refunded_amount is a copy). refund_pending: an open
+        billing item names the order or the payment, or a refund request for
+        the payment is not settled (best effort from what this app recorded).
+        """
+
+        cursor.execute(
+            """
+            SELECT o.order_id, o.amount, o.currency, o.status, o.payment_id,
+                   COALESCE((SELECT SUM(r.amount) FROM payment_refunds r WHERE r.payment_id = o.payment_id), 0)
+                       AS refunded,
+                   (EXISTS (SELECT 1 FROM billing_tracked t WHERE t.resolved_at IS NULL
+                                AND (t.order_id = o.order_id OR t.provider_id = o.payment_id))
+                    OR EXISTS (SELECT 1 FROM refund_actions a WHERE a.payment_id = o.payment_id
+                                AND a.obligation_settled_at IS NULL)) AS refund_pending
+            FROM razorpay_orders o
+            WHERE o.user_id = %(u)s AND o.payment_id IS NOT NULL
+            """,
+            {"u": user_id},
+        )
+        return {row["order_id"]: {**dict(row), "refunded": int(row["refunded"])} for row in cursor.fetchall()}
+
+    def get_credit_funding(self, user_id: int) -> Dict[str, Dict]:
+        with self.get_connection() as conn:
+            with conn.cursor() as cursor:
+                return self._credit_funding(cursor, user_id)
+
+    def quote_upgrade(
+        self, user_id: int, quote: Callable[[List[Dict], Dict[str, Dict], datetime], Optional[Dict]]
+    ) -> Tuple[Optional[Dict], datetime]:
+        """Run ``quote(grants, funding, now)`` on one consistent, locked read; writes nothing.
+
+        The lock is released before the caller talks to the payment provider.
+        """
+
+        with self.get_connection() as conn:
+            with conn.cursor() as cursor:
+                _, grants, now = self._lock_user_grants(cursor, user_id)
+                result = quote(grants, self._credit_funding(cursor, user_id), now)
+                conn.rollback()
+                return result, now
+
+    @staticmethod
     def _write_projection(cursor, user_id: int, projection: Dict, *, trial_used: Optional[bool] = None) -> None:
         cursor.execute(
             """
@@ -2858,6 +2924,8 @@ class BSEDatabaseManager:
         payload: Dict[str, Any],
         project: Callable[[List[Dict], datetime], Dict],
         lifetime_held: Callable[[List[Dict]], bool],
+        payment_created_at: Optional[int] = None,
+        credit_refusal: Optional[Callable[[Dict, List[Dict], Dict[str, Dict], int], Optional[str]]] = None,
     ) -> Tuple[str, Optional[Dict]]:
         """Turn a captured payment into a grant, exactly once.
 
@@ -2865,17 +2933,25 @@ class BSEDatabaseManager:
         the order claimable instead of "paid without access". Returns one of
         ("granted", projection), ("settled", order) when already settled,
         ("missing", None) for an unknown or foreign order,
-        ("refund_due", order) when Lifetime already covers the user (the
-        payment is kept on record for a refund, no time is granted), and
+        ("refund_due", order) when Lifetime already covers the user or a
+        credited order's terms no longer hold (the payment is kept on record
+        for a refund of the charged amount, no time is granted;
+        order["refund_due_reason"] says why), ("retry", order) when a
+        credited order's payment attempt time is unknown (nothing changes; the
+        caller or the reconciler tries again with the payment entity), and
         ("refunded_payment", order) when this payment was already fully
         refunded before settlement.
+
+        Credited orders (credit_version set, D-030) also need
+        ``payment_created_at`` (the attempt's provider creation time, epoch
+        seconds) and ``credit_refusal`` (api.billing.credit_refusal); orders
+        without credit_version settle exactly as before.
         """
 
         with self.get_connection() as conn:
             with conn.cursor() as cursor:
                 cursor.execute(
-                    "SELECT order_id, user_id, amount, currency, status, plan_code, interval_days, payment_id "
-                    "FROM razorpay_orders WHERE order_id = %(order_id)s FOR UPDATE",
+                    f"SELECT {self._ORDER_COLUMNS} FROM razorpay_orders WHERE order_id = %(order_id)s FOR UPDATE",
                     {"order_id": order_id},
                 )
                 order = cursor.fetchone()
@@ -2899,15 +2975,21 @@ class BSEDatabaseManager:
                     self._insert_payment_event(cursor, **event)
                     conn.commit()
                     return "refunded_payment", order
-                if lifetime_held(grants):
+                reason = "lifetime_held" if lifetime_held(grants) else None
+                if reason is None and order["credit_version"] is not None:
+                    if payment_created_at is None or credit_refusal is None:
+                        conn.rollback()  # never price by processing time
+                        return "retry", order
+                    reason = credit_refusal(order, grants, self._credit_funding(cursor, user_id), payment_created_at)
+                if reason is not None:
                     cursor.execute(
-                        "UPDATE razorpay_orders SET status = 'refund_due', payment_id = %(p)s, updated_at = NOW() "
-                        "WHERE order_id = %(o)s",
-                        {"p": payment_id, "o": order_id},
+                        "UPDATE razorpay_orders SET status = 'refund_due', payment_id = %(p)s, "
+                        "refund_due_reason = %(r)s, updated_at = NOW() WHERE order_id = %(o)s",
+                        {"p": payment_id, "r": reason, "o": order_id},
                     )
                     self._insert_payment_event(cursor, **event)
                     conn.commit()
-                    return "refund_due", order
+                    return "refund_due", {**order, "status": "refund_due", "refund_due_reason": reason}
                 interval_days = int(order["interval_days"] or 0)
                 cursor.execute(
                     f"""
@@ -2964,6 +3046,11 @@ class BSEDatabaseManager:
         settle_razorpay_order), ("refund_due_closed", order) when a refund_due
         payment is fully refunded, ("needs_review", order) for a pre-ledger
         grant whose funding payment is unknown, or ("unknown", None).
+
+        When the refunded payment funded part of a settled credited order's
+        credit (D-030), a 'credit_conflict' billing item is opened in the same
+        transaction and the projection carries "credit_conflicts" (those
+        orders' ids) so the caller alerts; access changes only as above.
         """
 
         with self.get_connection() as conn:
@@ -3039,6 +3126,24 @@ class BSEDatabaseManager:
                     )
                 projection = project(grants, now)
                 self._write_projection(cursor, user_id, projection)
+                # The credit a settled upgrade took from this payment is not
+                # clawed back (maintainer decision, D-030): open an item for a human.
+                cursor.execute(
+                    "SELECT order_id FROM razorpay_orders WHERE user_id = %(u)s AND credit_version IS NOT NULL "
+                    "AND status = 'paid' AND credit_detail -> 'sources' @> %(src)s ORDER BY order_id",
+                    {"u": user_id, "src": Json([{"payment_id": funding}])},
+                )
+                conflicts = [row["order_id"] for row in cursor.fetchall()]
+                if conflicts:
+                    cursor.execute(
+                        """
+                        INSERT INTO billing_tracked (kind, provider_id, order_id, reason, last_status, last_notified_at)
+                        VALUES ('credit_conflict', %(r)s, %(o)s, 'credit_conflict', %(s)s, NOW())
+                        ON CONFLICT (kind, provider_id) DO NOTHING
+                        """,
+                        {"r": refund_id, "o": conflicts[0], "s": f"refund of {funding} ({total} paise in total)"},
+                    )
+                    projection = {**projection, "credit_conflicts": conflicts}
                 conn.commit()
                 return ("revoked" if revoke else "partial"), projection
 
@@ -3263,8 +3368,9 @@ class BSEDatabaseManager:
         with self.get_connection() as conn:
             with conn.cursor() as cursor:
                 cursor.execute(
+                    # credit_conflict items wait for a human; nothing to re-check at Razorpay.
                     "SELECT * FROM billing_tracked WHERE resolved_at IS NULL AND next_check_at <= NOW() "
-                    "ORDER BY next_check_at LIMIT %(n)s",
+                    "AND kind <> 'credit_conflict' ORDER BY next_check_at LIMIT %(n)s",
                     {"n": limit},
                 )
                 return [dict(row) for row in cursor.fetchall()]

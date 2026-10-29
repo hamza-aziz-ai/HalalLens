@@ -126,3 +126,144 @@ def purchase_start(grants: Iterable[Dict[str, Any]], now: datetime) -> datetime:
 
     ends = [s.end for s in fold(grants) if not s.lifetime]
     return max([now, *ends])
+
+
+# --- Upgrade credit at checkout (D-030) ---------------------------------------
+#
+# An upgrade to a never-ending plan is discounted by the unused part of what
+# the buyer paid for timed grants (a discount, never a refund). Pure: grants,
+# the funding facts of their orders and ``now`` come in; prices are
+# arguments. Money is integer minor units (paise), times are aware UTC and
+# durations whole microseconds.
+#
+#   eligible   unrevoked timed grant, source 'razorpay', its order paid by a
+#              known payment in the quote's currency, no refund pending
+#   net_paid   order amount (what was charged) - processed refunds, >= 0
+#   credit     net_paid                                    queued (not started)
+#              floor(net_paid * remaining_us / total_us)   running (total = the grant's duration)
+#              0                                           expired
+#
+# Trial and legacy (pre-ledger) grants give nothing. Credit is floored per
+# source, then summed, and never exceeds the list price.
+
+CREDIT_VERSION = 1
+#: A quoted price binds payment attempts created within this of pricing.
+PRICE_VALIDITY = timedelta(minutes=15)
+#: Below this (one rupee) no checkout is opened; the upgrade is reviewed by hand.
+MIN_PAYABLE = 100
+_US = timedelta(microseconds=1)
+
+
+def _iso(value: Optional[datetime]) -> Optional[str]:
+    return None if value is None else value.isoformat()
+
+
+def _net_paid(order: Dict[str, Any]) -> int:
+    return max(0, int(order["amount"]) - int(order.get("refunded") or 0))
+
+
+def credit_sources(
+    grants: Iterable[Dict[str, Any]], funding: Dict[str, Dict[str, Any]], now: datetime, currency: str = "INR"
+) -> List[Dict[str, Any]]:
+    """Per-source credit evidence for the eligible grants at ``now``.
+
+    ``funding`` maps order id to {amount, currency, status, payment_id,
+    refunded (processed refunds of that payment), refund_pending}.
+    """
+
+    if now.tzinfo is None:
+        raise ValueError("now must be timezone-aware")
+    grants = list(grants)
+    segments = {s.grant_id: s for s in fold(grants)}
+    sources: List[Dict[str, Any]] = []
+    for grant in grants:
+        order = funding.get(grant.get("order_id") or "")
+        if (
+            grant.get("source") != "razorpay"
+            or grant.get("duration") is None
+            or grant.get("revoked_at") is not None
+            or order is None
+            or not order.get("payment_id")
+            or order.get("status") != "paid"
+            or order.get("refund_pending")
+            or str(order.get("currency") or "").upper() != currency.upper()
+        ):
+            continue
+        net_paid = _net_paid(order)
+        segment = segments[grant["id"]]
+        if segment.start > now:
+            state, credit = "queued", net_paid
+        elif segment.end is not None and segment.end > now:
+            total = grant["duration"] // _US
+            state, credit = "running", min(net_paid, net_paid * ((segment.end - now) // _US) // total)
+        else:
+            state, credit = "expired", 0
+        sources.append({
+            "grant_id": grant["id"],
+            "order_id": grant["order_id"],
+            "payment_id": order["payment_id"],
+            "plan_code": grant["plan_code"],
+            "net_paid": net_paid,
+            "state": state,
+            "start": _iso(segment.start),
+            "end": _iso(segment.end),
+            "credit": credit,
+        })
+    return sources
+
+
+def upgrade_quote(
+    grants: Iterable[Dict[str, Any]],
+    funding: Dict[str, Dict[str, Any]],
+    now: datetime,
+    list_amount: int,
+    currency: str = "INR",
+) -> Dict[str, Any]:
+    """The price of an upgrade at ``now``: list - credit, with the evidence behind the credit."""
+
+    sources = credit_sources(grants, funding, now, currency)
+    credit = min(int(list_amount), sum(s["credit"] for s in sources))
+    amount = int(list_amount) - credit
+    return {
+        "list_amount": int(list_amount),
+        "credit_amount": credit,
+        "amount": amount,
+        "blocked": amount < MIN_PAYABLE,
+        "sources": sources,
+    }
+
+
+def credit_refusal(
+    order: Dict[str, Any],
+    grants: Iterable[Dict[str, Any]],
+    funding: Dict[str, Dict[str, Any]],
+    attempt_created_at: int,
+) -> Optional[str]:
+    """Why a credited order may not settle, or None when it may.
+
+    The quoted price binds a payment attempt created (provider time, epoch
+    seconds) no later than ``price_valid_until`` (inclusive, second
+    resolution), even when that attempt is authorised or captured later.
+    Every source that took credit must still be exactly as priced: grant
+    unrevoked, same funding payment, same net paid, no refund pending.
+    """
+
+    if int(attempt_created_at) > int(order["price_valid_until"].timestamp()):
+        return "price_expired"
+    by_id = {g["id"]: g for g in grants}
+    for source in (order.get("credit_detail") or {}).get("sources") or []:
+        if not source.get("credit"):
+            continue  # took nothing off the price
+        grant = by_id.get(source["grant_id"])
+        now_order = funding.get(source["order_id"])
+        if (
+            grant is None
+            or grant.get("revoked_at") is not None
+            or now_order is None
+            or now_order.get("payment_id") != source["payment_id"]
+            or now_order.get("status") != "paid"
+            or now_order.get("refund_pending")
+            or _net_paid(now_order) != int(source["net_paid"])
+        ):
+            return "credit_changed"
+    return None

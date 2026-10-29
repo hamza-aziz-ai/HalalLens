@@ -116,6 +116,16 @@ def payment_terms_match(payment: Dict[str, Any], order: Dict[str, Any]) -> bool:
     )
 
 
+def payment_created_at(payment: Dict[str, Any]) -> Optional[int]:
+    """When the payment attempt was created: the payment entity's ``created_at``
+    (epoch seconds), never a webhook envelope's. None when missing or malformed."""
+
+    value = (payment or {}).get("created_at")
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        return None
+    return value
+
+
 def payment_matches_order(payment: Dict[str, Any], order: Dict[str, Any]) -> bool:
     """A captured payment for exactly this order's amount and currency."""
 
