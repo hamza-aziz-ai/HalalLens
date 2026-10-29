@@ -43,10 +43,11 @@ REQUIRED_RATIOS = (
 
 # Prohibited income is the residual sum: base figure + positive interest income
 # + positive dividend income. Every part must be known (an explicit 0 counts);
-# an unknown part is never assumed to be zero. The base may already contain
-# interest income (the PDF extractor can match it), which double counts toward
-# non-compliance, not toward a false pass. If the base is ever declared a
-# complete aggregate, the summation below must change, not just this tuple.
+# an unknown part is never assumed to be zero. The base must exclude interest
+# and dividend income, or they are counted twice; since D-028 no extractor or
+# vendor mapping fills it, so it comes only from a governance override. If the
+# base is ever declared a complete aggregate, the summation below must change,
+# not just this tuple.
 REQUIRED_INCOME_INPUTS = ("non_permissible_income", "interest_income", "dividend_income")
 
 
