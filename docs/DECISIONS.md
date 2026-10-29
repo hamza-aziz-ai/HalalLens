@@ -158,3 +158,16 @@ One entry per decision, newest last. Model for every entry below: Claude Sonnet 
 - **Trade-off:** Public version tags are permanent, so a later hardening fix ships as a new version, never by rewriting an old tag. The UI image still runs as root until the static UI step. Per-architecture tags (`vX.Y.Z-amd64`, `-arm64`) are visible next to the joined tag.
 - **Revisit if:** the project goes private (make the packages and Docker Hub repositories private or move to a private registry), or a buyer wants another registry.
 
+## D-019: Watchlists in PostgreSQL with conditional updates
+
+- **Date:** 2026-10-29   Model: Claude Opus 5.5 (maintainer approved the migration; design agreed with Codex in council)
+- **Context:** Watchlists were a JSON file rewritten whole without a lock, so two workers or overlapping requests could duplicate an alert or undo another user's change; the API had to run one worker.
+- **Options:**
+  1. Keep the file and add a file lock
+  2. Postgres with read-compare-update in the application
+  3. Postgres with conditional `UPDATE`s that decide baseline vs flip in the database
+- **Chosen:** 3. Table `watchlist_entries` (FK to `users`, cascade), insert-if-absent, then for a conclusive verdict first `UPDATE ... WHERE last_is_compliant IS NULL` (baseline), and only if that matched nothing `UPDATE ... WHERE last_is_compliant <> verdict` (flip), committed before an alert is returned. The JSON storage was removed.
+- **Why:** PostgreSQL re-checks an UPDATE's WHERE on the newest row version after waiting for the row lock, so concurrent identical verdicts produce one flip. Seeding first matters: flip-first can lose a concurrent opposite verdict (Codex found this in review; the opt-in test fails 20/20 with flip-first and passes with seed-first).
+- **Trade-off:** Re-adding a symbol now keeps its baseline (it used to reset it). A delayed, stale verdict can still move a baseline backwards (needs verdict versioning). Email stays best-effort after the commit. One API worker remains the default because the rate limiter is per-process.
+- **Revisit if:** alerts move to a scheduled job, or verdicts get versions.
+

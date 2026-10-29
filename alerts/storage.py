@@ -1,74 +1,127 @@
 #!/usr/bin/env python3
-"""File-based watchlist storage for quick prototyping."""
+"""Watchlist storage in PostgreSQL (table ``watchlist_entries``)."""
 
 from __future__ import annotations
 
-import json
-from dataclasses import asdict, dataclass
-import os
-import uuid
-from pathlib import Path
-from typing import Dict, List, Optional
+from dataclasses import dataclass
+from typing import Callable, List, Optional
+
+COMPLIANCE_FLIP = "compliance_flip"
 
 
 @dataclass
 class WatchEntry:
     """Represents a watchlist entry for compliance alerts."""
 
-    user_id: str
+    user_id: int
     symbol: str
-    trigger: str = "compliance_flip"
+    trigger: str = COMPLIANCE_FLIP
     last_is_compliant: Optional[bool] = None
 
-    def key(self) -> str:
-        return f"{self.user_id}:{self.symbol}:{self.trigger}"
+
+def owner_key(user_id: int) -> str:
+    """External owner label used in API responses and alert events."""
+
+    return f"user:{user_id}"
+
+
+def require_user_id(user_id: object) -> int:
+    """A positive integer user id; anything else is a programming error."""
+
+    if isinstance(user_id, bool) or not isinstance(user_id, int) or user_id <= 0:
+        raise ValueError("user_id must be a positive integer")
+    return user_id
+
+
+# The NULL baseline is seeded first, and only if that matched nothing is a flip
+# attempted. Flip-first could lose a concurrent opposite verdict: the NULL row
+# matches no flip, another check seeds and commits, then this check's seed
+# matches nothing. PostgreSQL re-checks each UPDATE's WHERE on the latest row
+# version after waiting for the row lock (READ COMMITTED), so concurrent
+# identical verdicts produce exactly one flip.
+_SEED_SQL = """
+    UPDATE watchlist_entries
+       SET last_is_compliant = %(verdict)s, updated_at = now()
+     WHERE user_id = %(user_id)s AND symbol = %(symbol)s AND trigger = %(trigger)s
+       AND last_is_compliant IS NULL
+"""
+_FLIP_SQL = """
+    UPDATE watchlist_entries
+       SET last_is_compliant = %(verdict)s, updated_at = now()
+     WHERE user_id = %(user_id)s AND symbol = %(symbol)s AND trigger = %(trigger)s
+       AND last_is_compliant IS NOT NULL AND last_is_compliant <> %(verdict)s
+"""
 
 
 class WatchlistStorage:
-    """Persist watchlist entries to a JSON file."""
+    """Watch entries keyed by (user_id, symbol, trigger) in PostgreSQL.
 
-    def __init__(self, path: Path):
-        self.path = path
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        if not self.path.exists():
-            self._write({})
+    ``get_db`` returns the database manager; its ``get_connection()`` rolls
+    back on error but never commits, so every method commits explicitly.
+    """
 
-    def _read(self) -> Dict[str, Dict]:
-        with self.path.open("r", encoding="utf-8") as handle:
-            return json.load(handle)
+    def __init__(self, get_db: Callable[[], object]):
+        self._get_db = get_db
 
-    def _write(self, payload: Dict[str, Dict]) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        temp_name = f".{self.path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
-        temp_path = self.path.with_name(temp_name)
-        with temp_path.open("w", encoding="utf-8") as handle:
-            json.dump(payload, handle, indent=2)
-        temp_path.replace(self.path)
+    def add(self, entry: WatchEntry) -> None:
+        """Watch a symbol. Re-adding keeps the existing baseline."""
 
-    def upsert(self, entry: WatchEntry) -> WatchEntry:
-        data = self._read()
-        data[entry.key()] = asdict(entry)
-        self._write(data)
-        return entry
+        params = {
+            "user_id": require_user_id(entry.user_id),
+            "symbol": entry.symbol,
+            "trigger": entry.trigger,
+        }
+        with self._get_db().get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    INSERT INTO watchlist_entries (user_id, symbol, trigger)
+                    VALUES (%(user_id)s, %(symbol)s, %(trigger)s)
+                    ON CONFLICT (user_id, symbol, trigger) DO NOTHING
+                    """,
+                    params,
+                )
+            conn.commit()
 
-    def list(self, user_id: Optional[str] = None) -> List[WatchEntry]:
-        data = self._read()
-        items: List[WatchEntry] = []
-        for value in data.values():
-            if user_id and value["user_id"] != user_id:
-                continue
-            items.append(WatchEntry(**value))
-        return items
+    def list(self, user_id: int) -> List[WatchEntry]:
+        """One user's entries; there is no "every user" listing."""
 
-    def update_state(self, entry: WatchEntry) -> None:
-        # ponytail: whole-file read-modify-write with no lock, safe only with one
-        # API worker (compose default). Concurrent writers can undo each other's
-        # entries; move watchlists to Postgres with a conditional update to scale.
-        data = self._read()
-        if entry.key() not in data:
-            return
-        data[entry.key()] = asdict(entry)
-        self._write(data)
+        with self._get_db().get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT user_id, symbol, trigger, last_is_compliant
+                      FROM watchlist_entries
+                     WHERE user_id = %(user_id)s
+                     ORDER BY symbol, trigger
+                    """,
+                    {"user_id": require_user_id(user_id)},
+                )
+                rows = cursor.fetchall()
+            conn.commit()
+        return [WatchEntry(*row) for row in rows]
+
+    def transition(
+        self, user_id: int, symbol: str, trigger: str, is_compliant: bool
+    ) -> Optional[str]:
+        """Record a conclusive verdict: 'baseline' (first one), 'flip', or None."""
+
+        params = {
+            "user_id": require_user_id(user_id),
+            "symbol": symbol,
+            "trigger": trigger,
+            "verdict": bool(is_compliant),
+        }
+        with self._get_db().get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(_SEED_SQL, params)
+                if cursor.rowcount:
+                    outcome: Optional[str] = "baseline"
+                else:
+                    cursor.execute(_FLIP_SQL, params)
+                    outcome = "flip" if cursor.rowcount else None
+            conn.commit()
+        return outcome
 
 
-__all__ = ["WatchEntry", "WatchlistStorage"]
+__all__ = ["COMPLIANCE_FLIP", "WatchEntry", "WatchlistStorage", "owner_key", "require_user_id"]

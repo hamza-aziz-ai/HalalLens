@@ -21,7 +21,8 @@ import pytest
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
-from alerts import AlertEngine, WatchEntry, WatchlistStorage
+from alerts import AlertEngine, WatchEntry
+from tests.watchlist_fake import MemoryWatchlistStorage
 from api.security import RateLimitRule, hash_session_token
 
 api_module = importlib.import_module("api.app")
@@ -210,7 +211,7 @@ def db(monkeypatch):
 
 @pytest.fixture
 def client(db, tmp_path, monkeypatch):
-    storage = WatchlistStorage(tmp_path / "watchlists.json")
+    storage = MemoryWatchlistStorage()
     # The route and the engine must share one store, as they do in app.py.
     monkeypatch.setattr(api_module, "watch_storage", storage)
     monkeypatch.setattr(api_module, "alert_engine", AlertEngine(storage))
@@ -410,8 +411,8 @@ def alerts(client, db, monkeypatch):
     """Watch entries for the paid caller (user:2) and another subscriber (user:3)."""
 
     storage = api_module.watch_storage
-    storage.upsert(WatchEntry(user_id="user:2", symbol="ABC"))
-    storage.upsert(WatchEntry(user_id="user:3", symbol="ABC", last_is_compliant=True))
+    storage.add(WatchEntry(user_id=2, symbol="ABC"))
+    storage.add(WatchEntry(user_id=3, symbol="ABC", last_is_compliant=True))
     sent = []
     monkeypatch.setattr(api_module.email_notifier, "send", sent.append)
     db.get_quality_issues.return_value = []
@@ -426,7 +427,7 @@ def alerts(client, db, monkeypatch):
         return _call(client, "POST", "/alerts/check", body or {"symbol": "ABC"}, token)
 
     def baseline(owner):
-        return storage.list(owner)[0].last_is_compliant
+        return storage.list(int(owner.removeprefix("user:")))[0].last_is_compliant
 
     return check, baseline, sent
 
@@ -520,3 +521,17 @@ def test_alert_check_is_rate_limited_per_user(alerts, db, monkeypatch):
     monkeypatch.setitem(api_module.RATE_LIMIT_RULES, "metered", RateLimitRule(2, 60.0))
     assert [check().status_code for _ in range(3)] == [200, 200, 429]
 
+
+
+def test_watchlist_storage_failure_is_503_not_an_empty_list(client, monkeypatch):
+    class Broken:
+        def add(self, entry):
+            raise RuntimeError("database down")
+
+        def list(self, user_id):
+            raise RuntimeError("database down")
+
+    monkeypatch.setattr(api_module, "watch_storage", Broken())
+    body = {"user_id": "x", "symbol": "abc", "trigger": "compliance_flip"}
+    assert _call(client, "POST", "/watchlist", body, "paid-token").status_code == 503
+    assert _call(client, "GET", "/watchlist/x", token="paid-token").status_code == 503

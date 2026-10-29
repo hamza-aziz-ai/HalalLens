@@ -43,7 +43,7 @@ services:
       MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:?set in .env}
       INGESTION_HEARTBEAT: /tmp/ingestion_heartbeat.txt
       INGESTION_INTERVAL_MINUTES: ${INGESTION_INTERVAL_MINUTES:-60}
-      # One worker until watchlists leave the JSON file store (.env.example).
+      # One worker: the rate limiter is per-process memory (.env.example).
       API_WORKERS: ${API_WORKERS:-1}
     depends_on:
       preflight:

@@ -11,7 +11,8 @@ import pytest
 from fastapi import HTTPException
 from pydantic import ValidationError
 
-from alerts import AlertEngine, WatchlistStorage
+from alerts import AlertEngine
+from tests.watchlist_fake import MemoryWatchlistStorage
 
 api_module = importlib.import_module("api.app")
 from api.app import (
@@ -137,8 +138,8 @@ def test_halal_score_handler_requires_market_cap():
 
 
 @pytest.fixture()
-def isolated_watch_storage(tmp_path):
-    storage = WatchlistStorage(tmp_path / "watch.json")
+def isolated_watch_storage():
+    storage = MemoryWatchlistStorage()
     api_module.watch_storage = storage
     api_module.alert_engine = AlertEngine(storage)
     yield
