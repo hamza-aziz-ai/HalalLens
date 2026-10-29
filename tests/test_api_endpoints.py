@@ -12,6 +12,8 @@ from fastapi import HTTPException
 from pydantic import ValidationError
 
 from alerts import AlertEngine
+from evaluation import quality
+from tests.quality_fake import MemoryQualityDB
 from tests.watchlist_fake import MemoryWatchlistStorage
 
 api_module = importlib.import_module("api.app")
@@ -201,8 +203,9 @@ def test_google_start_requires_config(monkeypatch):
     assert "hl_oauth=" in response.headers["set-cookie"]
 
 
-class FeedbackDBStub:
+class FeedbackDBStub(MemoryQualityDB):
     def __init__(self):
+        super().__init__()
         self.reports = [
             {
                 "id": 1,
@@ -263,9 +266,6 @@ class FeedbackDBStub:
     def get_filing(self, symbol, filing_date):
         return None
 
-    def get_quality_issues(self, symbol, filing_date):
-        return []
-
     def get_cached_market_data(self, symbol, as_of=None):
         return (500_000_000, None, "yahoo")
 
@@ -278,15 +278,6 @@ class FeedbackDBStub:
     def upsert_bhavcopy_quote(
         self, *, symbol, trade_date, share_price, market_cap, provider="bhavcopy"
     ):
-        return None
-
-    def resolve_quality_issues(self, symbol, filing_date, issue_types=None):
-        return []
-
-    def record_quality_issue(self, symbol, filing_date, issue_type, details):
-        return None
-
-    def upsert_filing_evaluation(self, **kwargs):
         return None
 
     def get_bhavcopy_quote(self, symbol, trade_date):
@@ -411,8 +402,9 @@ class GovernanceOverrideDBStub:
         return None
 
 
-class HistoryDBStub:
+class HistoryDBStub(MemoryQualityDB):
     def __init__(self):
+        super().__init__()
         self.last_history_limit = None
         self.last_history_cursor = None
         self.history = [
@@ -477,12 +469,6 @@ class HistoryDBStub:
     def insert_market_snapshot(self, symbol, market_cap, share_price, provider="indianapi"):
         return None
 
-    def resolve_quality_issues(self, symbol, filing_date, issue_types=None):
-        return 0
-
-    def upsert_filing_evaluation(self, **kwargs):
-        return None
-
     def get_symbol_metadata(self, identifier):
         return {"symbol": "TCS", "symbol_alias": "TCS"} if identifier == "TCS" else None
     def get_governance_override(self, symbol, filing_date):
@@ -494,9 +480,6 @@ class HistoryDBStub:
         return None
 
     def insert_indianapi_snapshot(self, **kwargs):
-        return None
-
-    def record_quality_issue(self, symbol, filing_date, issue_type, details):
         return None
 
 
@@ -566,8 +549,9 @@ def test_feedback_events_endpoint(monkeypatch, admin_access):
 
 
 def test_filing_detail_respects_governance_overrides(monkeypatch):
-    class OverrideDB:
+    class OverrideDB(MemoryQualityDB):
         def __init__(self):
+            super().__init__()
             self.record = {
                 "symbol": "ABC",
                 "company_name": "ABC Ltd",
@@ -602,18 +586,6 @@ def test_filing_detail_respects_governance_overrides(monkeypatch):
 
         def insert_market_snapshot(self, symbol, market_cap, share_price, provider="yahoo"):
             return None
-
-        def upsert_filing_evaluation(self, **kwargs):
-            return None
-
-        def resolve_quality_issues(self, symbol, filing_date, issue_types=None):
-            return []
-
-        def record_quality_issue(self, symbol, filing_date, issue_type, details):
-            return None
-
-        def get_quality_issues(self, symbol, filing_date):
-            return []
 
         def get_symbol_metadata(self, identifier):
             return {"symbol": "ABC", "symbol_alias": "ABC"}
@@ -771,8 +743,9 @@ def test_filing_history_falls_back_to_indian_api(monkeypatch, paid_access):
 
 
 def test_filing_detail_persists_indian_api_snapshot(monkeypatch, paid_access):
-    class RealtimeDBStub:
+    class RealtimeDBStub(MemoryQualityDB):
         def __init__(self):
+            super().__init__()
             self.announcement = None
             self.snapshot_payload = None
             self.market_snapshot = None
@@ -846,26 +819,19 @@ def test_filing_detail_persists_indian_api_snapshot(monkeypatch, paid_access):
         def get_cached_market_data(self, symbol, as_of=None):
             return None
 
-        def resolve_quality_issues(self, symbol, filing_date, issue_types=None):
-            return 0
-
-        def record_quality_issue(self, symbol, filing_date, issue_type, details):
-            return None
-
-        def get_quality_issues(self, symbol, filing_date):
-            return []
-
-        def upsert_filing_evaluation(self, **kwargs):
-            self.evaluation = kwargs
+        def publish_filing_evaluation(self, **kwargs):
+            published = super().publish_filing_evaluation(**kwargs)
+            self.evaluation = self.writes[-1]
             if self.latest_record:
                 self.latest_record["ratios"] = kwargs.get("ratios")
-                self.latest_record["is_compliant"] = kwargs.get("is_compliant")
-                self.latest_record["verdict"] = kwargs.get("verdict")
-                self.latest_record["summary"] = kwargs.get("summary")
+                self.latest_record["is_compliant"] = published["is_compliant"]
+                self.latest_record["verdict"] = published["verdict"]
+                self.latest_record["summary"] = published["summary"]
                 self.latest_record["market_cap_used"] = kwargs.get("market_cap_used")
                 self.latest_record["market_data_provider"] = kwargs.get(
                     "market_data_provider"
                 )
+            return published
 
         def get_symbol_metadata(self, identifier):
             return {"symbol": identifier, "symbol_alias": identifier}
@@ -1053,33 +1019,24 @@ def test_ops_metrics_endpoint(monkeypatch, tmp_path, admin_access):
         ({"interest_income": None}, [], [], "insufficient-data", None),
         ({}, ["anomaly"], [], "needs-review", None),
         # Nothing new detected, but an issue from another source is still open.
-        ({}, [], ["Unresolved source-quality review"], "needs-review", None),
+        ({}, [], [("source_review", "Unresolved source-quality review")], "needs-review", None),
+        # Every open issue blocks, including a type no code knows about yet.
+        ({}, [], [("some-future-type", None)], "needs-review", None),
         ({"total_debt": 400_000_000}, [], [], "non-compliant", False),
     ],
-    ids=["compliant", "insufficient", "needs-review", "stored-issue-only", "non-compliant"],
+    ids=["compliant", "insufficient", "needs-review", "stored-issue-only", "unknown-type", "non-compliant"],
 )
 def test_persisted_and_returned_verdict_pair_match(
     monkeypatch, overrides, quality_issues, stored_issues, verdict, is_compliant
 ):
-    stored = {}
+    db = MemoryQualityDB()
+    for issue_type, details in stored_issues:
+        db.seed_issue("TCS", datetime(2024, 6, 30), issue_type, details)
 
-    class DB:
-        def record_quality_issue(self, *args, **kwargs):
-            return None
-
-        def resolve_quality_issues(self, *args, **kwargs):
-            return 0
-
-        def get_quality_issues(self, *args, **kwargs):
-            return list(stored_issues)
-
-        def upsert_filing_evaluation(self, **kwargs):
-            stored.update(kwargs)
-
-    monkeypatch.setattr(api_module, "_get_db", lambda: DB())
+    monkeypatch.setattr(api_module, "_get_db", lambda: db)
     monkeypatch.setattr(api_module, "_maybe_enrich_record_with_indian_api", lambda record: None)
     monkeypatch.setattr(
-        api_module, "_detect_quality_issues", lambda snapshot, evaluation: quality_issues
+        quality, "detect_ratio_anomalies", lambda snapshot, evaluation: quality_issues
     )
     record = {
         "symbol": "TCS",
@@ -1099,6 +1056,7 @@ def test_persisted_and_returned_verdict_pair_match(
 
     api_module._ensure_filing_evaluation(record, allow_market_fetch=False)
 
+    stored = db.writes[-1]
     assert (stored["verdict"], stored["is_compliant"]) == (verdict, is_compliant)
     assert (record["verdict"], record["is_compliant"]) == (verdict, is_compliant)
 
@@ -1143,7 +1101,7 @@ def test_transient_record_keeps_its_existing_blocking_issue(monkeypatch):
 
     monkeypatch.setattr(api_module, "_get_db", no_db)
     monkeypatch.setattr(api_module, "_maybe_enrich_record_with_indian_api", lambda record: None)
-    monkeypatch.setattr(api_module, "_detect_quality_issues", lambda snapshot, evaluation: [])
+    monkeypatch.setattr(quality, "detect_ratio_anomalies", lambda snapshot, evaluation: [])
     record = {
         "symbol": "TCS",
         "filing_date": datetime(2024, 6, 30),

@@ -33,7 +33,7 @@ Verdict rule (`ratio_engine/engine.py`, one place; nothing else re-derives it):
 - **`compliant`**: all five ratios were computed from valid inputs and all passed. Prohibited income needs its base figure, interest income and dividend income to all be known (an explicit `0` counts); an unknown part is never assumed zero.
 - **`insufficient-data`**: anything else. This is *not* a failure. `is_compliant` is `null` in the API and the UI shows "Insufficient data".
 
-`needs-review` is an API-level overlay for filings with open data-quality issues; it is also stored and returned with `is_compliant = null`.
+`needs-review` is a shared publication overlay, not a fourth engine verdict: while a filing has any open data-quality issue (of any type, including a ratio anomaly found at evaluation), every writer (API and jobs) stores and every filing route returns `needs-review` with `is_compliant = null` instead of the engine's pair. RatioEngine remains the sole financial verdict owner; the overlay only masks. Resolving an issue does not restore the verdict by itself: the next evaluation does, or the documented recompute (D-027).
 
 Arithmetic is exact (Decimal, no tolerance): 0.30000000000000004 over a 0.30 cap fails. Inputs must be finite numbers within float range; booleans, NaN/inf, negatives and underflowing strings are treated as unknown.
 

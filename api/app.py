@@ -101,6 +101,7 @@ from ratio_engine import (
 )
 from ratio_engine.amounts import coerce_amount
 from database import BSEDatabaseManager
+from evaluation import quality
 from market_data import (
     fetch_indian_financial_snapshot,
     fetch_indian_financial_history,
@@ -563,8 +564,9 @@ MARKET_CACHE: Dict[
     str, tuple[float, tuple[Optional[float], Optional[float], Optional[str]]]
 ] = {}
 CACHE_TTL_SECONDS = 300
-RECENT_FILINGS_CACHE: Dict[str, tuple[float, List["FilingResponse"]]] = {}
-HISTORY_CACHE: Dict[str, tuple[float, "FilingHistoryResponse"]] = {}
+# Stored rows, not responses: each response is masked with current open issues.
+RECENT_FILINGS_CACHE: Dict[str, tuple[float, List[Dict[str, Any]]]] = {}
+HISTORY_CACHE: Dict[str, tuple[float, Tuple[List[Dict[str, Any]], Optional[datetime]]]] = {}
 NARRATION_CACHE: Dict[str, tuple[float, Dict[str, Any]]] = {}
 NARRATION_IN_FLIGHT: Dict[str, asyncio.Future] = {}
 NARRATION_IN_FLIGHT_LOCK = asyncio.Lock()
@@ -1162,6 +1164,22 @@ def _record_market_issue(
         pass
 
 
+def _resolve_market_issues(
+    symbol: str, filing_date: Optional[datetime], disproved: Tuple[str, ...]
+) -> None:
+    """Close only the market-data issue types a live lookup for this filing disproved.
+
+    Best effort: a failed resolve leaves the issue open, which can only block.
+    """
+
+    if filing_date is None:
+        return
+    try:
+        _get_db().resolve_quality_issues(symbol, filing_date, issue_types=list(disproved))
+    except Exception:
+        market_logger.warning("Could not resolve market issues for %s", symbol)
+
+
 def _maybe_enrich_record_with_indian_api(record: Dict[str, Any]) -> None:
     """Populate missing financial metrics using the Indian market API."""
 
@@ -1573,10 +1591,28 @@ def _get_symbol_metadata_cached(identifier: str) -> Optional[Dict[str, str]]:
 
 
 def _load_quality_issues(symbol: str, filing_date: datetime) -> List[str]:
+    """Open issues for a filing; a failed read is 503, never "no issues" (D-027)."""
+
     try:
         return _get_db().get_quality_issues(symbol, filing_date)
     except Exception:
-        return []
+        api_logger.exception("Quality issue lookup failed for %s@%s", symbol, filing_date)
+        raise HTTPException(status_code=503, detail="Filing data unavailable")
+
+
+def _filing_response(row: Dict[str, Any]) -> "FilingResponse":
+    """Response for a stored, cached or fresh row, masked by its current open issues.
+
+    A transient record (never stored) keeps the issues it carries; any other row
+    re-reads them, so a warm cache cannot serve a result a newer issue blocks.
+    """
+
+    symbol, filing_date = row.get("symbol"), row.get("filing_date")
+    if symbol and filing_date and not row.get("_transient"):
+        row["quality_issues"] = _load_quality_issues(symbol, filing_date)
+    quality.mask_stored(row, row.get("quality_issues") or [])
+    _attach_data_updated_at(row)
+    return FilingResponse(**row)
 
 
 def _attach_data_updated_at(record: Dict[str, Any]) -> None:
@@ -1821,38 +1857,32 @@ def _persist_indian_history_entry(snapshot: IndianAPISnapshot) -> bool:
             provider=provider,
         )
 
+    snapshot_input = FinancialSnapshotInput(
+        symbol=snapshot.symbol,
+        filing_date=filing_dt,
+        total_debt=metrics.get("total_debt"),
+        cash_equiv=metrics.get("cash_equiv"),
+        revenue=metrics.get("revenue"),
+        interest_income=metrics.get("interest_income"),
+        dividend_income=metrics.get("dividend_income"),
+        non_permissible_income=metrics.get("non_halal_income"),
+        accounts_receivable=metrics.get("accounts_receivable"),
+        liquid_assets=metrics.get("liquid_assets"),
+        non_halal_income=metrics.get("non_halal_income"),
+    )
     evaluation = engine.evaluate(
-        FinancialSnapshotInput(
-            symbol=snapshot.symbol,
-            filing_date=filing_dt,
-            total_debt=metrics.get("total_debt"),
-            cash_equiv=metrics.get("cash_equiv"),
-            revenue=metrics.get("revenue"),
-            interest_income=metrics.get("interest_income"),
-            dividend_income=metrics.get("dividend_income"),
-            non_permissible_income=metrics.get("non_halal_income"),
-            accounts_receivable=metrics.get("accounts_receivable"),
-            liquid_assets=metrics.get("liquid_assets"),
-            non_halal_income=metrics.get("non_halal_income"),
-        ),
+        snapshot_input,
         MarketDataInput(
             market_cap=snapshot.market_cap,
             share_price=snapshot.share_price,
             provider=provider,
         ),
     )
-
-    ratios_payload = {name: asdict(comp) for name, comp in evaluation.ratios.items()}
-    verdict = evaluation.verdict
-    summary = build_summary(evaluation)
-
-    db.upsert_filing_evaluation(
-        symbol=snapshot.symbol,
+    quality.publish_evaluation(
+        db,
+        snapshot_input,
+        evaluation,
         filing_date=filing_dt,
-        is_compliant=evaluation.is_compliant,
-        ratios=ratios_payload,
-        summary=summary,
-        verdict=verdict,
         narration_source="indianapi",
         market_cap_used=snapshot.market_cap,
         trailing_cap_used=None,
@@ -2189,6 +2219,8 @@ def _fetch_and_cache_market_data(
             primary_failed = False
             _reset_provider_failure("indianapi", key)
             _reset_market_failure(key)
+            if indian_snapshot.market_cap is not None:
+                _resolve_market_issues(key, as_of, quality.PRIMARY_LOOKUP_DISPROVES)
             return (
                 indian_snapshot.market_cap,
                 indian_snapshot.share_price,
@@ -2212,6 +2244,8 @@ def _fetch_and_cache_market_data(
         )
 
     fallback_cap, fallback_price = bhavcopy_resolver.resolve(symbol, as_of)
+    # Only a cap the Bhavcopy itself returned proves anything; a stored one does not.
+    bhavcopy_cap_found = fallback_cap is not None
     if fallback_cap is None and fallback_price is not None:
         cached_any = _get_db().get_cached_market_data(key)
         cached_cap = cached_any[0] if cached_any else None
@@ -2239,6 +2273,8 @@ def _fetch_and_cache_market_data(
             )
         _reset_provider_failure("bhavcopy", key)
         _reset_market_failure(key)
+        if bhavcopy_cap_found:
+            _resolve_market_issues(key, as_of, quality.FALLBACK_LOOKUP_DISPROVES)
         return fallback_cap, fallback_price, "bhavcopy"
 
     if fallback_price is not None:
@@ -3507,38 +3543,14 @@ class MarketQuoteResponse(BaseModel):
     provider: Optional[str] = None
 
 
-def _detect_quality_issues(
-    snapshot: FinancialSnapshotInput, evaluation
-) -> List[str]:
-    """Return human-readable reasons when ratios look suspicious."""
-
-    issues: List[str] = []
-    ratios = evaluation.ratios
-    npi = ratios.get("non_permissible_income_ratio")
-    if npi and npi.value is not None and npi.value > 1.0:
-        issues.append(
-            f"Non-permissible income ratio {npi.value:.2f} (>100%) suggests unit mismatch."
-        )
-    cash_ratio = ratios.get("cash_to_market_cap")
-    if cash_ratio and cash_ratio.value is not None and cash_ratio.value > 2.0:
-        issues.append(
-            f"Cash to market cap ratio {cash_ratio.value:.2f} (>200%) looks unrealistic."
-        )
-    if snapshot.revenue and snapshot.revenue < 1e6:
-        npi_value = npi.value if npi else None
-        if npi_value and npi_value > 0.5:
-            issues.append(
-                "Revenue figure appears too small relative to non-permissible income."
-            )
-    return issues
-
-
 def _ensure_filing_evaluation(
     record: Dict[str, Any], *, allow_market_fetch: bool = True
 ) -> Optional[Dict[str, RatioComputationPayload]]:
     _maybe_enrich_record_with_indian_api(record)
     ratios = _ratios_payload(record.get("ratios"))
     if ratios is not None:
+        # A stored result is returned as stored; _filing_response masks it with
+        # the filing's current open issues before it leaves the API.
         return ratios
 
     snapshot = _snapshot_from_record(record)
@@ -3578,58 +3590,42 @@ def _ensure_filing_evaluation(
         ),
     )
 
-    verdict = evaluation.verdict
-    summary = build_summary(evaluation)
     ratios_dict = {name: asdict(comp) for name, comp in evaluation.ratios.items()}
 
-    detected = _detect_quality_issues(snapshot, evaluation)
-    quality_issues = detected
-    if transient and not detected:
-        # Nothing is stored for a transient record, but issues it already carries
-        # (e.g. loaded with the filing) still block a conclusive verdict.
-        quality_issues = list(record.get("quality_issues") or [])
-    db = None
-    if not transient:
-        db = _get_db()
-        if detected:
-            for issue in detected:
-                db.record_quality_issue(
-                    snapshot.symbol, snapshot.filing_date, "ratio_anomaly", issue
-                )
-        else:
-            db.resolve_quality_issues(
-                snapshot.symbol, snapshot.filing_date, issue_types=["ratio_anomaly"]
-            )
-            # Issues from other sources can stay open after the anomaly clears.
-            quality_issues = _load_quality_issues(snapshot.symbol, snapshot.filing_date)
-
-    # One final status/Boolean pair, computed after every blocking issue (new or
-    # still-open) is known, and stored and returned identically: a needs-review
-    # filing is never published as compliant or non-compliant.
-    if quality_issues:
-        verdict = "needs-review"
-        summary = (
-            "Flagged for manual review due to anomalous ratios."
-            if detected
-            else "Flagged for manual review: unresolved quality issues remain."
-        )
-    final_is_compliant = None if quality_issues else evaluation.is_compliant
-
-    if db is not None:
-        db.upsert_filing_evaluation(
-            symbol=snapshot.symbol,
-            filing_date=snapshot.filing_date,
-            is_compliant=final_is_compliant,
-            ratios=ratios_dict,
-            summary=summary,
-            verdict=verdict,
-            narration_source="api",
-            market_cap_used=market_cap,
-            trailing_cap_used=trailing,
-            market_data_provider=provider,
+    # One final pair, stored and returned identically: a filing with any open
+    # issue is never published as compliant or non-compliant (D-027).
+    if transient:
+        # Nothing is stored for a transient record: newly detected anomalies and
+        # the issues it already carries both block.
+        detected = quality.detect_ratio_anomalies(snapshot, evaluation)
+        quality_issues = list(dict.fromkeys(detected + list(record.get("quality_issues") or [])))
+        verdict, final_is_compliant, summary = quality.publish(
+            evaluation.verdict,
+            evaluation.is_compliant,
+            build_summary(evaluation),
+            quality_issues,
+            detected,
         )
     else:
-        record["quality_issues"] = quality_issues
+        try:
+            published = quality.publish_evaluation(
+                _get_db(),
+                snapshot,
+                evaluation,
+                filing_date=snapshot.filing_date,
+                narration_source="api",
+                market_cap_used=market_cap,
+                trailing_cap_used=trailing,
+                market_data_provider=provider,
+            )
+        except Exception:
+            # Fail closed: without the locked issue read nothing is published.
+            api_logger.exception("Publishing evaluation failed for %s", snapshot.symbol)
+            raise HTTPException(status_code=503, detail="Filing data unavailable")
+        verdict = published["verdict"]
+        final_is_compliant = published["is_compliant"]
+        summary = published["summary"]
+        quality_issues = published["quality_issues"]
 
     record["is_compliant"] = final_is_compliant
     record["verdict"] = verdict
@@ -3701,21 +3697,16 @@ def _auto_reevaluate_feedback_reports(
 async def recent_filings(limit: int = 20) -> List[FilingResponse]:
     """Return recent filings from announcements."""
 
+    # The cache holds stored rows; every response is masked with the current
+    # open issues, so a warm cache cannot outlive a newly recorded blocker.
+    # ponytail: one issue read per row per request; batch them into one
+    # ANY() query if /filings/recent load ever matters.
     cache_key = f"recent:{limit}"
-    cached = _cache_get(RECENT_FILINGS_CACHE, cache_key)
-    if cached:
-        return cached
-
-    rows = _get_db().get_recent_filings(limit=limit)
-    for row in rows:
-        symbol = row.get("symbol")
-        filing_date = row.get("filing_date")
-        if symbol and filing_date:
-            row["quality_issues"] = _load_quality_issues(symbol, filing_date)
-        _attach_data_updated_at(row)
-    responses = [FilingResponse(**row) for row in rows]
-    _cache_set(RECENT_FILINGS_CACHE, cache_key, responses, RECENT_CACHE_TTL_SECONDS)
-    return responses
+    rows = _cache_get(RECENT_FILINGS_CACHE, cache_key)
+    if not rows:
+        rows = _get_db().get_recent_filings(limit=limit)
+        _cache_set(RECENT_FILINGS_CACHE, cache_key, rows, RECENT_CACHE_TTL_SECONDS)
+    return [_filing_response(dict(row)) for row in rows]
 
 
 def _needs_financial_refresh(record: Dict[str, Any]) -> bool:
@@ -3760,15 +3751,9 @@ async def filing_detail(
         record["ratios"] = ratio_payload
 
     record.setdefault("symbol", normalized)
-    if "quality_issues" not in record or record["quality_issues"] is None:
-        symbol = record.get("symbol")
-        filing_date = record.get("filing_date")
-        if symbol and filing_date:
-            record["quality_issues"] = _load_quality_issues(symbol, filing_date)
     record.setdefault("company_name", "")
     record.setdefault("category", "")
-    _attach_data_updated_at(record)
-    return FilingResponse(**record)
+    return _filing_response(record)
 
 
 @app.get("/filings/{symbol}/history", response_model=FilingHistoryResponse)
@@ -3791,9 +3776,15 @@ async def filing_history(
         f"{parsed_cursor.isoformat() if parsed_cursor else 'none'}:"
         f"{'ratios' if include_ratios else 'lite'}"
     )
+    # Cached as stored/evaluated rows, masked with current open issues on every
+    # response (see recent_filings).
     cached = _cache_get(HISTORY_CACHE, cache_key)
     if cached:
-        return cached
+        entries, next_cursor = cached
+        return FilingHistoryResponse(
+            entries=[_filing_response(dict(row)) for row in entries],
+            next_cursor=next_cursor,
+        )
     rows = db.get_filing_history(
         normalized, limit=effective_limit + 1, cursor_ts=parsed_cursor
     )
@@ -3816,7 +3807,6 @@ async def filing_history(
     has_more = len(rows) > effective_limit
     entries = rows[:effective_limit]
 
-    responses: List[FilingResponse] = []
     for row in entries:
         if include_ratios and not row.get("ratios"):
             try:
@@ -3828,20 +3818,14 @@ async def filing_history(
             except HTTPException:
                 # Leave ratios empty; evaluation can be retried later.
                 pass
-        symbol_value = row.get("symbol")
-        filing_date = row.get("filing_date")
-        if symbol_value and filing_date:
-            row["quality_issues"] = _load_quality_issues(symbol_value, filing_date)
-        _attach_data_updated_at(row)
-        responses.append(FilingResponse(**row))
+    responses = [_filing_response(dict(row)) for row in entries]
 
     next_cursor = None
     if has_more and responses:
         next_cursor = responses[-1].filing_date
 
-    response = FilingHistoryResponse(entries=responses, next_cursor=next_cursor)
-    _cache_set(HISTORY_CACHE, cache_key, response, HISTORY_CACHE_TTL_SECONDS)
-    return response
+    _cache_set(HISTORY_CACHE, cache_key, (entries, next_cursor), HISTORY_CACHE_TTL_SECONDS)
+    return FilingHistoryResponse(entries=responses, next_cursor=next_cursor)
 
 
 @app.get("/market-data/{symbol}", response_model=MarketQuoteResponse)

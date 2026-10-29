@@ -13,6 +13,8 @@ Route tiers, auth and billing boundaries, and rate limits. Back to the [README](
 
 `/halal-score` and `/narrate` return `is_compliant` (`true`, `false` or `null`) and `screen_verdict` (`compliant`, `non-compliant`, `insufficient-data`). **`null` is not `false`.**
 
+The filing routes (`/filings/recent`, `/filings/{symbol}`, `/filings/{symbol}/history`) return `verdict` and `is_compliant`; while the filing has any open data-quality issue (listed in `quality_issues`) they are `needs-review` and `null`, also when the result comes from a stored evaluation or a warm cache (D-027). If the open issues cannot be read, the route answers 503 rather than a verdict.
+
 Boundaries worth knowing:
 
 - Accounts are email-first (D-020): sign-up emails a link and the password is chosen there; `POST /auth/password/forgot` sends a set-password link that also verifies the email and signs out every device. Every session belongs to a verified email; an address in `ADMIN_EMAILS` becomes admin only after its mailbox is proven (sign-up link, reset link or Google). Google sign-in matches accounts by Google ID only, never by email, and needs `email_verified=true`; a different Google account is linked only from the account page, after re-entering the password, and only the session that started the link can finish it (D-021). Every Google flow is single-use, expires in 10 minutes and is bound to the browser that started it by a short-lived HttpOnly cookie, which needs the UI and API on one origin (`/api`, the production setup). Links carry the single-use token in the URL fragment; only its SHA-256 digest is stored.

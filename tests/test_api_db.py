@@ -6,13 +6,15 @@ from typing import Dict
 
 import importlib
 import pytest
+from tests.quality_fake import MemoryQualityDB
 from tests.utils import run_async
 
 api_module = importlib.import_module("api.app")
 
 
-class DummyDB:
+class DummyDB(MemoryQualityDB):
     def __init__(self, filing: Dict):
+        super().__init__()
         self.filing = filing
 
     def get_recent_filings(self, limit: int = 20):
@@ -43,15 +45,6 @@ class DummyDB:
 
     def get_symbol_alias(self, symbol: str):
         return "ABC"
-
-    def upsert_filing_evaluation(self, **kwargs):
-        return None
-
-    def resolve_quality_issues(self, symbol, filing_date, issue_types=None):
-        return None
-
-    def record_quality_issue(self, symbol, filing_date, issue_type, details):
-        return None
 
     def get_database_stats(self):
         return {"total_announcements": 1}

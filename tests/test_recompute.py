@@ -18,6 +18,7 @@ from datetime import datetime
 import pytest
 
 from database.database_manager import BSEDatabaseManager
+from tests.quality_fake import MemoryQualityDB
 
 backfill = importlib.import_module("jobs.backfill_evaluations")
 
@@ -59,27 +60,36 @@ DEFAULT_RECORDS = [
 ]
 
 
-class StubDB:
+class StubDB(MemoryQualityDB):
     def __init__(self, records, report=None):
+        super().__init__()
         self.records = records
-        self.writes = []
         self.report = report
         self.reads = 0
+        self.seed_issue("REVIEW", FILING, "source_review", "anomaly")
+        for record in records:
+            if record.get("has_ratios"):
+                self.evaluations[(record["symbol"], record["filing_date"])] = {
+                    "evaluated_at": record.get("evaluation_updated_at")
+                }
 
     def get_recent_filings(self, limit=500):
         self.reads += 1
         return [dict(r) for r in self.records][:limit]
 
-    def get_quality_issues(self, symbol, filing_date):
-        return ["anomaly"] if symbol == "REVIEW" else []
+    def get_filing(self, symbol, filing_date):
+        for record in self.records:
+            if (record["symbol"], record["filing_date"]) == (symbol, filing_date):
+                return {**record, "ratios": {"stored": True} if record.get("has_ratios") else None}
+        return None
 
     def parse_iso_datetime(self, value):
         return datetime.fromisoformat(value)
 
-    def upsert_filing_evaluation(self, **kwargs):
+    def publish_filing_evaluation(self, **kwargs):
         # The evidence must already be on disk when the first write happens.
         assert self.report is None or os.path.exists(self.report)
-        self.writes.append(kwargs)
+        return super().publish_filing_evaluation(**kwargs)
 
     def __getattr__(self, name):  # close(), market-failure bookkeeping, ...
         return lambda *args, **kwargs: None
@@ -241,6 +251,82 @@ def test_write_stores_current_inputs_after_the_report_exists(env, tmp_path):
     assert partial["market_cap_used"] == CAP  # the stored cap, not a fresh lookup
     assert partial["market_data_provider"] == "bhavcopy"
     assert (writes["REVIEW"]["verdict"], writes["REVIEW"]["is_compliant"]) == ("needs-review", None)
+
+
+# --- Publication: simulated in a dry run, revalidated on --write (D-027) -----------
+
+ANOMALOUS = dict(revenue=500_000, non_halal_income=600_000, cash_equiv=1_000_000_000)
+
+
+def _state(db):
+    return (
+        {k: dict(v) for k, v in db.issues.items()},
+        {k: dict(v) for k, v in db.evaluations.items()},
+    )
+
+
+def test_dry_run_simulates_detector_changes_without_any_write(tmp_path, monkeypatch):
+    db = StubDB([_record("ODD", **ANOMALOUS), _record("CLEAN")])
+    db.seed_issue("CLEAN", FILING, "ratio_anomaly", "left over from an older run")
+    monkeypatch.setattr(backfill, "BSEDatabaseManager", lambda: db)
+    report = tmp_path / "preview.csv"
+    before = _state(db)
+
+    rows = _by_symbol(backfill.recompute(report=str(report)))
+
+    assert db.writes == [] and _state(db) == before  # nothing written, nothing resolved
+    assert (rows["ODD"]["new_verdict"], rows["ODD"]["ratio_anomaly"]) == ("needs-review", "opened")
+    assert rows["ODD"]["quality_issues"] == "ratio_anomaly"
+    # The stale anomaly would be resolved, so the engine's pair would be published.
+    assert (rows["CLEAN"]["new_verdict"], rows["CLEAN"]["ratio_anomaly"]) == ("compliant", "resolved")
+    with open(report, newline="", encoding="utf-8") as handle:
+        assert {row["symbol"]: row["ratio_anomaly"] for row in csv.DictReader(handle)} == {
+            "ODD": "opened",
+            "CLEAN": "resolved",
+        }
+
+
+class RacingDB(StubDB):
+    """Changes the filing between the preview and its write (the input re-read)."""
+
+    change = None
+
+    def get_filing(self, symbol, filing_date):
+        record = super().get_filing(symbol, filing_date)
+        if self.change:
+            self.change(self, record)
+        return record
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        lambda db, record: db.record_quality_issue("SAME", FILING, "governance_override", "new"),
+        lambda db, record: db.evaluations[("SAME", FILING)].update(evaluated_at=datetime(2026, 2, 1)),
+        lambda db, record: record.update(total_debt=999_000_000),
+        lambda db, record: record.update(ratios=None),
+    ],
+    ids=["issue-recorded", "re-evaluated", "inputs-changed", "evaluation-cleared"],
+)
+def test_write_rejects_a_stale_preview(tmp_path, monkeypatch, change):
+    db = RacingDB([_record("SAME")])
+    monkeypatch.setattr(RacingDB, "change", staticmethod(change))
+    monkeypatch.setattr(backfill, "BSEDatabaseManager", lambda: db)
+
+    rows = backfill.recompute(write=True, report=str(tmp_path / "r.csv"))
+
+    assert rows[0]["status"].startswith("stale")
+    assert db.writes == []
+
+
+def test_write_applies_an_unchanged_preview(tmp_path, monkeypatch):
+    db = RacingDB([_record("SAME")])
+    monkeypatch.setattr(backfill, "BSEDatabaseManager", lambda: db)
+
+    rows = backfill.recompute(write=True, report=str(tmp_path / "r.csv"))
+
+    assert rows[0]["status"] == "ok"
+    assert [(w["symbol"], w["verdict"]) for w in db.writes] == [("SAME", "compliant")]
 
 
 # --- Plain backfill ---------------------------------------------------------------

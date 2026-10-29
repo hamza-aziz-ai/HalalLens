@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""Every job that persists an evaluation must store the engine's verdict pair.
+"""Every job that persists an evaluation publishes through the shared overlay.
 
-The four jobs used to derive "compliant" from a boolean on their own. They now
-write `evaluation.verdict` / `evaluation.is_compliant`, and these tests pin that
-for each of them so one cannot drift from the others again.
+The four jobs used to derive "compliant" from a boolean on their own, and later
+stored the engine's pair without the quality overlay. They now publish through
+`evaluation.quality.publish_evaluation` (D-027): the engine's pair when no issue
+is open, needs-review / None when one is open or newly detected. These tests pin
+that for each of them so one cannot drift from the others again.
 """
 
 import importlib
@@ -11,20 +13,19 @@ from datetime import datetime
 
 import pytest
 
+from evaluation import quality
 from ratio_engine import FinancialSnapshotInput
+from tests.quality_fake import MemoryQualityDB
 
 FILING = datetime(2024, 6, 30)
 
 
-class StubDB:
-    """Records evaluation writes; any other DB call is a harmless no-op."""
+class StubDB(MemoryQualityDB):
+    """Publishes through the in-memory overlay; any other DB call is a harmless no-op."""
 
     def __init__(self, record):
+        super().__init__()
         self.record = record
-        self.writes = []
-
-    def upsert_filing_evaluation(self, **kwargs):
-        self.writes.append(kwargs)
 
     def get_recent_filings(self, limit=500):
         return [self.record]
@@ -248,3 +249,68 @@ def test_ingest_indianapi_without_any_cached_cap_writes_nothing():
     db = _run_indianapi_with_cap(None)
 
     assert db.writes == []
+
+
+# --- Shared publication overlay (D-027) ---------------------------------------
+
+KEY = ("TCS", FILING)
+# Trips all three anomaly rules: income above revenue, cash above 2x the cap,
+# and tiny revenue against large non-permissible income.
+ANOMALOUS = dict(revenue=500_000, non_halal_income=600_000, cash_equiv=1_000_000_000)
+
+
+@pytest.mark.parametrize("job", JOBS)
+@pytest.mark.parametrize("issue_type", ["market-data-missing", "governance_override", "some-future-type"])
+def test_job_publishes_needs_review_while_any_issue_is_open(monkeypatch, job, issue_type):
+    db = StubDB(_record())
+    db.seed_issue(*KEY, issue_type, "open elsewhere")
+
+    JOBS[job](monkeypatch, db)
+
+    assert len(db.writes) == 1
+    written = db.writes[0]
+    assert (written["verdict"], written["is_compliant"], written["summary"]) == (
+        "needs-review",
+        None,
+        quality.REVIEW_SUMMARY,
+    )
+    assert db.issues[KEY] == {issue_type: "open elsewhere"}  # publishing resolves nothing else
+
+
+@pytest.mark.parametrize("job", JOBS)
+def test_job_records_detected_anomalies_as_one_row(monkeypatch, job):
+    db = StubDB(_record(**ANOMALOUS))
+
+    JOBS[job](monkeypatch, db)
+    first = db.issues[KEY]["ratio_anomaly"]
+    JOBS[job](monkeypatch, db)
+
+    assert list(db.issues[KEY]) == ["ratio_anomaly"]
+    assert db.issues[KEY]["ratio_anomaly"] == first  # deterministic across runs
+    assert first.count("(>") == 2 and "Revenue figure" in first
+    for written in db.writes:
+        assert (written["verdict"], written["is_compliant"], written["summary"]) == (
+            "needs-review",
+            None,
+            quality.ANOMALY_SUMMARY,
+        )
+
+
+@pytest.mark.parametrize("job", JOBS)
+def test_resolution_alone_keeps_needs_review_until_the_next_evaluation(monkeypatch, job):
+    db = StubDB(_record())
+    db.seed_issue(*KEY, "ratio_anomaly", "stale anomaly")
+    db.seed_issue(*KEY, "governance_override", "override under review")
+
+    JOBS[job](monkeypatch, db)  # clean data: only the detector's own row is resolved
+    assert db.issues[KEY] == {"governance_override": "override under review"}
+    assert db.evaluations[KEY]["verdict"] == "needs-review"
+
+    db.resolve_quality_issues(*KEY, ["governance_override"])
+    assert db.evaluations[KEY]["verdict"] == "needs-review"  # resolving restores nothing
+
+    JOBS[job](monkeypatch, db)  # a new evaluation through the shared path
+    assert (db.evaluations[KEY]["verdict"], db.evaluations[KEY]["is_compliant"]) == (
+        "compliant",
+        True,
+    )

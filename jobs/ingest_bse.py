@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import logging
-from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -15,12 +14,13 @@ from collections import defaultdict
 from crawler import BSEAnnouncementsFetcher
 from database import BSEDatabaseManager
 from etl import FinancialDataProcessor
+from evaluation import quality
 from market_data import (
     BhavcopyMarketResolver,
     fetch_indian_financial_snapshot,
     indian_api_enabled,
 )
-from ratio_engine import FinancialSnapshotInput, MarketDataInput, RatioEngine, build_summary
+from ratio_engine import FinancialSnapshotInput, MarketDataInput, RatioEngine
 from ratio_engine.amounts import coerce_amount
 from config.logging_config import configure_logging as setup_file_logging
 from config import INDIAN_API_OVERRIDE_TOLERANCE
@@ -276,12 +276,26 @@ def _enrich_snapshot_with_indian_api(
             logger.debug("Failed to persist Indian API override for %s: %s", snapshot.symbol, exc)
 
 
-def _clear_market_failure(symbol: str, filing_date: datetime, db: BSEDatabaseManager) -> None:
-    if FAILED_MARKET_LOOKUPS.pop(symbol, None):
-        try:
-            db.resolve_quality_issues(symbol, filing_date)
-        except Exception as exc:  # pragma: no cover - defensive
-            logger.debug("Failed clearing market-data issue for %s: %s", symbol, exc)
+def _clear_market_failure(
+    symbol: str,
+    filing_date: datetime,
+    db: BSEDatabaseManager,
+    disproved: Tuple[str, ...] = (),
+) -> None:
+    """Reset the process-local counter; resolve only the issue types the lookup disproved.
+
+    A stored or cached cap disproves nothing (empty `disproved`); governance and
+    anomaly issues are never resolved here. A failed resolve leaves the issue
+    open, which can only block.
+    """
+
+    FAILED_MARKET_LOOKUPS.pop(symbol, None)
+    if not disproved:
+        return
+    try:
+        db.resolve_quality_issues(symbol, filing_date, issue_types=list(disproved))
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("Failed clearing market-data issue for %s: %s", symbol, exc)
 
 
 def _record_market_failure(symbol: str, filing_date: datetime, db: BSEDatabaseManager) -> None:
@@ -334,11 +348,18 @@ def _lookup_market_data(
                 snapshot.share_price,
                 "indianapi",
             )
-            _clear_market_failure(cache_key, as_of, db)
+            _clear_market_failure(
+                cache_key,
+                as_of,
+                db,
+                quality.PRIMARY_LOOKUP_DISPROVES if snapshot.market_cap is not None else (),
+            )
             return snapshot.market_cap, snapshot.share_price, "indianapi"
 
     fallback_cap, fallback_price = bhavcopy_resolver.resolve(symbol, as_of)
     if fallback_cap is not None or fallback_price is not None:
+        # Only a cap the Bhavcopy itself returned proves anything.
+        disproved = quality.FALLBACK_LOOKUP_DISPROVES if fallback_cap is not None else ()
         if fallback_cap is None and fallback_price is not None:
             cached_any = db.get_cached_market_data(cache_key)
             cached_cap = cached_any[0] if cached_any else None
@@ -351,7 +372,7 @@ def _lookup_market_data(
             provider="bhavcopy",
         )
         MARKET_CACHE[cache_key] = (fallback_cap, fallback_price, "bhavcopy")
-        _clear_market_failure(cache_key, as_of, db)
+        _clear_market_failure(cache_key, as_of, db, disproved)
         return fallback_cap, fallback_price, "bhavcopy"
     _record_market_failure(cache_key, as_of, db)
     return None, None, None
@@ -391,20 +412,11 @@ def _evaluate_and_store(
             provider=provider or "manual",
         )
         evaluation = ratio_engine.evaluate(snapshot_input, market_input)
-
-        verdict = evaluation.verdict
-        summary = build_summary(evaluation)
-        ratios_payload = {
-            name: asdict(comp) for name, comp in evaluation.ratios.items()
-        }
-
-        db.upsert_filing_evaluation(
-            symbol=evaluation.symbol,
+        quality.publish_evaluation(
+            db,
+            snapshot_input,
+            evaluation,
             filing_date=evaluation.filing_date,
-            is_compliant=evaluation.is_compliant,
-            ratios=ratios_payload,
-            summary=summary,
-            verdict=verdict,
             narration_source="ingestion",
             market_cap_used=market_cap,
             trailing_cap_used=None,

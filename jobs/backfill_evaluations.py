@@ -13,6 +13,7 @@ from typing import Dict, Optional, List, Tuple
 from collections import defaultdict
 
 from database import BSEDatabaseManager
+from evaluation import quality
 from market_data import (
     BhavcopyMarketResolver,
     fetch_indian_financial_snapshot,
@@ -178,12 +179,26 @@ def _enrich_snapshot_with_indian_api(
             )
 
 
-def _clear_market_failure(symbol: str, filing_date: datetime, db: BSEDatabaseManager) -> None:
-    if FAILED_MARKET_LOOKUPS.pop(symbol, None):
-        try:
-            db.resolve_quality_issues(symbol, filing_date)
-        except Exception as exc:  # pragma: no cover
-            logger.debug("Failed clearing market-data issue for %s: %s", symbol, exc)
+def _clear_market_failure(
+    symbol: str,
+    filing_date: datetime,
+    db: BSEDatabaseManager,
+    disproved: Tuple[str, ...] = (),
+) -> None:
+    """Reset the process-local counter; resolve only the issue types the lookup disproved.
+
+    A stored or cached cap disproves nothing (empty `disproved`); governance and
+    anomaly issues are never resolved here. A failed resolve leaves the issue
+    open, which can only block.
+    """
+
+    FAILED_MARKET_LOOKUPS.pop(symbol, None)
+    if not disproved:
+        return
+    try:
+        db.resolve_quality_issues(symbol, filing_date, issue_types=list(disproved))
+    except Exception as exc:  # pragma: no cover
+        logger.debug("Failed clearing market-data issue for %s: %s", symbol, exc)
 
 
 def _record_market_failure(symbol: str, filing_date: datetime, db: BSEDatabaseManager) -> None:
@@ -237,11 +252,18 @@ def _lookup_market_data(
                 snapshot.share_price,
                 "indianapi",
             )
-            _clear_market_failure(cache_key, filing_date, db)
+            _clear_market_failure(
+                cache_key,
+                filing_date,
+                db,
+                quality.PRIMARY_LOOKUP_DISPROVES if snapshot.market_cap is not None else (),
+            )
             return snapshot.market_cap, snapshot.share_price, "indianapi"
 
     fallback_cap, fallback_price = bhavcopy_resolver.resolve(symbol, filing_date)
     if fallback_cap is not None or fallback_price is not None:
+        # Only a cap the Bhavcopy itself returned proves anything.
+        disproved = quality.FALLBACK_LOOKUP_DISPROVES if fallback_cap is not None else ()
         if fallback_cap is None and fallback_price is not None:
             cached_any = db.get_cached_market_data(cache_key)
             cached_cap = cached_any[0] if cached_any else None
@@ -254,7 +276,7 @@ def _lookup_market_data(
             provider="bhavcopy",
         )
         MARKET_CACHE[cache_key] = (fallback_cap, fallback_price, "bhavcopy")
-        _clear_market_failure(cache_key, filing_date, db)
+        _clear_market_failure(cache_key, filing_date, db, disproved)
         return fallback_cap, fallback_price, "bhavcopy"
 
     _record_market_failure(cache_key, filing_date, db)
@@ -298,7 +320,6 @@ def main(limit: int = 500) -> None:
             if market_cap is None:
                 _record_market_failure(snapshot.symbol, filing_dt, db)
                 continue
-            _clear_market_failure(snapshot.symbol, filing_dt, db)
 
             evaluation = engine.evaluate(
                 snapshot,
@@ -308,20 +329,11 @@ def main(limit: int = 500) -> None:
                     provider=provider or "manual",
                 ),
             )
-
-            ratios_payload = {
-                name: asdict(comp) for name, comp in evaluation.ratios.items()
-            }
-            verdict = evaluation.verdict
-            summary = build_summary(evaluation)
-
-            db.upsert_filing_evaluation(
-                symbol=snapshot.symbol,
+            quality.publish_evaluation(
+                db,
+                snapshot,
+                evaluation,
                 filing_date=filing_dt,
-                is_compliant=evaluation.is_compliant,
-                ratios=ratios_payload,
-                summary=summary,
-                verdict=verdict,
                 narration_source="backfill",
                 market_cap_used=market_cap,
                 trailing_cap_used=None,
@@ -344,6 +356,14 @@ def main(limit: int = 500) -> None:
 # the stored market caps, passed to the engine unchanged. It never calls the
 # vendor or Bhavcopy. It is not a replay of an earlier dry run: a --write run
 # re-reads the database. Dry run by default.
+#
+# Publication is simulated exactly (D-027): the anomaly detector runs, the
+# detector-owned `ratio_anomaly` row is reconciled in memory, and every open
+# issue masks the engine's pair as needs-review. A --write applies each row
+# through publish_filing_evaluation only if the filing still matches its
+# preview: inputs re-read just before the write, then the stored evaluation's
+# timestamp, the open issue types and the published pair checked under the
+# filing's lock. A stale row is skipped and logged, never written.
 
 INPUT_FIELDS = (
     "total_debt",
@@ -368,6 +388,8 @@ REPORT_FIELDS = (
     "new_is_compliant",
     "changed",
     "missing_inputs",
+    "quality_issues",
+    "ratio_anomaly",
     *INPUT_FIELDS,
 )
 
@@ -381,7 +403,7 @@ def _csv_safe(value):
 
 
 def _recompute_one(record: Dict, db: BSEDatabaseManager) -> Tuple[Dict, Optional[Dict]]:
-    """Return (report row, upsert kwargs or None) for one stored evaluation."""
+    """Return (report row, publish kwargs or None) for one stored evaluation."""
 
     row = {
         "symbol": record.get("symbol"),
@@ -419,14 +441,23 @@ def _recompute_one(record: Dict, db: BSEDatabaseManager) -> Tuple[Dict, Optional
             provider=provider or "manual",
         ),
     )
-    verdict = evaluation.verdict
-    is_compliant = evaluation.is_compliant
-    summary = build_summary(evaluation)
-    # Open data-quality issues block a conclusive verdict, as in the API. Unlike
-    # the API, recompute does not detect new anomalies or resolve old ones.
-    if db.get_quality_issues(snapshot.symbol, filing_dt):
-        verdict, is_compliant = "needs-review", None
-        summary = "Flagged for manual review: unresolved quality issues remain."
+    # The same publication the --write would do, simulated without writes.
+    anomalies = quality.detect_ratio_anomalies(snapshot, evaluation)
+    open_issues = db.get_open_quality_issues(snapshot.symbol, filing_dt)
+    issues = quality.reconcile(open_issues, anomalies)
+    verdict, is_compliant, _ = quality.publish(
+        evaluation.verdict, evaluation.is_compliant, None, issues, anomalies
+    )
+    stored = [i.get("details") for i in open_issues if i["issue_type"] == quality.RATIO_ANOMALY]
+    detail = quality.combined_anomaly(anomalies)
+    if detail and not stored:
+        anomaly_change = "opened"
+    elif detail and stored[0] != detail:
+        anomaly_change = "updated"
+    elif not detail and stored:
+        anomaly_change = "resolved"
+    else:
+        anomaly_change = ""
 
     row.update(
         status="ok",
@@ -436,20 +467,53 @@ def _recompute_one(record: Dict, db: BSEDatabaseManager) -> Tuple[Dict, Optional
         missing_inputs=";".join(
             f"{name}={reason}" for name, reason in sorted(evaluation.missing_inputs.items())
         ),
+        quality_issues=";".join(quality.issue_types(issues)),
+        ratio_anomaly=anomaly_change,
     )
-    upsert = dict(
+    publish = dict(
         symbol=snapshot.symbol,
         filing_date=filing_dt,
-        is_compliant=is_compliant,
+        verdict=evaluation.verdict,
+        is_compliant=evaluation.is_compliant,
+        summary=build_summary(evaluation),
         ratios={name: asdict(comp) for name, comp in evaluation.ratios.items()},
-        summary=summary,
-        verdict=verdict,
+        anomalies=anomalies,
         narration_source="recompute",
         market_cap_used=market_cap,
         trailing_cap_used=trailing_cap,
         market_data_provider=provider,
+        expect={
+            "evaluated_at": record.get("evaluation_updated_at"),
+            "verdict": verdict,
+            "is_compliant": is_compliant,
+            "issue_types": quality.issue_types(issues),
+        },
     )
-    return row, upsert
+    return row, publish
+
+
+def _apply_preview(row: Dict, publish: Dict, db: BSEDatabaseManager) -> bool:
+    """Write one previewed row if the filing still matches its preview."""
+
+    # ponytail: inputs are re-read just before the locked write, not under the
+    # lock; a snapshot re-parsed in that millisecond gap would be evaluated from
+    # the older inputs and not picked up again (evaluated_at ends up newer).
+    # Move the input check into publish_filing_evaluation if that ever matters.
+    fresh = db.get_filing(publish["symbol"], publish["filing_date"])
+    if (
+        not fresh
+        or not fresh.get("ratios")
+        or any(fresh.get(field) != row.get(field) for field in INPUT_FIELDS)
+    ):
+        row["status"] = "stale: inputs changed since the preview"
+    else:
+        try:
+            db.publish_filing_evaluation(**publish)
+            return True
+        except quality.StalePublication as exc:
+            row["status"] = f"stale: {exc}"
+    logger.warning("Recompute skipped %s@%s: %s", row["symbol"], row["filing_date"], row["status"])
+    return False
 
 
 def recompute(limit: int = 500, write: bool = False, report: Optional[str] = None) -> List[Dict]:
@@ -457,8 +521,10 @@ def recompute(limit: int = 500, write: bool = False, report: Optional[str] = Non
 
     Dry run unless `write`; `write` requires `report`, and the report is created
     (never overwritten) BEFORE any database write. The CSV is evidence, not a
-    backup: restore from a `pg_dump` of filing_evaluations. Each upsert commits
-    on its own, so a failure mid-run leaves earlier rows written.
+    backup: restore from a `pg_dump` of filing_evaluations. Each publication
+    commits on its own, so a failure mid-run leaves earlier rows written. A row
+    whose filing changed since the preview is skipped and logged as stale; the
+    CSV still shows its preview, so check the log for skipped rows.
     """
 
     if limit < 1:
@@ -483,9 +549,8 @@ def recompute(limit: int = 500, write: bool = False, report: Optional[str] = Non
                 writer.writerows({k: _csv_safe(v) for k, v in row.items()} for row in rows)
         written = 0
         if write:
-            for _, upsert in results:
-                if upsert is not None:
-                    db.upsert_filing_evaluation(**upsert)
+            for row, publish in results:
+                if publish is not None and _apply_preview(row, publish, db):
                     written += 1
         transitions: Dict[str, int] = defaultdict(int)
         for row in rows:
