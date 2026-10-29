@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.1](https://github.com/hamza-aziz-ai/HalalLens/compare/v0.14.0...v0.14.1) (2026-10-29)
+
+
+### Bug Fixes
+
+* **billing:** a payment finished outside the checkout shows up without a refresh, and plan labels follow the queued plan ([#199](https://github.com/hamza-aziz-ai/HalalLens/issues/199)) ([278f22c](https://github.com/hamza-aziz-ai/HalalLens/commit/278f22c86df0d9c44d6bafaf9677583bc6ac106a))
+
 ## [0.14.0](https://github.com/hamza-aziz-ai/HalalLens/compare/v0.13.0...v0.14.0) (2026-10-29)
 
 
