@@ -134,8 +134,10 @@ Plans are one-time Razorpay Orders; nothing renews automatically. Each paid orde
 - **Lifetime takes effect when paid (one-off repair after deploying it):** the API rewrites a stored projection only after its renewal date passes, so an account that bought Lifetime under the old rule keeps showing its timed plan (for example Annual until 2027) until then. After deploying, re-project every user with a Lifetime grant through the locked `refresh_entitlement`; it prints each user id and the projection written (`plan` should be `lifetime` for an unrefunded Lifetime). It changes only the `users` projection, never a grant, and is safe to run again:
 
   ```bash
-  docker compose -f docker-compose-prod.yml run --rm --no-deps --entrypoint python3 billing-reconcile -c '
-  from api import billing
+  # exec in the running service: a bare `compose run` uses API_IMAGE's default
+  # (the local image halal-lens-api), which may be an old build.
+  docker compose -f docker-compose-prod.yml exec -T billing-reconcile python3 -c '
+  import api.billing as billing
   from database.database_manager import BSEDatabaseManager
   db = BSEDatabaseManager(min_connections=1, max_connections=2)
   with db.get_connection() as conn, conn.cursor() as cur:
