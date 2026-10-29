@@ -48,7 +48,7 @@
   # 502 with its own error page. Responses the API sends itself (its own 503s
   # included) never come through here.
   handle_errors 502 503 504 {
-    header Retry-After 20
+    header Retry-After 30
     header Cache-Control no-store
     @api expression `{http.request.orig_uri.path}.startsWith("/api/")`
     handle @api {

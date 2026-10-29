@@ -1,0 +1,155 @@
+// Cloudflare Worker: a HalalLens maintenance page when the origin itself is
+// unreachable (Caddy, cloudflared or the VM down), the one case the front
+// Caddy's own maintenance page (caddy/maintenance.html) cannot cover.
+//
+// Routes (see README_ops): <domain>/* on this Worker with "Fail open", and
+// <domain>/api/* on no Worker, so API calls and webhooks never pass through it.
+// Fail open: if the Worker errors or the free plan's daily request limit is
+// reached, traffic goes straight to the origin as if the Worker did not exist.
+//
+// The page is an exact copy of caddy/maintenance.html: a Worker pasted into
+// the dashboard cannot import files. tests/test_maintenance_page.py fails
+// when the two differ.
+
+// Cloudflare answers these itself when it cannot reach or use the origin
+// (530 = error 1033, tunnel down). The front Caddy never sends 502.
+const ORIGIN_DOWN = new Set([502, 504, 520, 521, 522, 523, 524, 525, 526, 527, 530]);
+
+const PAGE = `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <meta http-equiv="refresh" content="30">
+  <title>HalalLens · Back shortly</title>
+  <style>
+    :root {
+      color-scheme: dark light;
+      --bg: #05070d;
+      --glow-a: rgba(14, 116, 144, .38);
+      --glow-b: rgba(16, 185, 129, .20);
+      --card: rgba(255, 255, 255, .045);
+      --border: rgba(255, 255, 255, .10);
+      --text: #e2e8f0;
+      --heading: #ffffff;
+      --muted: #94a3b8;
+      --accent: #22d3ee;
+      --accent-2: #34d399;
+      --button-text: #05070d;
+    }
+    @media (prefers-color-scheme: light) {
+      :root {
+        --bg: #f1f5f9;
+        --glow-a: rgba(14, 116, 144, .16);
+        --glow-b: rgba(16, 185, 129, .12);
+        --card: rgba(255, 255, 255, .85);
+        --border: rgba(15, 23, 42, .10);
+        --text: #334155;
+        --heading: #0f172a;
+        --muted: #64748b;
+        --accent: #0891b2;
+        --accent-2: #059669;
+        --button-text: #ffffff;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: 24px 16px;
+      font: 16px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      color: var(--text);
+      background:
+        radial-gradient(1100px circle at 10% -10%, var(--glow-a), transparent 45%),
+        radial-gradient(900px circle at 90% 0%, var(--glow-b), transparent 40%),
+        var(--bg);
+    }
+    main {
+      width: 100%;
+      max-width: 34rem;
+      padding: 2.5rem 2rem 2rem;
+      border-radius: 28px;
+      border: 1px solid var(--border);
+      background: var(--card);
+      box-shadow: 0 25px 80px rgba(3, 7, 18, .35);
+      backdrop-filter: blur(8px);
+      text-align: center;
+    }
+    .brand { display: inline-flex; align-items: center; gap: .6rem; font-weight: 600; letter-spacing: .22em; text-transform: uppercase; font-size: .75rem; color: var(--accent); }
+    .mark { width: 2.75rem; height: 2.75rem; margin: 0 auto 1.25rem; display: block; }
+    .mark .ring { stroke: var(--accent); }
+    .mark .sweep { stroke: var(--accent-2); transform-origin: 22px 22px; animation: spin 2.4s linear infinite; }
+    h1 { margin: .9rem 0 .75rem; font-size: clamp(1.6rem, 5vw, 2rem); line-height: 1.2; color: var(--heading); }
+    p { margin: 0 0 .9rem; text-align: justify; hyphens: auto; }
+    .safe { display: flex; gap: .6rem; align-items: flex-start; margin: 1.25rem 0 0; padding: .9rem 1rem; border-radius: 16px; border: 1px solid var(--border); font-size: .9rem; text-align: left; }
+    .safe svg { flex: none; margin-top: .15rem; color: var(--accent-2); }
+    .actions { margin-top: 1.6rem; display: flex; flex-direction: column; align-items: center; gap: .7rem; }
+    button {
+      appearance: none; border: 0; cursor: pointer;
+      padding: .7rem 1.6rem; border-radius: 999px;
+      font: inherit; font-weight: 600; font-size: .9rem;
+      color: var(--button-text);
+      background: linear-gradient(90deg, var(--accent), var(--accent-2));
+    }
+    button:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
+    .status { font-size: .8rem; color: var(--muted); }
+    .dot { display: inline-block; width: .5rem; height: .5rem; margin-right: .45rem; border-radius: 50%; background: var(--accent); vertical-align: middle; animation: pulse 1.6s ease-in-out infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    @keyframes pulse { 50% { opacity: .25; } }
+    @media (prefers-reduced-motion: reduce) { .mark .sweep, .dot { animation: none; } }
+  </style>
+</head>
+<body>
+  <main>
+    <svg class="mark" viewBox="0 0 44 44" fill="none" aria-hidden="true">
+      <circle class="ring" cx="22" cy="22" r="17" stroke-width="3" opacity=".35"/>
+      <path class="sweep" d="M22 5a17 17 0 0 1 17 17" stroke-width="3" stroke-linecap="round"/>
+      <path class="ring" d="M16 22.5l4 4 8-9" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
+    <div class="brand">HalalLens</div>
+    <h1>We'll be right back</h1>
+    <p>HalalLens is briefly unavailable while we update or restart it. This usually takes less than a minute.</p>
+    <div class="safe">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l7 3v5c0 4.5-3 8.5-7 10-4-1.5-7-5.5-7-10V6z"/><path d="M9 12l2 2 4-4"/></svg>
+      <span>Your account, plan, watchlists and screening history are safe. Nothing needs to be done on your side.</span>
+    </div>
+    <div class="actions">
+      <button type="button" onclick="location.reload()">Try again</button>
+      <div class="status"><span class="dot" aria-hidden="true"></span><span id="countdown">This page retries by itself every 30 seconds.</span></div>
+    </div>
+  </main>
+  <script>
+    // Visible countdown; the meta refresh above still reloads without JavaScript.
+    (function () {
+      var left = 30, el = document.getElementById("countdown");
+      setInterval(function () {
+        left = left > 1 ? left - 1 : 30;
+        el.textContent = "Retrying automatically in " + left + "s";
+      }, 1000);
+    })();
+  </script>
+</body>
+</html>
+`;
+
+export default {
+  async fetch(request) {
+    try {
+      const response = await fetch(request);
+      if (!ORIGIN_DOWN.has(response.status)) return response;
+    } catch {
+      // Network failure reaching the origin: same page.
+    }
+    return new Response(PAGE, {
+      status: 503,
+      headers: {
+        "content-type": "text/html; charset=utf-8",
+        "cache-control": "no-store",
+        "retry-after": "30",
+      },
+    });
+  },
+};
