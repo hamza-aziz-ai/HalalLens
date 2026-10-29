@@ -227,6 +227,7 @@ sequenceDiagram
   alt Lifetime grant held
     A-->>B: 409 Lifetime already covers every plan
   else no Lifetime grant
+    Note over A,P: Lifetime only (D-030): priced with upgrade credit on one locked read, lock released; payable below ₹1 answers 409
     A->>R: POST /orders (amount in paise, INR, notes)
     R-->>A: order id
     A->>P: insert razorpay_orders (status created)
@@ -266,8 +267,9 @@ sequenceDiagram
   else refunded_payment
     P-->>A: refunded_payment (event kept, order stays claimable)
   else refund_due
-    P-->>A: refund_due (Lifetime won the race, no time granted)
+    P-->>A: refund_due (Lifetime won the race, or a credited price no longer holds; no time granted)
   end
+  Note over A,P: A credited order with no known attempt time answers retry: nothing changes, the reconciler settles it later
   A-->>B: verify answers 200 with the plan, or 409 for refund_due and refunded_payment
   A-->>R: webhook answers 200 with the result
 ```
@@ -286,11 +288,13 @@ Key: solid arrows are requests, dashed arrows answers; boxes are branches and th
 20. `granted`: a new `subscription_grants` row; a timed plan starts when the user's timed paid time ends (D-024: purchases queue, nothing paid is discarded), a Lifetime starts at settlement and is the current plan at once, over any timed time (D-024 amendment); the order becomes `paid` with its funding payment id, the event is recorded, the `users` projection is rewritten, and the trial counts as used.
 21. `settled`: the order was already claimed; nothing is granted twice. The webhook then falls through to record its event once.
 22. `refunded_payment`: this payment was fully refunded before settlement, so it can never fund the order; another attempt still can (D-025).
-23. `refund_due`: a Lifetime grant already covers the user. The order is marked `refund_due` with this payment id and no time is granted; the reconciler owes the refund (sections 5 and 6).
+23. `refund_due`: a Lifetime grant already covers the user (`refund_due_reason` `lifetime_held`), or a credited order's terms no longer hold (`price_expired`, `credit_changed`; see below). The order is marked `refund_due` with this payment id and no time is granted; the reconciler owes the refund of the charged amount (sections 5 and 6).
 24. Verify answers 200 with the user's current plan for `granted` and `settled`, and 409 for `refund_due` and `refunded_payment`.
 25. The webhook answers 200 with `{"status": result}` (`ok` when it only recorded the event).
 
-Sources: `api/app.py::create_razorpay_order`, `api/app.py::_create_razorpay_order`, `api/app.py::verify_razorpay_payment`, `api/app.py::razorpay_order_status`, `api/app.py::razorpay_webhook`, `api/app.py::_settle_razorpay_order`, `api/razorpay_client.py::payment_matches_order`, `api/billing.py::lifetime_held`, `api/billing.py::project`, `database/database_manager.py::settle_razorpay_order`, `database/database_manager.py::record_payment_event`, `ui/app/(app)/account/page.tsx::handleUpgrade`, `ui/lib/billing.ts::waitForOrderSettlement`. Decisions: D-024, D-025.
+Upgrade credit (D-030). For a Lifetime order, step 4 first runs `quote_upgrade`: the user's grants and the funding facts of their paid orders are read under the user lock with the database clock, `billing.upgrade_quote` computes the credit (unused share of each eligible timed purchase's net paid amount, in paise), and the lock is released before Razorpay is called. Razorpay is asked for the charged amount; the order is stored only if Razorpay echoes it in INR, with `list_amount`, `credit_amount`, `priced_at`, `price_valid_until` (+15 minutes), `credit_version` and the per-source evidence in `credit_detail`. At settlement (step 19), only for orders with `credit_version`, `billing.credit_refusal` checks that the payment attempt's Razorpay `created_at` is at or before `price_valid_until` and that every source that took credit is unchanged; a missing `created_at` is fetched from Razorpay, and if still unknown the result is `retry` (the webhook answers `{"status": "retry"}`, verify 503, the reconciler tracks the payment as pending). The account page shows the preview from `/billing/entitlement` on the Lifetime card and asks for confirmation when the order's amount differs from it. A refund later recorded for a source payment opens a `credit_conflict` item and alerts (section 6).
+
+Sources: `api/app.py::create_razorpay_order`, `api/app.py::_create_razorpay_order`, `api/app.py::verify_razorpay_payment`, `api/app.py::razorpay_order_status`, `api/app.py::razorpay_webhook`, `api/app.py::_settle_razorpay_order`, `api/razorpay_client.py::payment_matches_order`, `api/razorpay_client.py::payment_created_at`, `api/billing.py::lifetime_held`, `api/billing.py::project`, `api/billing.py::upgrade_quote`, `api/billing.py::credit_refusal`, `database/database_manager.py::quote_upgrade`, `database/database_manager.py::settle_razorpay_order`, `database/database_manager.py::record_payment_event`, `ui/app/(app)/account/page.tsx::handleUpgrade`, `ui/lib/billing.ts::waitForOrderSettlement`. Decisions: D-024, D-025, D-030.
 
 ## 5. Payment reconciliation: `jobs/reconcile_payments.py`
 
@@ -435,7 +439,7 @@ Key: solid arrows are requests, dashed arrows answers; boxes are branches. Numbe
 14. Any other 409 means the same key was sent with different parameters: blocked, alert.
 15. 429, a 5xx or no answer leaves the outcome unknown: retried after 15 minutes, and the next attempt looks for the key first (step 7). A 401 or 403 (the note without a number) halts the run (section 5).
 16. Any other 4xx is not proof either way: blocked, alert, refund by hand in the Razorpay dashboard. A blocked, failed or processed action never moves back to an earlier state (`update_refund_action`).
-17. to 21. A refund completes through whichever path sees it first: the `refund.processed` webhook, or the reconciler polling the created refund (or finding it in a sweep). Both call `refund_razorpay_payment`, which stores each refund once by refund id and changes access only when the refunded payment is the one that funded the order's grant and its processed refunds reach the order amount (`revoked`); a refund of a duplicate payment (`other_payment`) or a partial refund never removes the plan. Both then call `sync_refund_action`, which settles two facts separately: the automatic action becomes `processed` when its own refund is recorded, and the obligation is settled (`billing_tracked` resolved) when the payment's processed refunds reach its full amount. A blocked action followed by a manual refund therefore still closes the obligation.
+17. to 21. A refund completes through whichever path sees it first: the `refund.processed` webhook, or the reconciler polling the created refund (or finding it in a sweep). Both call `refund_razorpay_payment`, which stores each refund once by refund id and changes access only when the refunded payment is the one that funded the order's grant and its processed refunds reach the order amount (`revoked`); a refund of a duplicate payment (`other_payment`) or a partial refund never removes the plan. Both then call `sync_refund_action`, which settles two facts separately: the automatic action becomes `processed` when its own refund is recorded, and the obligation is settled (`billing_tracked` resolved) when the payment's processed refunds reach its full amount. A blocked action followed by a manual refund therefore still closes the obligation. When the refunded payment funded part of a settled credited Lifetime order's credit (D-030), `refund_razorpay_payment` also opens a `credit_conflict` item in the same transaction and the caller (webhook or reconciler) alerts the operator; it is never re-checked or resolved automatically (`due_billing_items` skips it).
 
 Sources: `jobs/reconcile_payments.py::Reconciler._refund_phase`, `::Reconciler._open_refund`, `::Reconciler._attempt_refund`, `::Reconciler._adopt`, `::Reconciler._block`, `::Reconciler._poll_refund`, `::Reconciler._record_refund`, `api/razorpay_client.py::RazorpayClient.create_refund`, `api/app.py::razorpay_webhook`, `database/database_manager.py::open_refund_obligations`, `database/database_manager.py::create_refund_intent`, `database/database_manager.py::update_refund_action`, `database/database_manager.py::refund_razorpay_payment`, `database/database_manager.py::sync_refund_action`. Decision: D-025.
 
