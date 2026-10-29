@@ -2,7 +2,27 @@
 
 Read first: [ARCHITECTURE.md](ARCHITECTURE.md), [CONSTRAINTS.md](CONSTRAINTS.md). Newest entry on top. Update last, every session.
 
-## Latest session: 2026-10-29, later (model: Claude Opus 5.5, `claude-opus-5-5`): data, backups, monitoring, defects
+## Latest session: 2026-10-29, afternoon (model: Claude Opus 5.5, `claude-opus-5-5`): email, auth hardening, watchlists in Postgres, Next 16
+
+**Done** (production runs **v0.8.0** on the Oracle VM)
+- Email: OCI Email Delivery (Mumbai, free tier about 3,000 a month), sender `no-reply@halallens.in`; SPF, DMARC (`p=none`) and the DKIM CNAME are in Cloudflare and the DKIM key is ACTIVE. SMTP settings are in the server `.env` (credential never displayed).
+- Auth hardening (#172, D-020, design agreed with Codex): email-first sign-up, set-password/reset links, sessions only for verified emails, admin from `ADMIN_EMAILS` only after the mailbox is proven, Google matched by subject only with `email_verified=true`; reset and login share a row lock. #173 (D-021): browser-bound single-use Google flows (`oauth_flows`, `hl_oauth` cookie) and explicit "Link Google account" on the account page. Verified in production: a new account signed up, verified and linked Google; the maintainer's admin was restored by a fresh Google sign-in.
+- Watchlists in Postgres (#163, D-019) with seed-first conditional updates (Codex caught the flip-first race; the real-Postgres test fails 20/20 with flip-first).
+- Next.js 16.4.2 / React 19 / ESLint 9 flat config (#164); the dashboard image applies Alpine security updates (#170, a brotli CRITICAL failed the v0.7.0 publish); Next 16.4.3 and other Dependabot updates merged (#167 to #169).
+- Repo: `docker` and `docker-arm64` are required checks; Docker Hub pages get their descriptions from `docs/dockerhub/*.md` via a workflow (#176); categories set by the maintainer.
+- Council: free BSE/NSE data sources reviewed with Codex: no comprehensive authorised zero-cost route for filings; BSE and NSE feeds refuse honest automated clients; written permission or a licensed feed are the options.
+
+**In progress / next**
+- BSE announcements data source: maintainer decides later (permission request or licensed feed). Until then production stores no filings.
+- Razorpay test keys and webhook: being set up with the maintainer (`/api/webhooks/razorpay`).
+- Candidates: pull-only deploy from the published images, rewrite the 7 `set-state-in-effect` components, a monthly backup-restore test, a separate R2 bucket for backups.
+
+**Broken or risky**
+- Password accounts depend on email delivery; if SMTP fails, sign-up and reset links do not arrive (the API still answers 202).
+- Rate limiting is per process: keep `API_WORKERS=1`.
+- Opt-in real-Postgres tests (`tests/test_watchlist_postgres.py`, `tests/test_auth_postgres.py`) do not run in CI; run them when `alerts/storage.py` or the auth SQL changes.
+
+## Session: 2026-10-29, later (model: Claude Opus 5.5, `claude-opus-5-5`): data, backups, monitoring, defects
 
 **Done**
 - v0.5.3 (#150): Bhavcopy reads BSE's UDiFF file and NSE's market caps from the daily price-report zip, matched by exact ticker before any fuzzy name match. In production, 28 Oct matched 2,497 companies.

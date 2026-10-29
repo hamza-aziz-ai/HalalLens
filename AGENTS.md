@@ -16,7 +16,7 @@ HalalLens is a public, MIT-licensed portfolio showcase for now; the maintainer p
 
 | Path                        | What                                                                                                                                                                                 |
 |-----------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `api/app.py`                | The whole FastAPI app (~3.8k lines): routes, auth, billing, rate limiting wiring. `api/security.py` holds password/session-token hashing and `SlidingWindowRateLimiter`.             |
+| `api/app.py`                | The whole FastAPI app (~3.8k lines): routes, auth, billing, rate limiting wiring. `api/security.py` holds password/session-token hashing and `SlidingWindowRateLimiter`; `api/mailer.py` sends sign-up and reset email.             |
 | `ratio_engine/`             | Five ratios + the ONLY verdict derivation (`engine.py`, exact Decimal), `summary.py`, `amounts.py` (`coerce_amount`). 30% debt/cash, 5% income per SS21; 67%/49% gates are not SS21. |
 | `narrator/`                 | Explain-why text: rule-based by default; optional LLM (`NARRATOR_MODE=llm`) only for conclusive verdicts behind a best-effort guard.                                                 |
 | `alerts/`                   | Watchlist storage, compliance-flip engine, email notifier.                                                                                                                           |
@@ -49,7 +49,8 @@ docker compose up --build                  # API + UI + ingestion against an ext
 - **Rate limiter is per-process memory.** Fine for the pilot; don't claim multi-worker correctness without moving it to Redis.
 - **New env vars go in `.env.example`.** Never commit secrets, keys or CSVs of keys (a `rzp-key.csv` was already removed once).
 - Changing ratio logic? Add/adjust a row in the golden table in `tests/test_ratio_engine.py`. Verdicts come ONLY from `RatioEngine` (`RatioEvaluation.verdict`: `compliant` / `non-compliant` / `insufficient-data`; `is_compliant` is True/False/None); never re-derive them in API, jobs or UI. `needs-review` is an API-level overlay. historical repair uses `--recompute` (current stored inputs and caps, no vendor calls, dry run by default, `--write` requires a new `--report`). The plain backfill skips rows that have ratios (`has_ratios` from `get_recent_filings`); unevaluated filings belong to `jobs.precompute_evaluations`.
-- Tests must not need live Postgres/MinIO/LLM/vendor APIs; `tests/conftest.py` resets the rate limiter between tests.
+- Tests must not need live Postgres/MinIO/LLM/vendor APIs; `tests/conftest.py` resets the rate limiter between tests. The only exceptions are the opt-in real-Postgres tests (`tests/test_watchlist_postgres.py`, `tests/test_auth_postgres.py`), skipped unless `HALALLENS_TEST_PG_DSN` points at a throwaway database; run them when the locking SQL changes.
+- **Auth invariants (D-020, D-021):** every session belongs to a verified email; `ADMIN_EMAILS` grants admin only when the mailbox is proven (sign-up link, reset link or Google), never because an address was typed; Google accounts are matched by Google subject only and linked explicitly from the account page; emailed and OAuth proofs are single-use, stored as SHA-256 digests and carried in URL fragments or HttpOnly cookies.
 
 ## Pull requests and releases
 
