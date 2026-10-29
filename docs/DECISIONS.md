@@ -199,3 +199,16 @@ One entry per decision, newest last. Model for every entry below: Claude Sonnet 
 - **Trade-off:** Needs the UI and API on one origin (production `/api`); a split-origin dev setup can sign in with Google but not link. A Google account links to one HalalLens account; no merges. Flows live in the database (cleaned after a day).
 - **Revisit if:** the mobile app ships (its OAuth would use PKCE with an app-bound redirect), or the API moves to its own origin.
 
+## D-023: LLM line-item mapping as per-filing suggestions (agreed design, not built yet)
+
+- **Date:** 2026-10-29   Model: Claude Opus 5.5 (maintainer: "LLM suggests, an admin confirms"; design agreed with Codex in council)
+- **Context:** The ETL maps filing data straight into fixed snapshot columns through substring aliases (XBRL/JSON) and keyword matches (PDF rows); raw facts are not stored, the XBRL parser ignores contexts and units, and the PDF parser keeps the rightmost number. Known wrong mappings (liquid assets from "current assets") come from these heuristics. The maintainer wants the model to help map messy line items.
+- **Options:**
+  1. Approve reusable alias rules (label to metric) suggested by the model
+  2. Approve a specific captured fact for a metric in one filing revision, then rebuild inputs deterministically
+  3. Let the model fill values directly
+- **Chosen:** 2, in three PRs after D-022 merges: (a) capture every XBRL fact with full context (qualified tag, period, entity, dimensions, unit, precision, raw text, document hash, extractor version), including facts current rules already match, and show the evidence to admins; (b) admin-triggered suggestions through the guarded Ollama client in the API process: labels with section context, category definitions with exclusions, null abstention, no amounts, no confidence, strict rejection of anything malformed; (c) per-filing confirmation, then selections to a candidate snapshot, a RatioEngine preview of before and after inputs and verdict, and a reviewed apply that rejects stale previews, writes consistently and keeps rollback evidence. An explicit selection supersedes heuristics; an existing governance override stays final (proposal). Deferred: PDF, reusable aliases, composition rules, an upload pipeline.
+- **Why:** A label means different things across periods, statement bases and sections, so a reusable rule applied deterministically can still be wrong everywhere (Codex). Capturing final values would freeze today's parser losses. Existing recompute only re-reads stored inputs, so applying selections needs its own path. Option 3 would put model output into verdict inputs.
+- **Trade-off:** More review work per filing; no production filings to use until a data source is chosen; the model's usefulness is unproven until representative filings are tested; filing text goes to the cloud model (public or synthetic documents only).
+- **Revisit if:** confirmed selections show stable patterns worth promoting to scoped aliases, or PDF filings dominate the data source.
+
