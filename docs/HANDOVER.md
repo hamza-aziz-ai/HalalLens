@@ -2,7 +2,25 @@
 
 Read first: [ARCHITECTURE.md](ARCHITECTURE.md), [CONSTRAINTS.md](CONSTRAINTS.md). Newest entry on top. Update last, every session.
 
-## Latest session: 2026-10-29, afternoon (model: Claude Opus 5.5, `claude-opus-5-5`): email, auth hardening, watchlists in Postgres, Next 16, payments
+## Latest session: 2026-10-29, evening (model: Claude Opus 5.5, `claude-opus-5-5`): LLM live, pull-only deploys, refund fix, maintenance and 404 pages, restore drill
+
+**Done** (production runs **v0.12.0** on the Oracle VM, deployed from the published GHCR images)
+- LLM narration live (#181, D-022): `ollama` service signed in to the maintainer's ollama.com account, `gpt-oss:120b-cloud`, temperature 0 and high reasoning effort at the maintainer's request (#190, measured 1.1 to 1.9 s per explanation). Rule-based text stays the fallback; the verdict still comes only from `RatioEngine`.
+- Pull-only deploys (#180) are the production path: `scripts/deploy.sh vX.Y.Z` with `IMAGE_REPOSITORY=ghcr.io/hamza-aziz-ai`. #186 strips carriage returns from `.env` values (a CRLF `.env` broke the first pull). #185: CI on `main` is never cancelled (a cancelled release-commit run blocked the v0.10.0 image publish, so v0.10.0 was never deployed).
+- Billing: #188 fixed refunds never revoking the plan (the revocation reused the purchase's payment id and hit the `(provider, event_id)` unique index). The Razorpay webhook did not exist at all; the maintainer created it. Razorpay later rejected our key (`.env.production` held the sample key from a pasted prompt); a regenerated test key was pushed and verified from the container.
+- Maintenance and 404 pages (#191): the front Caddy answers restarts with `caddy/maintenance.html` (503) and a JSON 503 under `/api/*`; upstream failures in the API answer 503, never 502, because Cloudflare replaces an origin 502 with its own page; the UI never shows a raw response body; unknown paths get a HalalLens 404. The same approach was shared with Medical-ChatBot, which added a free-plan Cloudflare Worker for the case where Caddy, the tunnel or the VM is down.
+- Backup restore drill: newest R2 dump restored into a throwaway Postgres 14, all 20 tables matched live. It found that the documented restore (Postgres 14's `pg_restore`) cannot read the dumps (written by `pg_dump` 17); README_ops now restores with the API image's `pg_restore`, and the "back up now" command was fixed.
+
+**In progress / next**
+- End-to-end refund test in Razorpay Test Mode: buy Starter, check the `payment.captured` webhook, refund, check `refund.processed` (keyed `rfnd_...`) and the plan back to free.
+- Cloudflare Worker maintenance page for Caddy, tunnel or VM outages (maintainer approved; needs a Cloudflare token or the dashboard).
+- Known input-mapping defects (`liquid_assets` from "current assets", `non_halal_income` from "Other, Net", the income regex) go to the council before any change; BSE data source is still the maintainer's decision.
+
+**Broken or risky**
+- Dump and server versions differ (`pg_dump` 17, server 14). Restores work with the API image's `pg_restore`; upgrading Postgres to 17 would remove the skew.
+- LLM narration depends on the maintainer's ollama.com device sign-in (`8e69076a6c04`); removing it there or deleting the `ollama_data` volume silently falls back to rule-based text.
+
+## Session: 2026-10-29, afternoon (model: Claude Opus 5.5, `claude-opus-5-5`): email, auth hardening, watchlists in Postgres, Next 16, payments
 
 **Done** (production runs **v0.9.0** on the Oracle VM)
 - Payments (Razorpay **test** keys only): order, checkout, signature verification and webhook proven end to end in production (a test Annual purchase granted the plan until 2027-10-29; one webhook event recorded). #178 handles checkout dismissal and shows Razorpay's failure reason. The maintainer's Razorpay account is KYC-verified; a ₹100 live test through razorpay.me was refunded (that path never touches the app).
