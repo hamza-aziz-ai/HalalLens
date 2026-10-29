@@ -43,12 +43,13 @@ Store secrets in a `.env` file, Docker secrets, or whichever secret manager your
 
 The `backup` service in `docker-compose-prod.yml` runs `jobs.backup_postgres` once a day (`BACKUP_INTERVAL_HOURS`, default 24). Each run writes a `pg_dump --format=custom` of the app database to `backups/postgres/<db>-<UTC timestamp>.dump` in `MINIO_BUCKET` (R2 in production), then deletes backups under that prefix older than `BACKUP_RETENTION_DAYS` (default 14). Old copies are deleted only after a successful upload; a failed run logs `Backup failed`, notifies through the ops notifier and retries after an hour. The dumps hold user accounts (emails, password hashes, session digests): keep the bucket private and the token scoped to it.
 
-- Back up now: `docker compose -f docker-compose-prod.yml run --rm backup python3 -m jobs.backup_postgres` (one run; omit `--loop`).
-- Restore: download a `.dump` from the bucket (Cloudflare dashboard, or any S3 client), then stop the writers and restore into the running Postgres:
+- Back up now: `docker compose -f docker-compose-prod.yml exec -T backup python -m jobs.backup_postgres` (one run inside the running service; `run backup ...` would append to its `--loop` entrypoint).
+- **Use the API image's `pg_restore`, not the Postgres container's.** The dumps are written by the API image's `pg_dump` (17); Postgres 14's own `pg_restore` refuses them with `unsupported version (1.16) in file header`. One error during a restore is expected and harmless: `unrecognized configuration parameter "transaction_timeout"` (a 17-only setting).
+- Restore: download a `.dump` from the bucket (Cloudflare dashboard, or any S3 client) into `/opt/halallens/halallens.dump`, then stop the writers and restore into the running Postgres:
   1. `docker compose -f docker-compose-prod.yml stop api ingestion evaluation backup`
-  2. `docker compose -f docker-compose-prod.yml exec -T postgres pg_restore --clean --if-exists --no-owner -U "$POSTGRES_USER" -d "$POSTGRES_DB" < halallens.dump`
+  2. `docker compose -f docker-compose-prod.yml run --rm --no-deps -T -v "$PWD/halallens.dump:/tmp/restore.dump:ro" --entrypoint sh backup -c 'PGPASSWORD="$POSTGRES_PASSWORD" pg_restore --clean --if-exists --no-owner -h "$POSTGRES_HOST" -U "$POSTGRES_USER" -d "$POSTGRES_DB" /tmp/restore.dump'`
   3. `docker compose -f docker-compose-prod.yml up -d`
-- Test a restore into a scratch database before relying on it (`createdb` a new name, restore there, compare row counts).
+- Restore drill: restore the newest dump into a throwaway `postgres:14` container started with `--network none`, run the API image's `pg_restore` inside its network namespace (`docker run --network container:<throwaway> --entrypoint pg_restore <api image> ... -h 127.0.0.1`), and compare `count(*)` per table with live. Last drill 2026-10-29: 20 of 20 tables matched, including 34,959 `market_data_snapshots` rows. Repeat monthly and after any Postgres or API base-image upgrade.
 
 ### Docker Hub pages
 
