@@ -4,6 +4,7 @@ import PolicyLayout, {
   policyListClass,
   policyTitleClass,
 } from "@/components/policy-layout";
+import SupportEmail from "@/components/support-email";
 
 export default function ContactPage() {
   return (
@@ -17,12 +18,7 @@ export default function ContactPage() {
         <ul className={`mt-3 ${policyListClass}`}>
           <li>
             Email:{" "}
-            <a
-              href="mailto:contact@nourvix.com"
-              className="text-cyan-200 hover:text-cyan-100"
-            >
-              contact@nourvix.com
-            </a>
+            <SupportEmail className="text-cyan-200 hover:text-cyan-100" />
           </li>
           <li>Response time: within 3 business days.</li>
           <li>Coverage: India market and Shariah screening questions.</li>
@@ -33,12 +29,7 @@ export default function ContactPage() {
         <h2 className={policyTitleClass}>Business inquiries</h2>
         <p className={`${policyBodyClass} mt-3`}>
           For partnerships or data requests, email{" "}
-          <a
-            href="mailto:contact@nourvix.com"
-            className="text-cyan-200 hover:text-cyan-100"
-          >
-            contact@nourvix.com
-          </a>
+          <SupportEmail className="text-cyan-200 hover:text-cyan-100" />
           .
         </p>
       </section>

@@ -17,6 +17,9 @@ COPY ui/ ./
 # Default: same origin behind Caddy (/api/* -> API). Override for other setups.
 ARG NEXT_PUBLIC_HALAL_API_BASE_URL=/api
 ENV NEXT_PUBLIC_HALAL_API_BASE_URL=${NEXT_PUBLIC_HALAL_API_BASE_URL}
+# Support address on the policy and contact pages; empty shows "our support team".
+ARG NEXT_PUBLIC_SUPPORT_EMAIL=
+ENV NEXT_PUBLIC_SUPPORT_EMAIL=${NEXT_PUBLIC_SUPPORT_EMAIL}
 
 RUN npm run build
 

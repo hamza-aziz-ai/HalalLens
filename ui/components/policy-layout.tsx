@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { ReactNode } from "react";
+import SiteFooter from "@/components/site-footer";
 
 export const policyCardClass =
   "rounded-3xl border border-white/10 bg-white/5 p-6 shadow-[0_25px_80px_rgba(3,7,18,0.5)] backdrop-blur";
@@ -30,6 +31,9 @@ export default function PolicyLayout({
               <Link href="/login" className="text-cyan-200 hover:text-cyan-100">
                 Login
               </Link>
+              <Link href="/products/" className="text-cyan-200 hover:text-cyan-100">
+                Products
+              </Link>
               <Link href="/learn" className="text-cyan-200 hover:text-cyan-100">
                 Learn
               </Link>
@@ -42,6 +46,7 @@ export default function PolicyLayout({
           </p>
         </header>
         <div className="flex flex-col gap-6">{children}</div>
+        <SiteFooter />
       </div>
     </main>
   );
