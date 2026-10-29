@@ -291,9 +291,31 @@ services:
     entrypoint: ["python3", "-m", "jobs.backup_postgres", "--loop"]
     restart: unless-stopped
 
+  # Optional LLM daemon (COMPOSE_PROFILES includes "llm"), used by the
+  # narrator when NARRATOR_MODE=llm. Internal only: no published port. Cloud
+  # models (e.g. gpt-oss:120b-cloud) run on ollama.com; link this daemon to the
+  # account once with `docker compose -f docker-compose-prod.yml exec ollama
+  # ollama signin` (the key persists in the ollama_data volume).
+  ollama:
+    image: ollama/ollama:0.40.4
+    profiles: ["llm"]
+    # The model runs on ollama.com; the daemon only relays.
+    mem_limit: 256m
+    expose:
+      - "11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 1m
+      timeout: 10s
+      retries: 3
+
 volumes:
   api_cache:
   postgres_data:
   logs_data:
   caddy_data:
   caddy_config:
+  ollama_data:

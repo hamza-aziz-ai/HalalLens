@@ -4,8 +4,11 @@
 from __future__ import annotations
 
 import json
+import threading
+import time
+from collections import deque
 from dataclasses import dataclass
-from typing import List, Sequence
+from typing import Deque, List, Sequence
 
 import requests
 from requests import HTTPError, RequestException
@@ -16,6 +19,51 @@ from ratio_engine import RatioEvaluation
 
 class LLMNarrationError(RuntimeError):
     """Raised when the LLM narrator cannot produce a valid response."""
+
+
+class _CallGuard:
+    """Process-wide cap and circuit breaker for model calls.
+
+    Protects a free cloud allowance and the API's narration workers: at most
+    ``max_calls`` per ``window_s`` across the process, and after
+    ``break_after`` failures in a row the model is skipped for ``cooldown_s``
+    (then one call is let through to probe). Every refusal raises
+    LLMNarrationError, so callers fall back to the rule-based text.
+    ponytail: per-process (one API worker); share via Redis with more workers.
+    """
+
+    def __init__(self, max_calls: int = 6, window_s: float = 60.0,
+                 break_after: int = 3, cooldown_s: float = 60.0) -> None:
+        self.max_calls, self.window_s = max_calls, window_s
+        self.break_after, self.cooldown_s = break_after, cooldown_s
+        self._lock = threading.Lock()
+        self._calls: Deque[float] = deque()
+        self._failures = 0
+        self._open_until = 0.0
+
+    def before_call(self) -> None:
+        now = time.monotonic()
+        with self._lock:
+            if now < self._open_until:
+                raise LLMNarrationError("LLM circuit open after repeated failures")
+            while self._calls and now - self._calls[0] > self.window_s:
+                self._calls.popleft()
+            if len(self._calls) >= self.max_calls:
+                raise LLMNarrationError("LLM call budget exhausted for this minute")
+            self._calls.append(now)
+
+    def record(self, ok: bool) -> None:
+        with self._lock:
+            if ok:
+                self._failures = 0
+                return
+            self._failures += 1
+            if self._failures >= self.break_after:
+                self._open_until = time.monotonic() + self.cooldown_s
+                self._failures = 0
+
+
+_GUARD = _CallGuard()
 
 
 @dataclass
@@ -49,6 +97,58 @@ class LLMClient:
         messages: Sequence[dict],
         temperature: float = 0.0,
         max_tokens: int = 400,
+    ) -> str:
+        _GUARD.before_call()
+        try:
+            if self.provider == "ollama":
+                content = self._complete_ollama(messages, temperature, max_tokens)
+            else:
+                content = self._complete_openai(messages, temperature, max_tokens)
+        except LLMNarrationError:
+            _GUARD.record(ok=False)
+            raise
+        _GUARD.record(ok=True)
+        return content
+
+    def _complete_ollama(
+        self, messages: Sequence[dict], temperature: float, max_tokens: int
+    ) -> str:
+        """Ollama's native /api/chat (LLM_ENDPOINT=http://<host>:11434/api/chat).
+
+        Used for cloud models such as gpt-oss:120b-cloud through a signed-in
+        daemon. Reasoning comes back separately in message.thinking and is
+        ignored; num_predict must cover reasoning plus answer, so it is never
+        below 1024. Output schemas are not relied on: the caller validates.
+        """
+
+        payload = {
+            "model": self.model,
+            "messages": list(messages),
+            "stream": False,
+            "think": "low",
+            "options": {
+                "temperature": temperature,
+                "seed": 7,
+                "num_predict": max(max_tokens or 0, 1024),
+            },
+        }
+        timeout = self.timeout if self.timeout and self.timeout > 0 else None
+        try:
+            response = self.session.post(self.endpoint, json=payload, timeout=timeout)
+            response.raise_for_status()
+            data = response.json()
+        except (RequestException, HTTPError, ValueError) as exc:
+            raise LLMNarrationError(f"LLM request failed: {exc}") from exc
+        message = data.get("message") if isinstance(data, dict) else None
+        content = message.get("content") if isinstance(message, dict) else None
+        if not isinstance(content, str) or not content.strip():
+            raise LLMNarrationError("LLM response missing content")
+        if len(content) > 64 * 1024:
+            raise LLMNarrationError("LLM response too large")
+        return content
+
+    def _complete_openai(
+        self, messages: Sequence[dict], temperature: float, max_tokens: int
     ) -> str:
         headers = {"Content-Type": "application/json"}
         if self.api_key:

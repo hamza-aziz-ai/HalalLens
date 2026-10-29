@@ -199,6 +199,19 @@ One entry per decision, newest last. Model for every entry below: Claude Sonnet 
 - **Trade-off:** Needs the UI and API on one origin (production `/api`); a split-origin dev setup can sign in with Google but not link. A Google account links to one HalalLens account; no merges. Flows live in the database (cleaned after a day).
 - **Revisit if:** the mobile app ships (its OAuth would use PKCE with an app-bound redirect), or the API moves to its own origin.
 
+## D-022: LLM narration through a signed-in Ollama daemon (gpt-oss:120b-cloud)
+
+- **Date:** 2026-10-29   Model: Claude Opus 5.5 (maintainer's choices: model `gpt-oss:120b-cloud` via Ollama, daemon on the VM, public data may go to the cloud model, rule-based fallback; setup advice from the Medical-ChatBot project)
+- **Context:** The narrator could already call an OpenAI-compatible endpoint behind a verdict guard, but nothing was deployed. The maintainer wants LLM explanations (and later line-item mapping suggestions) with `gpt-oss:120b-cloud`.
+- **Options:**
+  1. Call ollama.com directly with an API key
+  2. Run an Ollama daemon on the VM, signed in to the maintainer's account
+  3. Self-host a small model on the VM
+- **Chosen:** 2. An optional `ollama` compose service (profile `llm`, internal only, 256 MB, sign-in persisted in a volume); the narrator calls Ollama's native `/api/chat` with `think: low`, `num_predict` ≥ 1024, reads only `message.content`, rejects empty or oversized replies, and never relies on schema output (the existing parser and verdict guard validate). A process-wide guard allows 6 calls a minute and opens a 60-second circuit after 3 failures in a row.
+- **Why:** Option 1 returns HTTP 402 without paid credits (Medical-ChatBot's finding); option 3 is too weak and slow on 2 OCPUs. The daemon route is free and keeps the API unchanged apart from the native call.
+- **Trade-off:** The free allowance's limits are unpublished; a signed-in device on the VM can spend it; sign-in is a manual browser step after a volume loss. Narration latency is seconds, so `NARRATION_TIMEOUT_SECONDS` must be measured and raised from 8.
+- **Revisit if:** usage outgrows the free allowance (paid credits or another provider), or more API workers need a shared rate limit.
+
 ## D-023: LLM line-item mapping as per-filing suggestions (agreed design, not built yet)
 
 - **Date:** 2026-10-29   Model: Claude Opus 5.5 (maintainer: "LLM suggests, an admin confirms"; design agreed with Codex in council)

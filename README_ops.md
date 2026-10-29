@@ -54,6 +54,16 @@ The `backup` service in `docker-compose-prod.yml` runs `jobs.backup_postgres` on
 
 The Docker Hub descriptions of `halallens-api` and `halallens-ui` come from `docs/dockerhub/*.md` (full description) and `.github/workflows/dockerhub-description.yml` (short description). The workflow runs when those change on `main`, or by hand (Actions, Docker Hub descriptions, Run workflow). It uses `DOCKERHUB_NAMESPACE` and `DOCKERHUB_TOKEN` from the `publish` environment; updating a description needs a token with Read, Write, Delete access. Categories (up to three per repository) can only be set in Docker Hub's repository settings, not through the API.
 
+### LLM narration (Ollama, optional)
+
+The Explain-Why text is rule-based by default. To let a model rewrite it for conclusive verdicts (D-022):
+
+1. Add `llm` to `COMPOSE_PROFILES` and set `NARRATOR_MODE=llm`, `LLM_PROVIDER=ollama`, `LLM_ENDPOINT=http://ollama:11434/api/chat`, `LLM_MODEL=gpt-oss:120b-cloud` in `.env`, then deploy.
+2. Link the daemon to the Ollama account once: `docker compose -f docker-compose-prod.yml exec ollama ollama signin`, open the printed link in a browser signed in to ollama.com and connect the device. The key lives in the `ollama_data` volume, so restarts and updates stay signed in; deleting the volume or removing the device on ollama.com signs it out ("You need to be signed in" in the API log).
+3. Check: `docker compose -f docker-compose-prod.yml exec ollama ollama run gpt-oss:120b-cloud "Say ok"`.
+
+Calling ollama.com directly with an API key needs paid credits (HTTP 402); the signed-in daemon uses the account's free allowance, whose limits are not published. The API therefore makes at most 6 model calls a minute and skips the model for 60 s after 3 failures in a row; any failure, timeout or text that contradicts the verdict falls back to the rule-based explanation. Only public filing figures, the symbol and the verdict are sent, never user data; prompts and replies are not logged. Trade-off: the VM holds a signed-in device on the maintainer's Ollama account, so anyone who controls the VM can spend that allowance.
+
 ### Indian Stock API quota
 
 The vendor plan is small (the free plan allows 500 requests per month). Every vendor call goes through `market_data/indian_api.py::_request_json`, which enforces `INDIAN_API_MONTHLY_LIMIT` (production default 450) with a counter in `cache/indian_api_quota.json` in the persistent `api_cache` volume, so the cap survives restarts. At the cap the app logs `Indian API monthly limit reached` and falls back to stored data and the free Bhavcopy files. In production the ingestion and evaluation schedulers run with the vendor turned off, so the quota is spent only on users' on-demand lookups. The API key is sent only in the `X-API-Key` header, never in a URL.
