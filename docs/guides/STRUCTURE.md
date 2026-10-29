@@ -31,16 +31,20 @@ utils/            date parsing helpers
 
 ```mermaid
 flowchart TD
-    Crawler[BSE crawler] -->|announcements| ETL[Financial data processor]
-    ETL --> DB[(Postgres + MinIO)]
-    Market[Indian Stock API / Bhavcopy] --> DB
-    DB --> Engine[Ratio engine]
-    Engine --> Narrator[Rule-based narrator]
-    Engine --> Alerts[Alerts]
-    Narrator --> API[FastAPI]
+    Crawler["`BSE crawler`"] -->|"`announcements`"| ETL["`Financial data processor`"]
+    ETL --> DB[("`Postgres + object storage`")]
+    Market["`Indian Stock API / Bhavcopy`"] --> DB
+    DB --> Engine["`Ratio engine: the only verdict`"]
+    Engine --> Overlay["`Publication overlay (evaluation/): needs-review while an issue is open`"]
+    Overlay -->|"`filing_evaluations`"| DB
+    Engine --> Narrator["`Rule-based narrator, optional LLM`"]
+    Narrator --> API["`FastAPI`"]
+    Overlay --> API
+    DB --> Alerts["`Alerts: flip observation and subscriber emails`"]
     Alerts --> API
-    Engine --> API
-    API --> UI[Next.js dashboard]
+    Jobs["`Jobs: ingestion, evaluation and alert schedulers`"] --> Overlay
+    Jobs --> Alerts
+    API --> UI["`Next.js dashboard`"]
 ```
 
 Deeper maps: [`docs/ARCHITECTURE.md`](../ARCHITECTURE.md), [`docs/FLOW.md`](../FLOW.md), [`Documentations/dependency-map.md`](../../Documentations/dependency-map.md).

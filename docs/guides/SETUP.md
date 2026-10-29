@@ -9,7 +9,7 @@ cp .env.example .env          # then fill in the values; never commit .env
 pipenv install --dev          # Python 3.14
 ```
 
-**Database.** Postgres and MinIO are external. For a fresh database apply `database/schema.sql`; for an existing one apply the dated files in `database/migrations/` in order. `scripts/run_migrations.sh` does both and records applied files in `schema_migrations`.
+**Database.** Postgres and MinIO are external. For a fresh database apply `database/schema.sql`; for an existing one apply the dated files in `database/migrations/` in order. `scripts/run_migrations.sh` does both and records applied files in `schema_migrations`; with `REQUIRE_EXISTING_DB=1` (production) it refuses to create the schema on an empty database. Production runs Postgres 17 (D-029); use 17 locally too, for example `postgres:17.11-trixie`.
 
 ```bash
 createdb halallens_dev
@@ -34,7 +34,7 @@ pipenv run pytest                                   # backend; same command CI r
 cd ui && npm test && npm run lint && npm run build  # frontend
 ```
 
-Tests must not need live Postgres, MinIO, an LLM or vendor APIs.
+Tests must not need live Postgres, MinIO, an LLM or vendor APIs. The opt-in `tests/test_*_postgres.py` files run only when `HALALLENS_TEST_PG_DSN` points at a throwaway database (the docstring of `tests/test_watchlist_postgres.py` has a `docker run` line for one).
 
 ## Narrator
 

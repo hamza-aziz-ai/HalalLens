@@ -1,6 +1,6 @@
 # Subscription Enablement Plan
 
-> **Status (2026-10-29): partly done; the billing model is superseded by D-024 and D-025** (`docs/DECISIONS.md`): plans are one-time Razorpay purchases on a ledger of grants (`subscription_grants`), purchases queue behind paid time, nothing renews automatically, a reconciler settles missed webhooks and refunds, and automatic refunds run under TEST keys only. Payments run against Razorpay test keys. The remaining gaps below are not built; renewal-related items do not apply while there is no auto-renewal.
+> **Status (2026-10-29): partly done; the billing model is superseded by D-024 and D-025** (`docs/DECISIONS.md`): plans are one-time Razorpay purchases on a ledger of grants (`subscription_grants`), timed purchases queue behind paid time, Lifetime takes effect when paid over any timed time (D-024 amendment) and is discounted by the unused paid time (D-030), nothing renews automatically, a reconciler settles missed webhooks and refunds, and automatic refunds run under TEST keys only. Payments run against Razorpay test keys. The remaining gaps below are not built; renewal-related items do not apply while there is no auto-renewal.
 
 ## Current state
 

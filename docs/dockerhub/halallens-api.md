@@ -1,6 +1,6 @@
 # HalalLens API
 
-Backend of **HalalLens**: Shariah (AAOIFI-inspired) screening of BSE-listed Indian equities. A FastAPI service computes the five screening ratios with exact decimals and returns a verdict (`compliant`, `non-compliant` or `insufficient-data`), explains it, and sends compliance-flip alerts. The same image also runs the database migrations, the startup checks, the BSE ingestion and evaluation schedulers, the nightly PostgreSQL backup, and the Razorpay payment reconciler.
+Backend of **HalalLens**: Shariah (AAOIFI-inspired) screening of BSE-listed Indian equities. A FastAPI service computes the five screening ratios with exact decimals, returns a verdict (`compliant`, `non-compliant` or `insufficient-data`) and explains it. The same image also runs the database migrations, the startup checks, the BSE ingestion scheduler, the evaluation scheduler (which also emails compliance-flip alerts to subscribers), the nightly PostgreSQL backup, and the Razorpay payment reconciler.
 
 Source, docs and issues: [github.com/hamza-aziz-ai/HalalLens](https://github.com/hamza-aziz-ai/HalalLens)
 

@@ -31,16 +31,16 @@ None. `ratio_engine/amounts.py` uses only the standard library (`decimal`, `math
 | Package | Why | Note |
 |---|---|---|
 | next 16.4.3, react / react-dom 19.3.1 | dashboard framework, static export (`output: "export"`) | Upgraded together from Next 14 / React 18: Next 14.2.35 had fixable CRITICAL advisories (CVE-2026-75604, GHSA-2464-fhr4-w9xw, GHSA-2xp9-vwfh-vxw4); the runtime image never shipped Next (v0.5.2), the build stage did. Majors stay ignored by Dependabot and move together. |
-| eslint 9.39.5, eslint-config-next 16.4.3 | lint (`eslint .`, flat config `ui/eslint.config.mjs`) | Next 16 removed `next lint`. ESLint 10 is not used yet (the Next plugin set targets 9). `react-hooks/set-state-in-effect` (new) is a warning for 7 existing components until they are rewritten. |
+| eslint 9.39.5, eslint-config-next 16.4.3 | lint (`eslint .`, flat config `ui/eslint.config.mjs`) | Next 16 removed `next lint`. ESLint 10 is not used yet (the Next plugin set targets 9). `react-hooks/set-state-in-effect` (new) stays a warning; PR #219 (2026-10-29) cleared every warning, and the few effects that read the URL after hydration carry a justified disable comment. |
 | @types/jest 29.5.14 | types for the Jest 29 tests | New: without it the test files failed `tsc` (70 errors), and Next 16's build type-checks them. |
 
 ## External services
-- PostgreSQL: the `postgres:17.11-trixie` image in `docker-compose-prod.yml` (was `postgres:14` until 2026-10-29; 14 reaches end of life on 2026-11-12; D-029). Pinned to the minor, so an upgrade is a reviewed change. The API image's client tools (`pg_dump`, `pg_restore`, `psql`) are 17 from Debian trixie.
+- PostgreSQL: the `postgres:17.11-trixie` image in `docker-compose-prod.yml` (was `postgres:14` until 2026-10-29; 14 reaches end of life on 2026-11-12; D-029). Pinned to the minor, so an upgrade is a reviewed change. The API image's client tools (`pg_dump`, `pg_restore`, `psql`) are 17 from Debian trixie. The old 14 volume stays on the server as the rollback until a one-time cron job removes it on 2026-11-13.
 - Cloudflare R2: filing PDF storage and Postgres backups in production (D-016), reached through the `minio` SDK's S3 API. Free tier 10 GB, free egress.
 - Cloudflare Tunnel and Workers (free plan): the tunnel connects the VM; the `halallens-maintenance` Worker (`cloudflare/maintenance-worker.js`, deployed from the dashboard) serves the maintenance page when the origin is unreachable, 100,000 requests a day, fail open.
 - Razorpay (Test Mode): orders, webhooks, and since D-025 the reconciler's GET calls and automatic refund POSTs (TEST keys only).
 - Ollama (`ollama/ollama` image) signed in to the maintainer's ollama.com account for `gpt-oss:120b-cloud` (D-022).
-- OCI Email Delivery: SMTP for sign-up, reset and ops alerts.
+- OCI Email Delivery: SMTP for sign-up and reset links, compliance-flip alert emails to subscribers (D-031, `ALERT_EMAILS_ENABLED`, on in production since 2026-10-30) and ops alerts.
 - Data sources: BSE announcements (403 from the production server, see ASSUMPTIONS #25), the BSE and NSE daily Bhavcopy files, and the Indian Stock API (free plan, 500 requests a month, capped by `INDIAN_API_MONTHLY_LIMIT`).
 - Google OAuth: optional sign-in (D-020, D-021).
 - GitHub Container Registry and Docker Hub: published images (D-018). Docker Hub credentials are the `DOCKERHUB_TOKEN` secret in the `publish` environment.
