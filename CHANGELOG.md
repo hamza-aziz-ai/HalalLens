@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.0](https://github.com/hamza-aziz-ai/HalalLens/compare/v0.8.0...v0.9.0) (2026-10-29)
+
+
+### Features
+
+* **ui:** Products & pricing page, site footer, configurable support email, checkout cancel handling ([#178](https://github.com/hamza-aziz-ai/HalalLens/issues/178)) ([cde5a01](https://github.com/hamza-aziz-ai/HalalLens/commit/cde5a01c6e60506c63fa96ea70d116d2a86ac74f))
+
 ## [0.8.0](https://github.com/hamza-aziz-ai/HalalLens/compare/v0.7.2...v0.8.0) (2026-10-29)
 
 
