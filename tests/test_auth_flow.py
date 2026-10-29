@@ -303,9 +303,11 @@ def google(db, monkeypatch):
 
 
 @pytest.mark.parametrize("claim", [None, False, "true"])
-def test_google_requires_an_explicitly_verified_email(google, claim):
-    response = google.sign_in(email="g@example.com", sub="s1", email_verified=claim)
-    assert response.status_code == 403
+def test_google_requires_an_explicitly_verified_email(db, google, claim):
+    assert google.sign_in(email="g@example.com", sub="s1", email_verified=claim) == {
+        "error": ["google_unverified"]
+    }
+    assert db.sessions == {}
 
 
 def test_google_creates_a_verified_account_and_proves_an_admin_address(db, google):
@@ -345,20 +347,44 @@ def test_callback_in_another_browser_is_refused(db, google):
     # Login CSRF: an attacker's own state completed in the victim's browser.
     state = google.start()
     response = google.callback(state, browser=google.new_browser(), email="a@example.com", sub="s")
-    assert response.status_code == 400
+    assert _login_error(response) == "google_expired"
     assert db.sessions == {} and db.get_user_by_email("a@example.com") is None
 
 
 def test_state_works_once(db, google):
     state = google.start()
-    assert google.callback(state, email="a@example.com", sub="s").status_code == 302
-    assert google.callback(state, email="a@example.com", sub="s").status_code == 400
+    assert "token" in urlsplit(google.callback(state, email="a@example.com", sub="s").headers["location"]).fragment
+    assert _login_error(google.callback(state, email="a@example.com", sub="s")) == "google_expired"
 
 
 def test_expired_flow_is_refused(db, google):
     state = google.start()
     db.flows[0]["expires_at"] = datetime.now(timezone.utc) - timedelta(seconds=1)
-    assert google.callback(state, email="a@example.com", sub="s").status_code == 400
+    assert _login_error(google.callback(state, email="a@example.com", sub="s")) == "google_expired"
+
+
+def _login_error(response):
+    """A failed callback is a redirect to the login page, never a JSON body."""
+
+    assert response.status_code == 302
+    location = response.headers["location"]
+    assert location.startswith("https://app.example.test/login#")
+    return parse_qs(urlsplit(location).fragment)["error"][0]
+
+
+def test_google_outage_redirects_with_a_reason(db, google, monkeypatch):
+    def fail(code):
+        raise HTTPException(status_code=503, detail="Google token exchange failed")
+
+    monkeypatch.setattr(api_module, "_exchange_google_code", fail)
+    assert _login_error(google.callback(google.start(), email="a@example.com", sub="s")) == "google_unavailable"
+    assert db.sessions == {}
+
+
+def test_cancel_on_googles_page_redirects_with_a_reason(google):
+    google.start()
+    response = google.browser.get("/auth/google/callback?error=access_denied", follow_redirects=False)
+    assert _login_error(response) == "google_cancelled"
 
 
 # ---------------------------------------------------------------------------
@@ -416,7 +442,7 @@ def test_victim_cannot_be_linked_to_an_attackers_account(db, google):
     started = _start_link(google, attacker)
     response = google.callback(google.state_of(started.json()["url"]), browser=google.new_browser(),
                                email="victim@gmail.com", sub="victim-sub")
-    assert response.status_code == 400
+    assert _login_error(response) == "google_expired"
     assert db.by_email("attacker@example.com")["google_sub"] is None
 
 
@@ -425,6 +451,16 @@ def test_a_google_account_links_to_one_hallens_account_only(db, google):
     token = _signed_in(db)
     code = _link_code(google, token, email="shared@gmail.com", sub="shared-sub")
     assert _confirm_link(google, token, code).status_code == 409
+
+
+def test_failed_link_returns_to_the_account_page(db, google):
+    token = _signed_in(db)
+    started = _start_link(google, token)
+    response = google.callback(google.state_of(started.json()["url"]), email="me@gmail.com",
+                               sub="s", email_verified=False)
+    assert response.status_code == 302
+    assert response.headers["location"] == "https://app.example.test/account/#link_error=google_unverified"
+    assert db.by_email("me@example.com")["google_sub"] is None
 
 
 def test_account_without_a_password_cannot_start_a_link(db, google):
