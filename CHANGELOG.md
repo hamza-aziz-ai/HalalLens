@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.16.0](https://github.com/hamza-aziz-ai/HalalLens/compare/v0.15.1...v0.16.0) (2026-10-29)
+
+
+### Features
+
+* **billing:** a reconciler settles payments the webhook missed and applies refunds made elsewhere ([#205](https://github.com/hamza-aziz-ai/HalalLens/issues/205)) ([2638efa](https://github.com/hamza-aziz-ai/HalalLens/commit/2638efa43632a25fe44d02bd2b0d7c1caf44e223))
+
 ## [0.15.1](https://github.com/hamza-aziz-ai/HalalLens/compare/v0.15.0...v0.15.1) (2026-10-29)
 
 
