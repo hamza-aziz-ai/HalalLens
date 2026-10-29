@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.15.1](https://github.com/hamza-aziz-ai/HalalLens/compare/v0.15.0...v0.15.1) (2026-10-29)
+
+
+### Bug Fixes
+
+* **billing:** a refund applies only to the payment it refunds, recorded once by refund id ([#203](https://github.com/hamza-aziz-ai/HalalLens/issues/203)) ([399daf5](https://github.com/hamza-aziz-ai/HalalLens/commit/399daf5ec0549098a7ddbee790918e4e5fa50482))
+
 ## [0.15.0](https://github.com/hamza-aziz-ai/HalalLens/compare/v0.14.1...v0.15.0) (2026-10-29)
 
 
