@@ -1,0 +1,214 @@
+"""Billing SQL (D-024) against a real, disposable PostgreSQL.
+
+Opt-in like tests/test_auth_postgres.py: skipped unless HALALLENS_TEST_PG_DSN
+points at a throwaway database (the schema is dropped and rebuilt). Proves
+what the fake cannot: the migration keeps an existing period's exact end,
+settlement is all-or-nothing, and the per-user lock serialises concurrent
+settlements.
+"""
+
+import os
+import threading
+from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+import pytest
+
+from api.billing import fold, lifetime_held, project
+
+DSN = os.getenv("HALALLENS_TEST_PG_DSN")
+pytestmark = pytest.mark.skipif(not DSN, reason="HALALLENS_TEST_PG_DSN not set (disposable Postgres only)")
+
+ROOT = Path(__file__).resolve().parents[1]
+MIGRATION = ROOT / "database/migrations/20261029_subscription_grants.sql"
+
+
+@pytest.fixture()
+def db():
+    import psycopg2
+    from psycopg2.extras import RealDictCursor
+
+    from database.database_manager import BSEDatabaseManager
+
+    admin = psycopg2.connect(DSN)
+    admin.autocommit = True
+    with admin.cursor() as cur:
+        cur.execute("DROP SCHEMA public CASCADE; CREATE SCHEMA public;")
+        cur.execute((ROOT / "database/schema.sql").read_text(encoding="utf-8"))
+
+    @contextmanager
+    def get_connection():
+        conn = psycopg2.connect(DSN, cursor_factory=RealDictCursor)
+        try:
+            yield conn
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    manager = BSEDatabaseManager.__new__(BSEDatabaseManager)  # no pool, no startup DDL
+    manager.get_connection = get_connection
+    yield manager, admin
+    admin.close()
+
+
+def _user(admin, email="buyer@example.com"):
+    with admin.cursor() as cur:
+        cur.execute("INSERT INTO users (email, email_verified_at) VALUES (%s, NOW()) RETURNING id", (email,))
+        return cur.fetchone()[0]
+
+
+def _order(admin, user_id, order_id, plan_code):
+    with admin.cursor() as cur:
+        cur.execute(
+            "INSERT INTO razorpay_orders (order_id, user_id, amount, currency, status, payload, plan_code, interval_days) "
+            "SELECT %s, %s, price_inr * 100, 'INR', 'created', '{}'::jsonb, code, interval_days "
+            "FROM subscription_plans WHERE code = %s",
+            (order_id, user_id, plan_code),
+        )
+
+
+def _settle(manager, order_id, payment_id, **kw):
+    return manager.settle_razorpay_order(
+        order_id=order_id, payment_id=payment_id, expected_user_id=None, event_type="payment.captured",
+        payload={}, project=kw.get("project", project), lifetime_held=lifetime_held,
+    )
+
+
+def test_migration_keeps_the_existing_period_end_and_links_the_order(db):
+    manager, admin = db
+    user_id = _user(admin)
+    with admin.cursor() as cur:
+        # The pre-ledger shape: DATE renewal, no grants, terms only in the payload.
+        cur.execute("DROP TABLE subscription_grants")
+        cur.execute("ALTER TABLE users ALTER COLUMN subscription_renewal TYPE DATE")
+        cur.execute("ALTER TABLE razorpay_orders DROP COLUMN plan_code, DROP COLUMN interval_days, DROP COLUMN payment_id")
+        cur.execute(
+            "UPDATE users SET plan='annual', subscription_status='active', subscription_renewal='2027-10-29', "
+            "plan_started_at='2026-10-29 07:56:04+00' WHERE id=%s",
+            (user_id,),
+        )
+        cur.execute(
+            "INSERT INTO razorpay_orders (order_id, user_id, amount, status, payload) VALUES "
+            "('order_paid', %s, 50000, 'paid', '{\"notes\": {\"plan_code\": \"annual\"}}'), "
+            "('order_open', %s, 5000, 'created', '{\"notes\": {\"plan_code\": \"starter\"}}')",
+            (user_id, user_id),
+        )
+        cur.execute(MIGRATION.read_text(encoding="utf-8"))
+        cur.execute(MIGRATION.read_text(encoding="utf-8"))  # idempotent
+
+    grants = manager.get_subscription_grants(user_id)
+    assert len(grants) == 1 and grants[0]["source"] == "legacy" and grants[0]["order_id"] == "order_paid"
+    (segment,) = fold(grants)
+    assert segment.end == datetime(2027, 10, 29, tzinfo=timezone.utc)  # exactly the old boundary
+    order = manager.get_razorpay_order("order_open")
+    assert (order["plan_code"], order["interval_days"]) == ("starter", 30)
+
+
+def test_settlement_is_all_or_nothing(db):
+    manager, admin = db
+    user_id = _user(admin)
+    _order(admin, user_id, "order_1", "starter")
+
+    def crash(grants, now):
+        raise RuntimeError("crash after the grant insert")
+
+    with pytest.raises(RuntimeError):
+        _settle(manager, "order_1", "pay_1", project=crash)
+    assert manager.get_razorpay_order("order_1")["status"] == "created"  # still claimable
+    assert manager.get_subscription_grants(user_id) == []
+    assert _settle(manager, "order_1", "pay_1")[0] == "granted"  # the retry works
+
+
+def test_the_same_order_settles_once_under_concurrency(db):
+    manager, admin = db
+    user_id = _user(admin)
+    _order(admin, user_id, "order_1", "annual")
+    results = []
+    threads = [threading.Thread(target=lambda: results.append(_settle(manager, "order_1", "pay_1")[0])) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert sorted(results) == ["granted"] + ["settled"] * 7
+    assert len(manager.get_subscription_grants(user_id)) == 1
+
+
+def test_concurrent_purchases_stack_without_overlap(db):
+    manager, admin = db
+    user_id = _user(admin)
+    for i in range(6):
+        _order(admin, user_id, f"order_{i}", "starter")
+    threads = [threading.Thread(target=_settle, args=(manager, f"order_{i}", f"pay_{i}")) for i in range(6)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    segments = fold(manager.get_subscription_grants(user_id))
+    assert len(segments) == 6
+    for earlier, later in zip(segments, segments[1:]):
+        assert later.start == earlier.end  # back to back, no overlap, no gap
+    assert segments[-1].end - segments[0].start == timedelta(days=180)
+
+
+def test_refund_of_a_queued_purchase_keeps_the_current_one(db):
+    manager, admin = db
+    user_id = _user(admin)
+    _order(admin, user_id, "order_a", "annual")
+    _order(admin, user_id, "order_s", "starter")
+    _settle(manager, "order_a", "pay_a")
+    _settle(manager, "order_s", "pay_s")
+
+    def refund(refund_id):
+        return manager.refund_razorpay_payment(
+            order_id=None, payment_id="pay_s", refund_id=refund_id, refund_amount=5000,
+            payment_refunded_total=None, event_type="refund.processed", payload={}, project=project,
+        )[0]
+
+    assert refund("rfnd_1") == "revoked"
+    assert refund("rfnd_1") == "duplicate"
+    with admin.cursor() as cur:
+        cur.execute("SELECT plan FROM users WHERE id = %s", (user_id,))
+        assert cur.fetchone()[0] == "annual"
+    segments = fold(manager.get_subscription_grants(user_id))
+    assert segments[1].start == segments[1].end  # the refunded Starter takes no time
+
+
+def test_lifetime_turns_a_late_payment_into_refund_due(db):
+    manager, admin = db
+    user_id = _user(admin)
+    _order(admin, user_id, "order_life", "lifetime")
+    _order(admin, user_id, "order_s", "starter")
+    assert _settle(manager, "order_life", "pay_l")[0] == "granted"
+    assert _settle(manager, "order_s", "pay_s")[0] == "refund_due"
+    assert manager.get_razorpay_order("order_s")["status"] == "refund_due"
+    assert len(manager.get_subscription_grants(user_id)) == 1
+
+
+def test_lifetime_and_another_purchase_racing_never_strand_money(db):
+    # Without the per-user lock both settle, and the Starter grant lands behind
+    # Lifetime where it can never run: paid for, worth nothing, nobody told.
+    manager, admin = db
+    for round_ in range(15):
+        user_id = _user(admin, f"race{round_}@example.com")
+        _order(admin, user_id, f"life_{round_}", "lifetime")
+        _order(admin, user_id, f"start_{round_}", "starter")
+        barrier = threading.Barrier(2)
+
+        def run(order_id, payment_id):
+            barrier.wait()
+            _settle(manager, order_id, payment_id)
+
+        threads = [
+            threading.Thread(target=run, args=(f"life_{round_}", f"pay_l{round_}")),
+            threading.Thread(target=run, args=(f"start_{round_}", f"pay_s{round_}")),
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        grants = manager.get_subscription_grants(user_id)
+        plans = [g["plan_code"] for g in sorted(grants, key=lambda g: (g["allocated_at"], g["id"]))]
+        assert plans in (["starter", "lifetime"], ["lifetime"]), plans

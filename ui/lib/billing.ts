@@ -1,5 +1,5 @@
 import { request } from "./api";
-import type { BillingPlan, RazorpayOrderResponse } from "./types";
+import type { BillingPlan, Entitlement, RazorpayOrderResponse } from "./types";
 
 export type RazorpayPaymentResult = {
   razorpay_order_id: string;
@@ -9,6 +9,16 @@ export type RazorpayPaymentResult = {
 
 export async function fetchBillingPlans(): Promise<BillingPlan[]> {
   return request<BillingPlan[]>("/billing/plans");
+}
+
+export async function fetchEntitlement(): Promise<Entitlement> {
+  return request<Entitlement>("/billing/entitlement");
+}
+
+/** Button label for buying `plan` while `currentRank` is running (0: nothing running). */
+export function purchaseLabel(plan: BillingPlan, currentRank: number): string {
+  if (currentRank === 0 || plan.rank > currentRank) return "Upgrade";
+  return plan.rank < currentRank ? "Switch" : "Extend";
 }
 
 export async function createRazorpayOrder(

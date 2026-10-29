@@ -75,6 +75,7 @@ from config import (
     RATE_LIMIT_WRITE_PER_HOUR,
     TRUST_PROXY_HEADERS,
 )
+from api import billing
 from api.mailer import send_email
 from api.security import (
     RateLimitRule,
@@ -212,7 +213,7 @@ class UserProfile(BaseModel):
     email: str
     plan: str
     subscription_status: str
-    subscription_renewal: Optional[date] = None
+    subscription_renewal: Optional[datetime] = None
     trial_used: bool = False
     full_name: Optional[str] = None
     avatar_url: Optional[str] = None
@@ -294,6 +295,27 @@ class BillingPlan(BaseModel):
     trial_days: int
     features: List[str]
     is_active: bool
+    rank: int = 0
+
+
+class EntitlementSegment(BaseModel):
+    plan_code: str
+    source: str
+    start: datetime
+    end: Optional[datetime] = None  # None: Lifetime
+
+
+class EntitlementResponse(BaseModel):
+    plan: str
+    subscription_status: str
+    #: Current and queued paid periods, in the order they run.
+    segments: List[EntitlementSegment]
+    #: When a purchase made now would start (end of the paid chain, or now).
+    next_purchase_starts: datetime
+    #: Lifetime is active or scheduled: it already covers every plan.
+    purchases_blocked: bool
+    #: Every plan is a one-time purchase; nothing renews automatically.
+    auto_renewal: bool = False
 
 
 class RazorpayOrderRequest(BaseModel):
@@ -791,33 +813,44 @@ def _ensure_razorpay_enabled() -> None:
         raise HTTPException(status_code=503, detail="Billing not configured")
 
 
+def _utcnow() -> datetime:
+    """Clock for entitlement checks (a seam the billing tests move forward)."""
+
+    return datetime.now(timezone.utc)
+
+
 def _subscription_active(session: Dict[str, Any]) -> bool:
+    """Paid access for this session (admins always).
+
+    users.plan / subscription_renewal mirror the grants (D-024, api/billing.py).
+    While the mirrored period runs, no query is needed. Once it has ended the
+    next queued grant may have started, so the projection is rebuilt from the
+    grants under the user lock and copied into ``session``.
+    """
+
     if session.get("is_admin"):
         return True
     plan = (session.get("plan") or "free").lower()
     status = (session.get("subscription_status") or "inactive").lower()
-    if plan == "free" or status not in {"active", "trialing"}:
+    if plan == "free":
         return False
-    if plan == "lifetime":
-        return True
-    renewal = session.get("subscription_renewal")
-    if isinstance(renewal, date) and not isinstance(renewal, datetime):
-        renewal = datetime.combine(renewal, datetime.min.time()).replace(tzinfo=timezone.utc)
-    if isinstance(renewal, datetime):
-        if renewal.tzinfo is None:
-            renewal = renewal.replace(tzinfo=timezone.utc)
-        if renewal < datetime.now(timezone.utc):
-            user_id = session.get("user_id")
-            if user_id:
-                _get_db().update_user_plan(
-                    user_id=user_id,
-                    plan="free",
-                    subscription_status="inactive",
-                    subscription_renewal=None,
-                    plan_started_at=None,
-                )
-            return False
-    return True
+    if status in {"active", "trialing"}:
+        if plan == "lifetime":
+            return True
+        renewal = session.get("subscription_renewal")
+        if isinstance(renewal, date) and not isinstance(renewal, datetime):
+            renewal = datetime.combine(renewal, datetime.min.time()).replace(tzinfo=timezone.utc)
+        if isinstance(renewal, datetime):
+            if renewal.tzinfo is None:
+                renewal = renewal.replace(tzinfo=timezone.utc)
+            if renewal > _utcnow():
+                return True
+    user_id = session.get("user_id")
+    if not user_id:
+        return False
+    projection = _get_db().refresh_entitlement(user_id, billing.project)
+    session.update(projection)
+    return projection["plan"] != "free"
 
 
 def _require_paid_feature(
@@ -1039,6 +1072,8 @@ def _create_razorpay_order(
         currency=order.get("currency", "INR"),
         status=order.get("status", "created"),
         payload=order,
+        plan_code=plan["code"],
+        interval_days=int(plan.get("interval_days") or 0),
     )
     return order
 
@@ -2816,6 +2851,7 @@ async def auth_me(authorization: Optional[str] = Header(None)) -> UserProfile:
     """Return the authenticated user's profile."""
 
     _, session = _require_session(authorization)
+    _subscription_active(session)  # a queued period may have started
     profile_row = _get_db().get_user_by_id(session["user_id"]) or {
         "id": session["user_id"],
         "email": session["email"],
@@ -2881,6 +2917,7 @@ async def list_billing_plans() -> List[BillingPlan]:
             trial_days=int(plan.get("trial_days") or 0),
             features=list(plan.get("features") or []),
             is_active=bool(plan["is_active"]),
+            rank=int(plan.get("rank") or 0),
         )
         for plan in plans
     ]
@@ -2904,29 +2941,40 @@ async def start_billing_trial(
     if current_plan != "free" and current_status in {"active", "trialing"}:
         raise HTTPException(status_code=409, detail="Active subscription already exists")
 
-    now = datetime.now(timezone.utc)
-    renewal = now + timedelta(days=trial_days)
-    _get_db().upsert_user_subscription(
+    result, projection = _get_db().start_trial_grant(
         user_id=session["user_id"],
         plan_code=plan["code"],
-        provider="razorpay",
-        status="trialing",
-        current_period_start=now,
-        current_period_end=renewal,
-        cancel_at_period_end=True,
+        trial_days=trial_days,
+        project=billing.project,
     )
-    _get_db().update_user_plan(
-        user_id=session["user_id"],
-        plan=plan["code"],
-        subscription_status="trialing",
-        subscription_renewal=renewal,
-        plan_started_at=now,
-        trial_used=True,
-    )
+    if result == "used":
+        raise HTTPException(status_code=409, detail="Trial already used")
+    if result == "active":
+        raise HTTPException(status_code=409, detail="Active subscription already exists")
     return SubscriptionStatusResponse(
-        plan=plan["code"],
-        subscription_status="trialing",
-        subscription_renewal=renewal,
+        plan=projection["plan"],
+        subscription_status=projection["subscription_status"],
+        subscription_renewal=projection["subscription_renewal"],
+    )
+
+
+@app.get("/billing/entitlement", response_model=EntitlementResponse)
+async def billing_entitlement(authorization: Optional[str] = Header(None)) -> EntitlementResponse:
+    """Current and queued paid periods, and when a new purchase would start."""
+
+    _, session = _require_session(authorization)
+    _subscription_active(session)
+    grants = _get_db().get_subscription_grants(session["user_id"])
+    now = _utcnow()
+    return EntitlementResponse(
+        plan=session.get("plan") or "free",
+        subscription_status=session.get("subscription_status") or "inactive",
+        segments=[
+            EntitlementSegment(plan_code=s.plan_code, source=s.source, start=s.start, end=s.end)
+            for s in billing.upcoming(billing.fold(grants), now)
+        ],
+        next_purchase_starts=billing.purchase_start(grants, now),
+        purchases_blocked=billing.lifetime_held(grants),
     )
 
 
@@ -2940,6 +2988,9 @@ async def create_razorpay_order(
     plan = _get_db().get_subscription_plan(plan_code)
     if not plan or not plan.get("is_active"):
         raise HTTPException(status_code=404, detail="Plan not available")
+    if billing.lifetime_held(_get_db().get_subscription_grants(session["user_id"])):
+        # Settlement re-checks this under the user lock (two checkouts can be open).
+        raise HTTPException(status_code=409, detail="Lifetime access already covers every plan.")
     order = _create_razorpay_order(
         user_id=session["user_id"],
         email=session["email"],
@@ -2962,120 +3013,86 @@ async def create_razorpay_order(
     )
 
 
-#: Order states that may still be converted into a paid subscription. Anything
-#: else means the order was already settled (or refunded) and must not grant a
-#: second billing period.
-RAZORPAY_CLAIMABLE_STATES = ("created", "attempted")
-
-#: Webhook events that grant access, and those that revoke it.
+#: Webhook events that grant access. Refunds (refund.processed) revoke only the
+#: grant their order created; nothing else revokes access.
 RAZORPAY_GRANT_EVENTS = {"payment.captured", "order.paid"}
-RAZORPAY_REVOKE_EVENTS = {
-    "refund.processed",
-    "subscription.cancelled",
-    "subscription.halted",
-}
+
+RAZORPAY_PAYMENT_ID_RE = re.compile(r"^pay_[A-Za-z0-9]{6,40}$")
 
 
-def _plan_code_for_order(order: Dict[str, Any]) -> str:
-    notes = (order.get("payload") or {}).get("notes") or {}
-    return notes.get("plan_code") or SUBSCRIPTION_PLAN_CODE
+def _payment_matches_order(payment: Dict[str, Any], order: Dict[str, Any]) -> bool:
+    """A captured payment for exactly this order's amount and currency."""
 
-
-def _activate_subscription(
-    *, user_id: int, plan: Dict[str, Any], now: Optional[datetime] = None
-) -> Tuple[str, Optional[datetime]]:
-    """Grant a paid period for ``plan``. Returns ``(plan_code, renewal)``."""
-
-    moment = now or datetime.now(timezone.utc)
-    plan_code = plan["code"]
-    interval_days = int(plan.get("interval_days") or 0)
-    renewal = None if interval_days <= 0 else moment + timedelta(days=interval_days)
-    trial_days = int(plan.get("trial_days") or 0)
-    db = _get_db()
-    db.upsert_user_subscription(
-        user_id=user_id,
-        plan_code=plan_code,
-        provider="razorpay",
-        status="active",
-        current_period_start=moment,
-        current_period_end=renewal,
-        cancel_at_period_end=False,
+    try:
+        amount = int(payment.get("amount"))
+    except (TypeError, ValueError):
+        return False
+    return (
+        payment.get("status") == "captured"
+        and payment.get("order_id") == order["order_id"]
+        and amount == int(order["amount"])
+        and str(payment.get("currency") or "").upper() == str(order.get("currency") or "INR").upper()
     )
-    db.update_user_plan(
-        user_id=user_id,
-        plan=plan_code,
-        subscription_status="active",
-        subscription_renewal=renewal,
-        plan_started_at=moment,
-        # A paid conversion consumes the free trial so it cannot be claimed
-        # again after the period lapses.
-        trial_used=True if trial_days > 0 else None,
-    )
-    return plan_code, renewal
 
 
-def _revoke_subscription(user_id: int, *, status: str = "inactive") -> None:
-    """Drop a user back to the free plan (refund, chargeback, cancellation)."""
-
-    db = _get_db()
-    db.update_user_plan(
-        user_id=user_id,
-        plan="free",
-        subscription_status=status,
-        subscription_renewal=None,
-        plan_started_at=None,
-    )
+def _fetch_razorpay_payment(payment_id: str) -> Dict[str, Any]:
+    try:
+        resp = requests.get(
+            f"{RAZORPAY_API_BASE}/payments/{payment_id}",
+            auth=(RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET),
+            timeout=15,
+        )
+        resp.raise_for_status()
+    except requests.RequestException as exc:
+        api_logger.error("Razorpay payment fetch failed: %s", exc)
+        raise HTTPException(
+            status_code=503,
+            detail="Could not confirm the payment with Razorpay yet. If money was taken, "
+            "access is added automatically within a few minutes.",
+        )
+    return resp.json()
 
 
 def _settle_razorpay_order(
     *,
     order_id: str,
-    payment_id: Optional[str],
+    payment_id: str,
     expected_user_id: Optional[int] = None,
     event_type: str,
     event_payload: Dict[str, Any],
-) -> Optional[Tuple[int, str, Optional[datetime]]]:
-    """Convert a paid Razorpay order into a subscription period, exactly once.
+) -> Tuple[str, Optional[Dict[str, Any]]]:
+    """Turn a captured payment into a grant, exactly once (D-024).
 
-    Both the browser-side verification call and the server-to-server webhook
-    funnel through here. The conditional status update acts as the claim: the
-    loser of the race gets ``None`` back and skips the grant, so a user who
-    completes checkout is never billed one period and given two - nor, if the
-    browser call is lost, given none.
+    Browser verification and the webhook both land here; the database does
+    the claim, grant, event and projection in one transaction under the user
+    lock, so the loser of a race gets "settled" and nothing is granted twice,
+    and a crash never leaves a paid order without access.
     """
 
-    db = _get_db()
-    claimed = db.update_razorpay_order_status(
-        order_id, "paid", only_if_status=RAZORPAY_CLAIMABLE_STATES
-    )
-    if claimed is None:
-        return None
-    if expected_user_id is not None and claimed.get("user_id") != expected_user_id:
-        raise HTTPException(status_code=404, detail="Order not found")
-
-    user_id = claimed["user_id"]
-    plan_code = _plan_code_for_order(claimed)
-    plan = db.get_subscription_plan(plan_code)
-    if not plan:
-        raise HTTPException(status_code=404, detail="Plan not found")
-
-    db.record_payment_event(
-        user_id=user_id,
-        provider="razorpay",
+    result, info = _get_db().settle_razorpay_order(
+        order_id=order_id,
+        payment_id=payment_id,
+        expected_user_id=expected_user_id,
         event_type=event_type,
-        event_id=payment_id,
         payload=event_payload,
+        project=billing.project,
+        lifetime_held=billing.lifetime_held,
     )
-    granted_plan, renewal = _activate_subscription(user_id=user_id, plan=plan)
-    api_logger.info(
-        "Subscription granted user_id=%s plan=%s order_id=%s payment_id=%s via=%s",
-        user_id,
-        granted_plan,
-        order_id,
-        payment_id,
-        event_type,
-    )
-    return user_id, granted_plan, renewal
+    if result == "missing":
+        raise HTTPException(status_code=404, detail="Order not found")
+    if result == "granted":
+        api_logger.info(
+            "Subscription granted order_id=%s payment_id=%s plan=%s via=%s",
+            order_id, payment_id, info["plan"], event_type,
+        )
+    elif result == "refund_due":
+        # Two checkouts were open and Lifetime won: keep the money on record
+        # and refund it by hand (README_ops, Billing).
+        api_logger.error(
+            "REFUND DUE: order_id=%s payment_id=%s paid while Lifetime covers user_id=%s",
+            order_id, payment_id, info["user_id"],
+        )
+    return result, info
 
 
 def _current_subscription_response(user_id: int) -> SubscriptionStatusResponse:
@@ -3096,6 +3113,8 @@ async def verify_razorpay_payment(
     order = _get_db().get_razorpay_order(payload.order_id)
     if not order or order.get("user_id") != session.get("user_id"):
         raise HTTPException(status_code=404, detail="Order not found")
+    if not RAZORPAY_PAYMENT_ID_RE.match(payload.payment_id):
+        raise HTTPException(status_code=400, detail="Invalid payment id")
     message = f"{payload.order_id}|{payload.payment_id}"
     if not _verify_razorpay_signature(message, payload.signature):
         api_logger.warning(
@@ -3104,60 +3123,51 @@ async def verify_razorpay_payment(
             payload.order_id,
         )
         raise HTTPException(status_code=400, detail="Invalid payment signature")
+    if order.get("status") not in ("created", "attempted"):
+        # Already settled (usually the webhook landed first).
+        return _current_subscription_response(session["user_id"])
 
-    settled = _settle_razorpay_order(
+    # The checkout signature proves the pairing, not that money was captured.
+    payment = _fetch_razorpay_payment(payload.payment_id)
+    if not _payment_matches_order(payment, order):
+        api_logger.warning(
+            "Razorpay payment not settled order_id=%s payment_id=%s status=%s",
+            payload.order_id, payload.payment_id, payment.get("status"),
+        )
+        raise HTTPException(
+            status_code=409,
+            detail="Razorpay has not confirmed this payment yet. If money was taken, "
+            "access is added automatically within a few minutes.",
+        )
+
+    result, _ = _settle_razorpay_order(
         order_id=payload.order_id,
         payment_id=payload.payment_id,
         expected_user_id=session["user_id"],
         event_type="payment.verified",
-        event_payload={
-            "order_id": payload.order_id,
-            "payment_id": payload.payment_id,
-        },
+        event_payload={"order_id": payload.order_id, "payment_id": payload.payment_id},
     )
-    if settled is None:
-        # Already settled (usually the webhook landed first). Report the state
-        # the user actually has rather than granting another period.
-        return _current_subscription_response(session["user_id"])
-
-    _, plan_code, renewal = settled
-    return SubscriptionStatusResponse(
-        plan=plan_code,
-        subscription_status="active",
-        subscription_renewal=renewal,
-    )
+    if result == "refund_due":
+        raise HTTPException(
+            status_code=409,
+            detail="Lifetime access already covers your account, so this payment will be refunded.",
+        )
+    return _current_subscription_response(session["user_id"])
 
 
 @app.post("/billing/cancel", response_model=SubscriptionStatusResponse)
 async def cancel_subscription(
     authorization: Optional[str] = Header(None),
 ) -> SubscriptionStatusResponse:
-    """Stop auto-renewal; paid access continues until the period ends."""
+    """Nothing to cancel: every plan is a one-time purchase that never renews.
+
+    Paid time always runs to its end; refunds go through support. Kept so
+    existing clients get the current state instead of an error.
+    """
 
     _, session = _require_session(authorization)
-    user_id = session["user_id"]
-    row = _get_db().get_user_by_id(user_id) or {}
-    plan_code = (row.get("plan") or "free").lower()
-    status = (row.get("subscription_status") or "inactive").lower()
-    if plan_code == "free" or status not in {"active", "trialing"}:
-        raise HTTPException(status_code=409, detail="No active subscription to cancel")
-
-    renewal = row.get("subscription_renewal")
-    _get_db().upsert_user_subscription(
-        user_id=user_id,
-        plan_code=plan_code,
-        provider="razorpay",
-        status=status,
-        current_period_start=row.get("plan_started_at"),
-        current_period_end=renewal if isinstance(renewal, (date, datetime)) else None,
-        cancel_at_period_end=True,
-    )
-    api_logger.info("Subscription cancellation scheduled user_id=%s", user_id)
-    return SubscriptionStatusResponse(
-        plan=plan_code,
-        subscription_status=status,
-        subscription_renewal=renewal,
-    )
+    _subscription_active(session)
+    return _current_subscription_response(session["user_id"])
 
 
 @app.post("/webhooks/razorpay")
@@ -3186,44 +3196,53 @@ async def razorpay_webhook(request: Request) -> Dict[str, str]:
     payment_id = payment_entity.get("id") or event.get("id")
 
     db = _get_db()
-    order = db.get_razorpay_order(order_id) if order_id else None
-    user_id = order.get("user_id") if order else None
 
-    if event_type in RAZORPAY_GRANT_EVENTS and order_id:
-        settled = _settle_razorpay_order(
-            order_id=order_id,
-            payment_id=payment_id,
-            event_type=event_type,
-            event_payload=event,
-        )
-        if settled is not None:
-            return {"status": "granted"}
-        # Order already settled elsewhere; fall through to record the event.
-
-    if event_type in RAZORPAY_REVOKE_EVENTS and user_id:
-        # Key the revocation by the refund (or Razorpay's per-event id), never by
-        # the payment id: the purchase was already recorded under the payment id,
-        # so reusing it hit the (provider, event_id) unique index, the insert was
-        # skipped and the plan was never revoked.
+    if event_type == "refund.processed":
         refund_entity = (entities.get("refund") or {}).get("entity") or {}
-        revoke_key = (
+        # Keyed by the refund id, never the payment id (the purchase is already
+        # recorded under the payment id).
+        refund_id = (
             refund_entity.get("id")
             or request.headers.get("X-Razorpay-Event-Id")
             or f"{event_type}:{payment_id}"
         )
-        recorded = db.record_payment_event(
-            user_id=user_id,
-            provider="razorpay",
+        result, info = db.refund_razorpay_payment(
+            order_id=order_id,
+            payment_id=refund_entity.get("payment_id") or payment_entity.get("id"),
+            refund_id=refund_id,
+            refund_amount=int(refund_entity.get("amount") or 0),
+            payment_refunded_total=payment_entity.get("amount_refunded"),
             event_type=event_type,
-            event_id=revoke_key,
             payload=event,
+            project=billing.project,
         )
-        if recorded:
-            _revoke_subscription(user_id, status="cancelled")
-            api_logger.info(
-                "Subscription revoked user_id=%s event=%s", user_id, event_type
+        if result == "no_grant":
+            api_logger.warning(
+                "Refund %s for order %s matches no grant: review by hand", refund_id, info["order_id"]
             )
-        return {"status": "revoked"}
+        elif result in ("revoked", "partial"):
+            api_logger.info("Refund %s applied: %s", refund_id, result)
+        return {"status": result}
+
+    order = db.get_razorpay_order(order_id) if order_id else None
+    user_id = order.get("user_id") if order else None
+
+    if event_type in RAZORPAY_GRANT_EVENTS and order:
+        if _payment_matches_order(payment_entity, order):
+            result, _ = _settle_razorpay_order(
+                order_id=order_id,
+                payment_id=payment_id,
+                event_type=event_type,
+                event_payload=event,
+            )
+            if result in ("granted", "refund_due"):
+                return {"status": result}
+            # Already settled elsewhere; fall through to record the event.
+        else:
+            api_logger.error(
+                "Razorpay %s does not match order %s (amount, currency or status): not granted",
+                event_type, order_id,
+            )
 
     db.record_payment_event(
         user_id=user_id,

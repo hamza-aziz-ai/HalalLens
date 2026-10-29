@@ -126,6 +126,7 @@ ROUTES = {
         {"order_id": "o", "payment_id": "p", "signature": "s"},
     ),
     ("POST", "/billing/cancel"): ("authenticated", "/billing/cancel", None),
+    ("GET", "/billing/entitlement"): ("authenticated", "/billing/entitlement", None),
     # Public by design: authenticity comes from the Razorpay HMAC signature.
     ("POST", "/webhooks/razorpay"): ("public", "/webhooks/razorpay", {}),
     ("POST", "/watchlist"): ("paid", "/watchlist", {"user_id": "someone", "symbol": "ABC"}),
