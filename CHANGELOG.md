@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.18.0](https://github.com/hamza-aziz-ai/HalalLens/compare/v0.17.4...v0.18.0) (2026-10-29)
+
+
+### Features
+
+* **ui:** GitHub badge in the top-right corner, light on dark and dark on light ([#227](https://github.com/hamza-aziz-ai/HalalLens/issues/227)) ([82ea188](https://github.com/hamza-aziz-ai/HalalLens/commit/82ea1887c25ea104adccee2479f6c7cce04b163f))
+
 ## [0.17.4](https://github.com/hamza-aziz-ai/HalalLens/compare/v0.17.3...v0.17.4) (2026-10-29)
 
 
