@@ -8,12 +8,26 @@ errors to HTTP itself.
 
 from __future__ import annotations
 
+import time
 from typing import Any, Dict, List, Optional
 
 import requests
 
 API_BASE = "https://api.razorpay.com/v1"
 PAGE_SIZE = 100  # Razorpay's maximum `count` for list endpoints
+GET_ATTEMPTS = 3
+RETRY_STATUSES = (429, 502, 503, 504)
+MAX_RETRY_DELAY = 10.0  # seconds
+
+
+def _retry_delay(resp, attempt: int) -> float:
+    """Seconds to wait before the next GET: Retry-After when numeric, else 1 s then 2 s."""
+
+    try:
+        delay = float(resp.headers.get("Retry-After", ""))
+    except (TypeError, ValueError):
+        delay = 2.0**attempt
+    return min(max(delay, 0.0), MAX_RETRY_DELAY)
 
 
 class RazorpayError(Exception):
@@ -36,10 +50,16 @@ class RazorpayClient:
         self.timeout = timeout
 
     def _get(self, path: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        try:
-            resp = requests.get(f"{self.base}{path}", params=params, auth=self.auth, timeout=self.timeout)
-        except requests.RequestException as exc:
-            raise RazorpayError(f"GET {path}: {exc}") from exc
+        # GETs are safe to repeat: a rate limit (429) or a brief upstream error
+        # gets two more tries before the caller sees it, waiting as Retry-After asks.
+        for attempt in range(GET_ATTEMPTS):
+            try:
+                resp = requests.get(f"{self.base}{path}", params=params, auth=self.auth, timeout=self.timeout)
+            except requests.RequestException as exc:
+                raise RazorpayError(f"GET {path}: {exc}") from exc
+            if resp.status_code not in RETRY_STATUSES or attempt == GET_ATTEMPTS - 1:
+                break
+            time.sleep(_retry_delay(resp, attempt))
         return self._parse(f"GET {path}", resp)
 
     @staticmethod
