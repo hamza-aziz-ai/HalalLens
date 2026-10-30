@@ -56,4 +56,16 @@ for path in /api/health /api/openapi.json / /products/; do
   printf '%-18s %s\n' "$path" "$code"
   [ "$code" = 200 ] || fail=1
 done
+
+# Pulled release images pile up (one API + UI pair per deploy). After a good
+# deploy keep the running tag and the two newest others (rollback targets);
+# an older tag is simply pulled again if it is ever deployed.
+if [ "$fail" = 0 ] && [ -n "$IMAGE_REPOSITORY" ]; then
+  echo "== removing old release images"
+  for name in halallens-api halallens-ui; do
+    docker images --format '{{.Repository}}:{{.Tag}}' "$IMAGE_REPOSITORY/$name" \
+      | grep -vxF "$IMAGE_REPOSITORY/$name:$TAG" | tail -n +3 \
+      | xargs -r docker rmi >/dev/null || true
+  done
+fi
 exit $fail
