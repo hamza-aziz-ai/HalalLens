@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.20.1](https://github.com/hamza-aziz-ai/HalalLens/compare/v0.20.0...v0.20.1) (2026-10-30)
+
+
+### Bug Fixes
+
+* **billing:** retry Razorpay GETs on a rate limit before stopping the reconciler ([#240](https://github.com/hamza-aziz-ai/HalalLens/issues/240)) ([40f7da5](https://github.com/hamza-aziz-ai/HalalLens/commit/40f7da5a554bd14a2d9baf2d64d7a6f264faf45b))
+
 ## [0.20.0](https://github.com/hamza-aziz-ai/HalalLens/compare/v0.19.1...v0.20.0) (2026-10-29)
 
 
