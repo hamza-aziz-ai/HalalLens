@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.20.2](https://github.com/hamza-aziz-ai/HalalLens/compare/v0.20.1...v0.20.2) (2026-10-30)
+
+
+### Bug Fixes
+
+* **deploy:** remove old release images after a successful deploy ([#242](https://github.com/hamza-aziz-ai/HalalLens/issues/242)) ([28b1697](https://github.com/hamza-aziz-ai/HalalLens/commit/28b1697008faa3e43bed9bca7770d161964d4461))
+
 ## [0.20.1](https://github.com/hamza-aziz-ai/HalalLens/compare/v0.20.0...v0.20.1) (2026-10-30)
 
 
