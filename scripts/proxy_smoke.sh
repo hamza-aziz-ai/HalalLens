@@ -71,7 +71,10 @@ check "POST /api/halal-score" 200 "$(status -H 'Content-Type: application/json' 
 check "GET / (dashboard)" 200 "$(status "$BASE/")"
 for h in "x-content-type-options: nosniff" "x-frame-options: DENY" "referrer-policy: strict-origin-when-cross-origin"; do
   for path in / /api/health; do
-    curl -s -D - -o /dev/null "$BASE$path" | tr -d '\r' | grep -qi "^$h$" || fail "$path lacks header $h"
+    # Into a variable first: grep -q in a pipe can exit before tr finishes,
+    # and with pipefail the SIGPIPE in tr read as a missing header.
+    headers=$(curl -s -D - -o /dev/null "$BASE$path" | tr -d '\r')
+    grep -qi "^$h$" <<<"$headers" || fail "$path lacks header $h"
   done
 done
 echo "ok   security headers on pages and API"
