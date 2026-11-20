@@ -69,6 +69,12 @@ check "POST /api/halal-score" 200 "$(status -H 'Content-Type: application/json' 
   -d '{"snapshot":{"symbol":"ABC","filing_date":"2026-01-01T00:00:00"},"market_data":{"market_cap":1000}}' \
   "$BASE/api/halal-score")"
 check "GET / (dashboard)" 200 "$(status "$BASE/")"
+for h in "x-content-type-options: nosniff" "x-frame-options: DENY" "referrer-policy: strict-origin-when-cross-origin"; do
+  for path in / /api/health; do
+    curl -s -D - -o /dev/null "$BASE$path" | tr -d '\r' | grep -qi "^$h$" || fail "$path lacks header $h"
+  done
+done
+echo "ok   security headers on pages and API"
 check "GET /login/" 200 "$(status "$BASE/login/")"
 check "policy page redirect keeps working" "308" "$(status "$BASE/terms")"
 grep -q '"/api"\|/api/' <(curl -s "$BASE/" ; for f in $(curl -s "$BASE/" | grep -o '/_next/static/[^"]*\.js'); do curl -s "$BASE$f"; done) \

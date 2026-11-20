@@ -24,6 +24,20 @@
 {$CADDY_SITE_ADDRESS} {
   encode zstd gzip
 
+  # Baseline browser hardening on every response (pages, API, error pages).
+  # HSTS only takes effect over HTTPS (Cloudflare in tunnel mode, Caddy in
+  # tls mode). No Content-Security-Policy yet: the static export and the
+  # theme script are inline and Razorpay loads its checkout script, so a CSP
+  # needs hashes and a report endpoint first (D-032).
+  header {
+    Strict-Transport-Security "max-age=15552000"
+    X-Content-Type-Options nosniff
+    X-Frame-Options DENY
+    Referrer-Policy strict-origin-when-cross-origin
+    Permissions-Policy "camera=(), microphone=(), geolocation=()"
+    -Server
+  }
+
   redir /api /api/ 308
 
   # The prefix is stripped here; uvicorn runs with --root-path /api so the API's
