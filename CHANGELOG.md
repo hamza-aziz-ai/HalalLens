@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.20.3](https://github.com/hamza-aziz-ai/HalalLens/compare/v0.20.2...v0.20.3) (2026-11-20)
+
+
+### Bug Fixes
+
+* **narrator:** tidy the rule-based Explain-Why text ([#247](https://github.com/hamza-aziz-ai/HalalLens/issues/247)) ([362f1f6](https://github.com/hamza-aziz-ai/HalalLens/commit/362f1f6d0258ffc3ce998b7700add0a7cfa7cb9e))
+
 ## [0.20.2](https://github.com/hamza-aziz-ai/HalalLens/compare/v0.20.1...v0.20.2) (2026-10-30)
 
 
