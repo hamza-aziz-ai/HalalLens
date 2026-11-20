@@ -52,11 +52,11 @@
       },
       "summary": "SAMPLE-A is compliant with AAOIFI screens for the filing dated 2026-03-31.",
       "bullets": [
-        "Debt to market cap is 15.00% vs 30% cap ( within limits ).",
-        "Cash to market cap is 8.00% vs 30% cap ( within limits ).",
-        "Non-permissible income ratio is 2.00% vs 5% cap ( within limits ).",
-        "Receivables To Market Cap is 20.00% vs 67% cap ( within limits ).",
-        "Liquid Assets To Market Cap is 15.00% vs 49% cap ( within limits )."
+        "Debt to market cap is 15.00% vs 30% cap (within limits).",
+        "Cash to market cap is 8.00% vs 30% cap (within limits).",
+        "Non-permissible income ratio is 2.00% vs 5% cap (within limits).",
+        "Receivables to market cap is 20.00% vs 67% cap (within limits).",
+        "Liquid assets to market cap is 15.00% vs 49% cap (within limits)."
       ]
     },
     {
@@ -108,11 +108,11 @@
       },
       "summary": "SAMPLE-B is not compliant with AAOIFI screens for the filing dated 2026-03-31.",
       "bullets": [
-        "Debt to market cap is 65.00% vs 30% cap ( above limits ).",
-        "Cash to market cap is 11.25% vs 30% cap ( within limits ).",
-        "Non-permissible income ratio is 30.42% vs 5% cap ( above limits ).",
-        "Receivables To Market Cap is 37.50% vs 67% cap ( within limits ).",
-        "Liquid Assets To Market Cap is 25.00% vs 49% cap ( within limits )."
+        "Debt to market cap is 65.00% vs 30% cap (above limits).",
+        "Cash to market cap is 11.25% vs 30% cap (within limits).",
+        "Non-permissible income ratio is 30.42% vs 5% cap (above limits).",
+        "Receivables to market cap is 37.50% vs 67% cap (within limits).",
+        "Liquid assets to market cap is 25.00% vs 49% cap (within limits)."
       ]
     }
   ]
