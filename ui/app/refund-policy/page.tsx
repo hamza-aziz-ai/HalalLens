@@ -43,7 +43,7 @@ export default function RefundPolicyPage() {
         <h2 className={policyTitleClass}>How to request</h2>
         <p className={`${policyBodyClass} mt-3`}>
           Email{" "}
-          <SupportEmail className="text-cyan-200 hover:text-cyan-100" />{" "}
+          <SupportEmail className="text-brand hover:underline" />{" "}
           with your order ID and registered email. We respond within 3 business
           days.
         </p>

@@ -4,7 +4,7 @@ import { useState } from "react";
 import clsx from "clsx";
 
 const inputClass =
-  "w-full rounded-lg border border-white/10 bg-white/10 px-3 py-2 text-sm text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-cyan-400/60";
+  "w-full rounded-lg border border-line bg-surface-2 px-3 py-2 text-sm text-fg placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-brand/60";
 
 /** Password + confirmation form shared by the sign-up and reset pages. */
 export function SetPasswordForm({
@@ -41,9 +41,9 @@ export function SetPasswordForm({
 
   return (
     <div className="space-y-3 text-left">
-      <h1 className="text-xl font-semibold text-white">{title}</h1>
-      <p className="text-sm text-slate-300">{intro}</p>
-      <label className="text-xs font-semibold uppercase text-slate-400">New password</label>
+      <h1 className="text-xl font-semibold text-fg">{title}</h1>
+      <p className="text-sm text-muted">{intro}</p>
+      <label className="text-xs font-semibold uppercase text-muted">New password</label>
       <input
         className={inputClass}
         type="password"
@@ -51,7 +51,7 @@ export function SetPasswordForm({
         value={password}
         onChange={(e) => setPassword(e.target.value)}
       />
-      <label className="text-xs font-semibold uppercase text-slate-400">Repeat password</label>
+      <label className="text-xs font-semibold uppercase text-muted">Repeat password</label>
       <input
         className={inputClass}
         type="password"
@@ -59,13 +59,13 @@ export function SetPasswordForm({
         value={confirm}
         onChange={(e) => setConfirm(e.target.value)}
       />
-      {error && <p className="text-xs text-rose-300">{error}</p>}
+      {error && <p className="text-xs text-danger">{error}</p>}
       <button
         type="button"
         disabled={submitting || !password}
         onClick={submit}
         className={clsx(
-          "w-full rounded-lg bg-gradient-to-r from-cyan-400 to-emerald-400 px-4 py-2 text-sm font-semibold text-slate-900 hover:opacity-90",
+          "w-full rounded-lg bg-brand px-4 py-2 text-sm font-semibold text-brand-fg hover:bg-brand/90",
           (submitting || !password) && "opacity-60",
         )}
       >
@@ -76,6 +76,6 @@ export function SetPasswordForm({
 }
 
 export const authCardClass =
-  "mx-auto mt-16 w-full max-w-md rounded-3xl border border-white/10 bg-white/5 p-8 shadow-[0_25px_80px_rgba(3,7,18,0.6)] backdrop-blur";
+  "mx-auto mt-16 w-full max-w-md rounded-xl border border-line bg-surface p-8 shadow-sm";
 
-export const authPageClass = "min-h-screen bg-[#05070d] px-4 py-12 text-slate-100";
+export const authPageClass = "min-h-screen bg-bg px-4 py-12 text-fg";

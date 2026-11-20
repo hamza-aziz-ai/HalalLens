@@ -20,7 +20,8 @@ type ThemeContextValue = {
 
 const ThemeContext = createContext<ThemeContextValue | null>(null);
 
-// The stored theme is the source of truth; the server render (and hydration) uses "dark".
+// The stored choice wins, else the system preference. The inline script in
+// app/layout.tsx applies the same rule before the first paint (no flash).
 const themeListeners = new Set<() => void>();
 const subscribeTheme = (listener: () => void) => {
   themeListeners.add(listener);
@@ -28,8 +29,11 @@ const subscribeTheme = (listener: () => void) => {
     themeListeners.delete(listener);
   };
 };
-const readTheme = (): Theme =>
-  window.localStorage.getItem(THEME_STORAGE_KEY) === "light" ? "light" : "dark";
+const readTheme = (): Theme => {
+  const stored = window.localStorage.getItem(THEME_STORAGE_KEY);
+  if (stored === "light" || stored === "dark") return stored;
+  return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+};
 const setTheme = (value: Theme) => {
   window.localStorage.setItem(THEME_STORAGE_KEY, value);
   themeListeners.forEach((listener) => listener());
@@ -40,10 +44,6 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
-    // Public pages are always dark: drop the attribute when the dashboard unmounts.
-    return () => {
-      delete document.documentElement.dataset.theme;
-    };
   }, [theme]);
 
   const value = useMemo(
