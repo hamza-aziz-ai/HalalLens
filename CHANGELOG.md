@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.21.0](https://github.com/hamza-aziz-ai/HalalLens/compare/v0.20.4...v0.21.0) (2026-11-20)
+
+
+### Features
+
+* **ui:** app shell with mobile navigation and redesigned signed-in pages ([#252](https://github.com/hamza-aziz-ai/HalalLens/issues/252)) ([8816c52](https://github.com/hamza-aziz-ai/HalalLens/commit/8816c52a5f822c619864d0fe8a60fe0babdf4f0e))
+
 ## [0.20.4](https://github.com/hamza-aziz-ai/HalalLens/compare/v0.20.3...v0.20.4) (2026-11-20)
 
 
