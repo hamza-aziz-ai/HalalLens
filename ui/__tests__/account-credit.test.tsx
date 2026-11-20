@@ -37,7 +37,6 @@ jest.mock("@/lib/billing", () => ({
 jest.mock("@/lib/auth", () => ({ logoutUser: jest.fn() }));
 jest.mock("@/components/google-link-card", () => ({ GoogleLinkCard: () => null }));
 jest.mock("@/components/alert-emails-card", () => ({ AlertEmailsCard: () => null }));
-jest.mock("@/providers/ThemeProvider", () => ({ useTheme: () => ({ theme: "dark" }) }));
 jest.mock("@/providers/AuthProvider", () => {
   const user = { id: 42, email: "buyer@example.com", plan: "annual", subscription_status: "active" };
   const refresh = async () => undefined;
@@ -69,7 +68,7 @@ beforeEach(() => {
   window.confirm = jest.fn(() => true);
 });
 
-const card = async (name: string) => (await screen.findByRole("heading", { name, level: 3 })).closest("div.rounded-2xl") as HTMLElement;
+const card = async (name: string) => (await screen.findByRole("heading", { name, level: 3 })).closest("div.rounded-xl") as HTMLElement;
 
 describe("money formatting", () => {
   it("shows whole rupees plainly and paise with two decimals", () => {

@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useAuth } from "@/providers/AuthProvider";
 import { useTheme } from "@/providers/ThemeProvider";
 import { Logo, buttonClass } from "@/components/ui";
+import GithubBadge from "@/components/github-badge";
 
 const LINKS = [
   ["Method", "/#method"],
@@ -30,6 +31,7 @@ export default function SiteHeader() {
           ))}
         </nav>
         <div className="ml-auto flex items-center gap-2">
+          <GithubBadge />
           <button
             type="button"
             onClick={toggleTheme}

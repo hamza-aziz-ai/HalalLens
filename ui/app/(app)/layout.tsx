@@ -9,6 +9,7 @@ import { useAuth } from "@/providers/AuthProvider";
 import { useTheme } from "@/providers/ThemeProvider";
 import { logoutUser } from "@/lib/auth";
 import { Logo, buttonClass } from "@/components/ui";
+import GithubBadge from "@/components/github-badge";
 
 // 24×24 stroke icons (path data only), drawn in currentColor.
 const ICONS: Record<string, string> = {
@@ -139,6 +140,7 @@ function AppShell({ children }: { children: React.ReactNode }) {
               {user.plan}
             </span>
             <span className="hidden max-w-[16rem] truncate text-sm text-muted md:inline">{user.email}</span>
+            <GithubBadge />
             <button
               type="button"
               onClick={toggleTheme}

@@ -16,12 +16,12 @@ import {
   fetchFeedbackEvents,
 } from "@/lib/feedback";
 import { useAuth } from "@/providers/AuthProvider";
-import { useTheme } from "@/providers/ThemeProvider";
+import { Card, EmptyState, PageHeader, buttonClass, eyebrowClass, inputClass } from "@/components/ui";
 
 const STATUS_BADGE_MAP: Record<string, string> = {
-  open: "border-cyan-500/40 bg-cyan-500/10 text-cyan-200",
-  in_review: "border-amber-400/40 bg-amber-400/10 text-amber-200",
-  resolved: "border-emerald-400/40 bg-emerald-400/10 text-emerald-200",
+  open: "border-brand/30 bg-brand/10 text-brand",
+  in_review: "border-warning/30 bg-warning/10 text-warning",
+  resolved: "border-success/30 bg-success/10 text-success",
 };
 
 const formatStatusLabel = (status: string) =>
@@ -33,7 +33,6 @@ const formatTimestamp = (value?: string | null) =>
   value ? new Date(value).toLocaleString() : "—";
 
 export default function FeedbackPage() {
-  const { theme } = useTheme();
   const { user } = useAuth();
   const isAdmin = Boolean(user?.is_admin);
 
@@ -59,25 +58,6 @@ export default function FeedbackPage() {
   const [eventsLoading, setEventsLoading] = useState<Record<number, boolean>>({});
   const [eventsExpanded, setEventsExpanded] = useState<Record<number, boolean>>({});
   const [eventsError, setEventsError] = useState<Record<number, string | null>>({});
-
-  const cardClass =
-    theme === "dark"
-      ? "rounded-[28px] border border-white/10 bg-[linear-gradient(145deg,rgba(15,23,42,0.92),rgba(8,12,20,0.95))] p-6 shadow-[0_25px_80px_rgba(3,7,18,0.55)]"
-      : "rounded-[28px] border border-slate-200/70 bg-white/85 p-6 shadow-[0_20px_60px_rgba(15,23,42,0.12)]";
-  const headingClass = theme === "dark" ? "text-white" : "text-slate-900";
-  const mutedTextClass = theme === "dark" ? "text-slate-400" : "text-slate-500";
-  const inputClass = clsx(
-    "w-full rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-cyan-400/60",
-    theme === "dark"
-      ? "border border-white/10 bg-white/10 text-white placeholder:text-slate-400"
-      : "border border-slate-200 bg-white text-slate-900 placeholder:text-slate-500",
-  );
-  const textareaClass = clsx(
-    "rounded-xl border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-cyan-400/60",
-    theme === "dark"
-      ? "border-slate-700 bg-slate-900 text-white placeholder:text-slate-500"
-      : "border-slate-200 bg-white text-slate-900 placeholder:text-slate-500",
-  );
 
   const refreshQueue = async () => {
     if (!isAdmin) return;
@@ -194,171 +174,134 @@ export default function FeedbackPage() {
   };
 
   return (
-    <main className="space-y-10">
-      <header className={cardClass}>
-        <h1 className={clsx("text-3xl font-semibold text-display", headingClass)}>
-          Feedback & triage
-        </h1>
-        <p className={clsx("mt-2", mutedTextClass)}>
-          Report mismatched ratios or data quality issues. Track ticket status and
-          keep an audit trail of review actions.
-        </p>
-      </header>
+    <>
+      <PageHeader
+        eyebrow="Support"
+        title="Feedback & triage"
+        description="Report mismatched ratios or data quality issues. Track ticket status and keep an audit trail of review actions."
+      />
 
-      <section className={cardClass}>
-        <h2 className={clsx("text-lg font-semibold", headingClass)}>
-          Report an issue
-        </h2>
-        <p className={clsx("text-sm", mutedTextClass)}>
-          Include a symbol and filing date when possible to speed up reviews.
-        </p>
-        <div className="mt-4 grid gap-3 md:grid-cols-2">
-          <input
-            className={inputClass}
-            placeholder="Symbol (optional)"
-            value={symbol}
-            onChange={(event) => setSymbol(event.target.value.toUpperCase())}
-          />
-          <input
-            className={inputClass}
-            type="date"
-            value={filingDate}
-            onChange={(event) => setFilingDate(event.target.value)}
-          />
-        </div>
-        <div className="mt-3 space-y-2">
-          <textarea
-            className={clsx("min-h-[90px] w-full", textareaClass)}
-            placeholder="Describe what looks wrong…"
-            value={message}
-            onChange={(event) => {
-              setMessage(event.target.value);
-              setError(null);
-              setStatusMessage(null);
-            }}
-          />
-          <input
-            className={textareaClass}
-            placeholder="Email or Telegram (optional)"
-            value={contact}
-            onChange={(event) => setContact(event.target.value)}
-          />
-        </div>
-        <div className="mt-3 flex flex-wrap items-center gap-3">
-          <button
-            type="button"
-            onClick={handleSubmit}
-            className="rounded-lg bg-amber-400 px-4 py-2 text-sm font-semibold text-slate-900 hover:bg-amber-300"
-          >
-            Send feedback
-          </button>
-          {statusMessage && (
-            <span className="text-xs text-emerald-300">{statusMessage}</span>
-          )}
-          {error && <span className="text-xs text-rose-300">{error}</span>}
-        </div>
-        {trackingToken && (
-          <div
-            className={clsx(
-              "mt-4 rounded-lg border px-3 py-2 text-xs",
-              theme === "dark"
-                ? "border-slate-800 bg-slate-900/70 text-slate-200"
-                : "border-slate-200 bg-white text-slate-700",
+      <div className="grid gap-6 lg:grid-cols-[3fr_2fr]">
+        <Card>
+          <h2 className="font-semibold text-fg">Report an issue</h2>
+          <p className="mt-1 text-sm text-muted">
+            Include a symbol and filing date when possible to speed up reviews.
+          </p>
+          <div className="mt-4 grid gap-3 md:grid-cols-2">
+            <input
+              className={inputClass}
+              aria-label="Symbol"
+              placeholder="Symbol (optional)"
+              value={symbol}
+              onChange={(event) => setSymbol(event.target.value.toUpperCase())}
+            />
+            <input
+              className={inputClass}
+              aria-label="Filing date"
+              type="date"
+              value={filingDate}
+              onChange={(event) => setFilingDate(event.target.value)}
+            />
+          </div>
+          <div className="mt-3 space-y-3">
+            <textarea
+              className={clsx("min-h-[90px]", inputClass)}
+              aria-label="Describe the issue"
+              placeholder="Describe what looks wrong…"
+              value={message}
+              onChange={(event) => {
+                setMessage(event.target.value);
+                setError(null);
+                setStatusMessage(null);
+              }}
+            />
+            <input
+              className={inputClass}
+              aria-label="Contact"
+              placeholder="Email or Telegram (optional)"
+              value={contact}
+              onChange={(event) => setContact(event.target.value)}
+            />
+          </div>
+          <div className="mt-4 flex flex-wrap items-center gap-3">
+            <button type="button" onClick={handleSubmit} className={buttonClass("primary")}>
+              Send feedback
+            </button>
+            {statusMessage && (
+              <span className="text-xs text-success">{statusMessage}</span>
             )}
-          >
-            <p>Tracking token:</p>
-            <div className="mt-2 flex flex-wrap items-center gap-2 font-mono text-sm">
-              <span className="break-all">{trackingToken}</span>
-              <button
-                type="button"
-                onClick={handleCopyToken}
-                className="rounded-md bg-slate-800 px-2 py-1 text-xs text-slate-100 hover:bg-slate-700"
-              >
-                Copy
-              </button>
+            {error && <span className="text-xs text-danger">{error}</span>}
+          </div>
+          {trackingToken && (
+            <div className="mt-4 rounded-lg border border-line bg-surface-2 px-3 py-2 text-xs text-fg">
+              <p className={eyebrowClass}>Tracking token:</p>
+              <div className="mt-2 flex flex-wrap items-center gap-2 font-mono text-sm">
+                <span className="break-all">{trackingToken}</span>
+                <button type="button" onClick={handleCopyToken} className={buttonClass("secondary")}>
+                  Copy
+                </button>
+              </div>
             </div>
-          </div>
-        )}
-      </section>
+          )}
+        </Card>
 
-      <section className={cardClass}>
-        <h2 className={clsx("text-lg font-semibold", headingClass)}>
-          Check ticket status
-        </h2>
-        <div className="mt-3 flex flex-col gap-2 sm:flex-row">
-          <input
-            className={clsx("flex-1", textareaClass)}
-            placeholder="Tracking token"
-            value={lookupToken}
-            onChange={(event) => {
-              setLookupToken(event.target.value);
-              setLookupResult(null);
-              setLookupError(null);
-            }}
-          />
-          <button
-            type="button"
-            onClick={handleStatusLookup}
-            className="rounded-lg bg-slate-700 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-600"
-          >
-            Check status
-          </button>
-        </div>
-        {lookupError && <p className="mt-2 text-xs text-rose-300">{lookupError}</p>}
-        {lookupResult && (
-          <div className="mt-3 rounded-lg border border-white/10 bg-white/5 p-3 text-sm">
-            <p>
-              Ticket <strong>#{lookupResult.ticket_id}</strong> · {lookupResult.status}
-            </p>
-            <p className={clsx("text-xs", mutedTextClass)}>
-              Submitted {new Date(lookupResult.created_at).toLocaleString()}
-            </p>
-            {lookupResult.review_notes && (
-              <p className="mt-2 text-xs text-amber-200">{lookupResult.review_notes}</p>
-            )}
+        <Card className="self-start">
+          <h2 className="font-semibold text-fg">Check ticket status</h2>
+          <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+            <input
+              className={clsx("flex-1", inputClass)}
+              aria-label="Tracking token"
+              placeholder="Tracking token"
+              value={lookupToken}
+              onChange={(event) => {
+                setLookupToken(event.target.value);
+                setLookupResult(null);
+                setLookupError(null);
+              }}
+            />
+            <button type="button" onClick={handleStatusLookup} className={buttonClass("secondary")}>
+              Check status
+            </button>
           </div>
-        )}
-      </section>
+          {lookupError && <p className="mt-2 text-xs text-danger">{lookupError}</p>}
+          {lookupResult && (
+            <div className="mt-3 rounded-lg border border-line bg-surface-2 p-3 text-sm text-fg">
+              <p>
+                Ticket <strong className="font-mono">#{lookupResult.ticket_id}</strong> · {lookupResult.status}
+              </p>
+              <p className="font-mono text-xs tabular-nums text-muted">
+                Submitted {new Date(lookupResult.created_at).toLocaleString()}
+              </p>
+              {lookupResult.review_notes && (
+                <p className="mt-2 text-xs text-warning">{lookupResult.review_notes}</p>
+              )}
+            </div>
+          )}
+        </Card>
+      </div>
 
       {isAdmin && (
-        <section className={cardClass}>
-          <div className="flex items-center justify-between">
-            <h2 className={clsx("text-lg font-semibold", headingClass)}>
-              Feedback queue
-            </h2>
-            <button
-              type="button"
-              onClick={refreshQueue}
-              className={clsx(
-                "text-xs font-semibold",
-                theme === "dark" ? "text-cyan-300" : "text-cyan-700",
-              )}
-            >
+        <Card className="p-0">
+          <div className="flex items-center justify-between border-b border-line px-5 py-4">
+            <h2 className="font-semibold text-fg">Feedback queue</h2>
+            <button type="button" onClick={refreshQueue} className={buttonClass("ghost")}>
               Refresh
             </button>
           </div>
           {queueLoading && (
-            <p className={clsx("mt-3 text-sm", mutedTextClass)}>Loading queue…</p>
+            <p className="px-5 py-4 text-sm text-muted">Loading queue…</p>
           )}
-          {queueError && <p className="mt-2 text-xs text-rose-300">{queueError}</p>}
+          {queueError && <p className="px-5 pt-4 text-xs text-danger">{queueError}</p>}
           {!queueLoading && queue.length === 0 && (
-            <p className={clsx("mt-3 text-sm", mutedTextClass)}>
-              No open reports right now.
-            </p>
+            <div className="p-5">
+              <EmptyState title="No open reports right now." />
+            </div>
           )}
-          <div className="mt-4 space-y-3">
+          <ul>
             {queue.map((report) => (
-              <div
-                key={report.id}
-                className={clsx(
-                  "rounded-xl border p-3 text-sm",
-                  theme === "dark"
-                    ? "border-slate-800 bg-slate-900/70 text-slate-200"
-                    : "border-slate-200 bg-white text-slate-700",
-                )}
-              >
+              <li key={report.id} className="border-b border-line px-5 py-4 text-sm text-fg last:border-0">
                 <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
-                  <span className={mutedTextClass}>
+                  <span className="font-mono tabular-nums text-muted">
                     #{report.id} · {report.symbol || "—"} · {formatTimestamp(report.filing_date)}
                   </span>
                   <span
@@ -371,9 +314,10 @@ export default function FeedbackPage() {
                   </span>
                 </div>
                 <p className="mt-2 text-sm">{report.message}</p>
-                <div className="mt-2 grid gap-2 md:grid-cols-[1fr_auto]">
+                <div className="mt-3 grid gap-3 md:grid-cols-[1fr_auto]">
                   <textarea
-                    className={clsx("min-h-[60px]", textareaClass)}
+                    className={clsx("min-h-[60px]", inputClass)}
+                    aria-label={`Reviewer notes for #${report.id}`}
                     placeholder="Reviewer notes"
                     value={notes[report.id] ?? ""}
                     onChange={(event) =>
@@ -384,9 +328,10 @@ export default function FeedbackPage() {
                     }
                   />
                   <div className="space-y-2 text-xs">
-                    <label className="flex items-center gap-2">
+                    <label className="flex items-center gap-2 text-muted">
                       <input
                         type="checkbox"
+                        className="h-4 w-4 accent-brand"
                         checked={Boolean(recomputeMap[report.id])}
                         onChange={(event) =>
                           setRecomputeMap((prev) => ({
@@ -405,7 +350,7 @@ export default function FeedbackPage() {
                             reviewer: user?.email,
                           })
                         }
-                        className="rounded-lg border border-amber-400/40 bg-amber-400/10 px-3 py-1 text-xs font-semibold text-amber-200"
+                        className={buttonClass("secondary")}
                       >
                         Mark in review
                       </button>
@@ -416,61 +361,62 @@ export default function FeedbackPage() {
                             reviewer: user?.email,
                           })
                         }
-                        className="rounded-lg border border-emerald-400/40 bg-emerald-400/10 px-3 py-1 text-xs font-semibold text-emerald-200"
+                        className={buttonClass("primary")}
                       >
                         Resolve
                       </button>
                     </div>
                   </div>
                 </div>
-                <div className="mt-3 flex items-center justify-between text-xs">
+                <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-xs">
                   <button
                     type="button"
                     onClick={() => toggleHistory(report)}
-                    className="text-cyan-300 hover:text-cyan-200"
+                    aria-expanded={Boolean(eventsExpanded[report.id])}
+                    className="font-semibold text-brand hover:underline"
                   >
                     {eventsExpanded[report.id] ? "Hide" : "Show"} audit trail
                   </button>
-                  <span className={mutedTextClass}>
-                    Status updated {formatTimestamp(report.status_updated_at)}
+                  <span className="text-muted">
+                    Status updated <span className="font-mono tabular-nums">{formatTimestamp(report.status_updated_at)}</span>
                   </span>
                 </div>
                 {eventsExpanded[report.id] && (
-                  <div className="mt-3 rounded-lg border border-white/10 bg-white/5 p-3 text-xs">
+                  <div className="mt-3 rounded-lg border border-line bg-surface-2 p-3 text-xs">
                     {eventsLoading[report.id] && (
-                      <p className={mutedTextClass}>Loading events…</p>
+                      <p className="text-muted">Loading events…</p>
                     )}
                     {eventsError[report.id] && (
-                      <p className="text-rose-300">{eventsError[report.id]}</p>
+                      <p className="text-danger">{eventsError[report.id]}</p>
                     )}
                     {eventsMap[report.id]?.length ? (
                       <ul className="space-y-2">
                         {eventsMap[report.id]?.map((event) => (
                           <li key={event.id}>
-                            <span className="font-semibold">
+                            <span className="font-semibold text-fg">
                               {formatStatusLabel(event.event_type)}
                             </span>
-                            <span className={clsx("ml-2", mutedTextClass)}>
+                            <span className="ml-2 font-mono tabular-nums text-muted">
                               {formatTimestamp(event.created_at)}
                             </span>
                             {event.details && (
-                              <p className={mutedTextClass}>{event.details}</p>
+                              <p className="text-muted">{event.details}</p>
                             )}
                           </li>
                         ))}
                       </ul>
                     ) : (
                       !eventsLoading[report.id] && (
-                        <p className={mutedTextClass}>No events yet.</p>
+                        <p className="text-muted">No events yet.</p>
                       )
                     )}
                   </div>
                 )}
-              </div>
+              </li>
             ))}
-          </div>
-        </section>
+          </ul>
+        </Card>
       )}
-    </main>
+    </>
   );
 }

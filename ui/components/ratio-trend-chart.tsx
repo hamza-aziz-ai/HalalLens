@@ -3,36 +3,37 @@
 import clsx from "clsx";
 
 import type { Filing } from "@/lib/types";
+import { cardClass, eyebrowClass } from "@/components/ui";
 
 const RATIO_SERIES = [
   {
     key: "debt_to_market_cap",
     label: "Debt / Cap",
-    color: "#38bdf8",
+    color: "rgb(var(--brand))",
     threshold: 0.3,
   },
   {
     key: "cash_to_market_cap",
     label: "Cash / Cap",
-    color: "#34d399",
+    color: "rgb(var(--success))",
     threshold: 0.3,
   },
   {
     key: "receivables_to_market_cap",
     label: "Receivables / Cap",
-    color: "#f472b6",
+    color: "rgb(var(--warning))",
     threshold: 0.67,
   },
   {
     key: "liquid_assets_to_market_cap",
     label: "Liquid / Cap",
-    color: "#a78bfa",
+    color: "rgb(var(--fg))",
     threshold: 0.49,
   },
   {
     key: "non_permissible_income_ratio",
     label: "Non-permissible / Rev",
-    color: "#fbbf24",
+    color: "rgb(var(--danger))",
     threshold: 0.05,
   },
 ] as const;
@@ -69,11 +70,9 @@ function buildChartData(entries: Filing[]): ChartDatum[] {
 
 export function RatioTrendChart({
   entries,
-  theme = "dark",
   onSelect,
 }: {
   entries: Filing[];
-  theme?: "dark" | "light";
   onSelect?: (entry: Filing) => void;
 }) {
   if (!entries.length) return null;
@@ -130,37 +129,16 @@ export function RatioTrendChart({
     return segments.join(" ");
   };
 
-  const cardClass = clsx(
-    "rounded-[28px] border p-5 shadow-[0_25px_80px_rgba(3,7,18,0.5)]",
-    theme === "dark"
-      ? "border-white/10 bg-[linear-gradient(145deg,rgba(15,23,42,0.92),rgba(8,12,20,0.95))] text-slate-200"
-      : "border-slate-200/70 bg-white/85 text-slate-800",
-  );
-
   const gridFractions = [0, 0.25, 0.5, 0.75, 1];
   const overlayWidth =
     data.length > 1 ? (plotWidth / (data.length - 1)) * 0.8 : plotWidth;
   const overlayHalf = overlayWidth / 2;
 
   return (
-    <article className={cardClass}>
+    <article className={clsx(cardClass, "p-5 text-fg")}>
       <header className="mb-4">
-        <p
-          className={clsx(
-            "text-xs uppercase tracking-[0.2em]",
-            theme === "dark" ? "text-slate-500" : "text-slate-600",
-          )}
-        >
-          Ratio trends
-        </p>
-        <h2
-          className={clsx(
-            "text-display text-lg font-semibold",
-            theme === "dark" ? "text-white" : "text-slate-900",
-          )}
-        >
-          Threshold view
-        </h2>
+        <p className={eyebrowClass}>Ratio trends</p>
+        <h2 className="mt-1 text-lg font-semibold text-fg">Threshold view</h2>
       </header>
 
       <div className="overflow-x-auto">
@@ -181,7 +159,7 @@ export function RatioTrendChart({
                   x2={chartWidth - padding.right}
                   y1={y}
                   y2={y}
-                  stroke={theme === "dark" ? "#1f2937" : "#cbd5f5"}
+                  stroke="rgb(var(--line))"
                   strokeDasharray="4 4"
                 />
                 <text
@@ -189,7 +167,8 @@ export function RatioTrendChart({
                   y={y + 4}
                   fontSize={11}
                   textAnchor="end"
-                  fill={theme === "dark" ? "#94a3b8" : "#475569"}
+                  fill="rgb(var(--muted))"
+                  className="font-mono tabular-nums"
                 >
                   {value.toFixed(0)}%
                 </text>
@@ -204,14 +183,15 @@ export function RatioTrendChart({
                 x2={chartWidth - padding.right}
                 y1={valueToY(series.threshold * 100)}
                 y2={valueToY(series.threshold * 100)}
-                stroke={series.color}
+                stroke="rgb(var(--muted))"
+                strokeOpacity={0.6}
                 strokeDasharray="6 4"
               />
               <text
                 x={chartWidth - padding.right + 4}
                 y={valueToY(series.threshold * 100) - 4}
                 fontSize={10}
-                fill={theme === "dark" ? series.color : "#475569"}
+                fill="rgb(var(--muted))"
               >
                 {`${series.label} cap ${(series.threshold * 100).toFixed(0)}%`}
               </text>
@@ -237,7 +217,8 @@ export function RatioTrendChart({
                 y={chartHeight - padding.bottom / 3}
                 fontSize={11}
                 textAnchor="middle"
-                fill={theme === "dark" ? "#94a3b8" : "#475569"}
+                fill="rgb(var(--muted))"
+                className="font-mono tabular-nums"
                 transform={`rotate(-20 ${indexToX(index)},${chartHeight - padding.bottom / 3})`}
               >
                 {datum.dateLabel}
@@ -261,7 +242,7 @@ export function RatioTrendChart({
                     cx={indexToX(index)}
                     cy={valueToY(value)}
                     r={4}
-                    fill={theme === "dark" ? "#0f172a" : "#ffffff"}
+                    fill="rgb(var(--surface))"
                     stroke={series.color}
                     strokeWidth={2}
                   />
@@ -272,7 +253,7 @@ export function RatioTrendChart({
         </svg>
       </div>
 
-      <div className="mt-4 flex flex-wrap gap-4 text-xs">
+      <div className="mt-4 flex flex-wrap gap-4 text-xs text-muted">
         {RATIO_SERIES.map((series) => (
           <div key={series.key} className="flex items-center gap-2">
             <span
@@ -280,7 +261,7 @@ export function RatioTrendChart({
               style={{ backgroundColor: series.color }}
             />
             <span>
-              {series.label} cap {(series.threshold * 100).toFixed(0)}%
+              {series.label} cap <span className="font-mono tabular-nums">{(series.threshold * 100).toFixed(0)}%</span>
             </span>
           </div>
         ))}

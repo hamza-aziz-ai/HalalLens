@@ -1,5 +1,5 @@
-import clsx from "clsx";
 import type { GovernanceReview } from "@/lib/types";
+import { buttonClass, eyebrowClass } from "@/components/ui";
 
 const METRIC_LABELS: Record<string, string> = {
   total_debt: "Total debt",
@@ -12,13 +12,10 @@ const METRIC_LABELS: Record<string, string> = {
   non_halal_income: "Non-permissible income",
 };
 
-type Theme = "dark" | "light";
-
 type Props = {
   review: GovernanceReview | null;
   loading?: boolean;
   error?: string | null;
-  theme: Theme;
   onApplyIndian?: (metrics: Record<string, number | null | undefined>) => void;
 };
 
@@ -46,75 +43,51 @@ export function GovernanceReviewPanel({
   review,
   loading,
   error,
-  theme,
   onApplyIndian,
 }: Props) {
   if (loading) {
     return (
-      <div
-        className={clsx(
-          "mt-4 rounded-[24px] border p-4 text-sm",
-          theme === "dark"
-            ? "border-white/10 bg-white/5 text-slate-200"
-            : "border-slate-200 bg-slate-50 text-slate-700",
-        )}
-      >
+      <div className="rounded-lg border border-line bg-surface-2 p-4 text-sm text-muted">
         Loading governance metrics…
       </div>
     );
   }
   if (error) {
     return (
-      <div
-        className={clsx(
-          "mt-4 rounded-[24px] border p-4 text-sm text-rose-400",
-          theme === "dark"
-            ? "border-rose-500/30 bg-rose-500/5"
-            : "border-rose-200 bg-rose-50",
-        )}
-      >
+      <div className="rounded-lg border border-danger/30 bg-danger/10 p-4 text-sm text-danger">
         {error}
       </div>
     );
   }
   if (!review) return null;
 
-  const cardClass =
-    theme === "dark"
-      ? "rounded-[28px] border border-white/10 bg-[linear-gradient(145deg,rgba(15,23,42,0.92),rgba(8,12,20,0.95))] text-slate-100 shadow-[0_25px_80px_rgba(3,7,18,0.45)]"
-      : "rounded-[28px] border border-slate-200 bg-white text-slate-800 shadow-[0_20px_60px_rgba(15,23,42,0.12)]";
-  const muted =
-    theme === "dark" ? "text-slate-400" : "text-slate-500";
-
   const metricKeys = Object.keys(review.ingested.metrics);
 
   return (
-    <div className={clsx("mt-6 space-y-4", cardClass, "p-4")}>
+    <div className="space-y-4 rounded-lg border border-line bg-surface-2/50 p-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <p className={clsx("text-xs uppercase", muted)}>Governance comparison</p>
-          <h3 className="text-display text-lg font-semibold">
-            Structured vs manual metrics
-          </h3>
+          <p className={eyebrowClass}>Governance comparison</p>
+          <h3 className="mt-1 font-semibold text-fg">Structured vs manual metrics</h3>
         </div>
         {review.indian_api && onApplyIndian && (
           <button
             type="button"
             onClick={() => onApplyIndian(review.indian_api?.metrics || {})}
-            className="rounded-lg border border-emerald-400/40 bg-emerald-500/10 px-3 py-1 text-sm font-semibold text-emerald-200 hover:bg-emerald-400/20"
+            className={buttonClass("secondary")}
           >
             Apply Indian values
           </button>
         )}
       </div>
       <div className="overflow-x-auto">
-        <table className="w-full text-left text-sm">
-          <thead className={clsx("text-xs uppercase", muted)}>
-            <tr>
+        <table className="w-full min-w-[36rem] text-left text-sm">
+          <thead>
+            <tr className="border-b border-line text-xs text-muted">
               <th className="px-3 py-2 font-medium">Metric</th>
-              <th className="px-3 py-2 font-medium">{review.ingested.label}</th>
-              <th className="px-3 py-2 font-medium">{review.override ? review.override.label : "Override"}</th>
-              <th className="px-3 py-2 font-medium">{review.indian_api ? review.indian_api.label : "Indian API"}</th>
+              <th className="px-3 py-2 text-right font-medium">{review.ingested.label}</th>
+              <th className="px-3 py-2 text-right font-medium">{review.override ? review.override.label : "Override"}</th>
+              <th className="px-3 py-2 text-right font-medium">{review.indian_api ? review.indian_api.label : "Indian API"}</th>
               <th className="px-3 py-2 font-medium">Delta</th>
             </tr>
           </thead>
@@ -128,23 +101,23 @@ export function GovernanceReviewPanel({
               const overrideDelta = formatDelta(diff.override_delta);
               const indianDelta = formatDelta(diff.indian_delta);
               return (
-                <tr key={metric} className="border-t border-white/5">
-                  <td className="px-3 py-2 font-medium">{label}</td>
-                  <td className="px-3 py-2">{formatValue(ingestedVal)}</td>
-                  <td className="px-3 py-2">{formatValue(overrideVal)}</td>
-                  <td className="px-3 py-2">{formatValue(indianVal)}</td>
+                <tr key={metric} className="border-b border-line last:border-0">
+                  <td className="px-3 py-2 font-medium text-fg">{label}</td>
+                  <td className="px-3 py-2 text-right font-mono tabular-nums text-fg">{formatValue(ingestedVal)}</td>
+                  <td className="px-3 py-2 text-right font-mono tabular-nums text-fg">{formatValue(overrideVal)}</td>
+                  <td className="px-3 py-2 text-right font-mono tabular-nums text-fg">{formatValue(indianVal)}</td>
                   <td className="px-3 py-2 text-xs">
                     {overrideDelta && (
-                      <span className="mr-2 inline-flex rounded-full bg-amber-500/10 px-2 py-0.5 text-amber-300">
+                      <span className="mr-2 inline-flex rounded-full bg-warning/10 px-2 py-0.5 font-mono tabular-nums text-warning">
                         Override {overrideDelta}
                       </span>
                     )}
                     {indianDelta && (
-                      <span className="inline-flex rounded-full bg-cyan-500/10 px-2 py-0.5 text-cyan-200">
+                      <span className="inline-flex rounded-full bg-brand/10 px-2 py-0.5 font-mono tabular-nums text-brand">
                         Indian {indianDelta}
                       </span>
                     )}
-                    {!overrideDelta && !indianDelta && "—"}
+                    {!overrideDelta && !indianDelta && <span className="text-muted">—</span>}
                   </td>
                 </tr>
               );

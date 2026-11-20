@@ -7,6 +7,15 @@ export type RazorpayPaymentResult = {
   razorpay_signature: string;
 };
 
+// Plan features shown to customers; admin-only capabilities (governance
+// overrides) are not listed.
+export const FEATURE_LABELS: Record<string, string> = {
+  instant_lookup: "Instant symbol lookup with fresh ratios",
+  explain_why: "Explain-Why narration of every verdict",
+  history: "Filing history and ratio trends",
+  alerts: "Watchlists with compliance-change alerts",
+};
+
 export async function fetchBillingPlans(): Promise<BillingPlan[]> {
   return request<BillingPlan[]>("/billing/plans");
 }

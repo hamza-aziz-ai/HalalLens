@@ -1,49 +1,40 @@
 "use client";
 
+import clsx from "clsx";
+
+import { cardClass, eyebrowClass } from "@/components/ui";
 import { NarrationResponse } from "@/lib/types";
 
 export function ExplainPanel({
   narration,
-  theme = "dark",
 }: {
   narration: NarrationResponse;
-  theme?: "dark" | "light";
 }) {
-  const baseCard =
-    theme === "dark"
-      ? "rounded-[28px] border border-white/10 bg-[linear-gradient(145deg,rgba(15,23,42,0.92),rgba(8,12,20,0.95))] shadow-[0_25px_80px_rgba(3,7,18,0.55)]"
-      : "rounded-[28px] border border-black/5 bg-white/85 shadow-[0_20px_60px_rgba(15,23,42,0.12)]";
   return (
-    <article className={baseCard + " p-6"}>
-      <h2 className="text-display text-xl font-semibold text-white">
-        Explain-Why
-      </h2>
-      <p className="mt-2 text-sm text-slate-300">
-        {narration.summary} Verdict:{" "}
-        <span className="font-semibold text-cyan-300">{narration.verdict}</span>
+    <article className={clsx(cardClass, "p-6")}>
+      <p className={eyebrowClass}>Narration</p>
+      <h2 className="mt-1 text-xl font-semibold tracking-tight text-fg">Explain-Why</h2>
+      <p className="mt-2 text-sm text-fg">
+        {narration.summary} Verdict: <span className="font-semibold text-brand">{narration.verdict}</span>
       </p>
       {narration.source === "llm" && (
         <p
-          className="mt-3 rounded-lg border border-amber-400/30 bg-amber-400/10 px-3 py-2 text-xs text-amber-200"
+          className="mt-3 rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning"
           data-testid="ai-caveat"
         >
-          AI-generated explanation. It may be imperfect: the Compliant / Non-compliant
-          badge and the ratio table are the authoritative screening result.
+          AI-generated explanation. It may be imperfect: the Compliant / Non-compliant badge and the ratio table are the authoritative screening result.
         </p>
       )}
-      <ul className="mt-4 space-y-2 text-sm text-slate-200">
+      <ul className="mt-4 space-y-2 text-sm text-fg">
         {narration.bullets.map((bullet, index) => (
-          <li
-            key={index}
-            className="rounded-xl border border-white/10 bg-white/5 px-3 py-2"
-          >
+          <li key={index} className="rounded-lg border border-line bg-surface-2 px-3 py-2">
             {bullet}
           </li>
         ))}
       </ul>
-      <div className="mt-4 text-xs text-slate-400">
-        <p className="font-semibold text-slate-300">Citations</p>
-        <ul className="list-disc space-y-1 pl-6">
+      <div className="mt-5 border-t border-line pt-4 text-xs text-muted">
+        <p className="font-mono text-[11px] font-medium uppercase tracking-wider text-muted">Citations</p>
+        <ul className="mt-2 list-disc space-y-1 pl-5">
           {narration.citations.map((line, idx) => (
             <li key={idx}>{line}</li>
           ))}

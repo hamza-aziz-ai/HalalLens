@@ -15,8 +15,10 @@ export function buttonClass(variant: "primary" | "secondary" | "ghost" = "primar
 
 export const cardClass = "rounded-xl border border-line bg-surface shadow-sm";
 
+/** A card with p-6 padding unless className sets its own (p-0, p-5 ...): no tailwind-merge here. */
 export function Card({ className, children }: { className?: string; children: ReactNode }) {
-  return <div className={clsx(cardClass, "p-6", className)}>{children}</div>;
+  const ownPadding = /(^|\s)p-\d/.test(className ?? "");
+  return <div className={clsx(cardClass, !ownPadding && "p-6", className)}>{children}</div>;
 }
 
 const VERDICT_STYLE: Record<string, { label: string; tone: string }> = {

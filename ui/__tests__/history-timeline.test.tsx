@@ -61,12 +61,12 @@ describe("HistoryTimeline", () => {
     expect(handleSelect).toHaveBeenCalledWith(entry);
   });
 
-  it("applies light theme styles when theme=light", () => {
+  it("renders on the token surface card", () => {
     const entry = baseEntry();
-    render(<HistoryTimeline entries={[entry]} theme="light" />);
+    render(<HistoryTimeline entries={[entry]} />);
     const heading = screen.getByText("History & trends");
     const article = heading.closest("article");
-    expect(article).toHaveClass("bg-white");
+    expect(article).toHaveClass("bg-surface");
   });
 
   it("shows missing ratio state when inputs unavailable", () => {
