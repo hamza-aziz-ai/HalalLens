@@ -1,24 +1,16 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import clsx from "clsx";
 import { GOOGLE_ERRORS, confirmGoogleLink, startGoogleLink, takeFragmentParam } from "@/lib/auth";
 import { useAuth } from "@/providers/AuthProvider";
+import { Card, buttonClass, inputClass } from "@/components/ui";
 
 /**
  * "Link Google account": the password is asked again, Google proves the
  * identity, and this page (with the same session) confirms the link. Google
  * never signs anyone in or changes the account email here.
  */
-export function GoogleLinkCard({
-  cardClass,
-  headingClass,
-  mutedTextClass,
-}: {
-  cardClass: string;
-  headingClass: string;
-  mutedTextClass: string;
-}) {
+export function GoogleLinkCard() {
   const { user, refresh } = useAuth();
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
@@ -57,19 +49,20 @@ export function GoogleLinkCard({
   };
 
   return (
-    <section className={cardClass}>
-      <h2 className={clsx("text-lg font-semibold", headingClass)}>Google sign-in</h2>
+    <Card>
+      <h2 className="font-semibold text-fg">Google sign-in</h2>
       {user.google_linked ? (
-        <p className={clsx("mt-2 text-sm", mutedTextClass)}>
+        <p className="mt-2 text-sm text-muted">
           A Google account is linked; &ldquo;Continue with Google&rdquo; signs you in.
         </p>
       ) : (
         <div className="mt-3 max-w-sm space-y-3">
-          <p className={clsx("text-sm", mutedTextClass)}>
+          <p className="text-sm text-muted">
             Link a Google account to this account. Confirm your password first.
           </p>
           <input
-            className="w-full rounded-lg border border-white/10 bg-white/10 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-cyan-400/60"
+            className={inputClass}
+            aria-label="Current password"
             type="password"
             autoComplete="current-password"
             placeholder="Current password"
@@ -80,17 +73,14 @@ export function GoogleLinkCard({
             type="button"
             disabled={busy || !password}
             onClick={start}
-            className={clsx(
-              "rounded-lg border border-white/20 bg-white/10 px-4 py-2 text-sm font-semibold hover:bg-white/20",
-              (busy || !password) && "opacity-60",
-            )}
+            className={buttonClass("secondary")}
           >
             {busy ? "Opening Google…" : "Link Google account"}
           </button>
         </div>
       )}
-      {message && <p className="mt-2 text-xs text-emerald-400">{message}</p>}
-      {error && <p className="mt-2 text-xs text-rose-400">{error}</p>}
-    </section>
+      {message && <p className="mt-2 text-xs text-success">{message}</p>}
+      {error && <p className="mt-2 text-xs text-danger">{error}</p>}
+    </Card>
   );
 }

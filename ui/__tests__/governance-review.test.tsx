@@ -45,7 +45,6 @@ describe("GovernanceReviewPanel", () => {
     render(
       <GovernanceReviewPanel
         review={sampleReview}
-        theme="dark"
       />,
     );
 
@@ -58,7 +57,6 @@ describe("GovernanceReviewPanel", () => {
     render(
       <GovernanceReviewPanel
         review={sampleReview}
-        theme="dark"
         onApplyIndian={onApply}
       />,
     );

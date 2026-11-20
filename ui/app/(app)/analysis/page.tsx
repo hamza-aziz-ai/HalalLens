@@ -11,8 +11,8 @@ import { fetchMarketQuote } from "@/lib/market-data";
 import { ProviderBadge } from "@/components/provider-badge";
 import { RatioTable } from "@/components/ratio-table";
 import { ExplainPanel } from "@/components/explain-panel";
+import { EmptyState, PageHeader, buttonClass, cardClass, eyebrowClass, inputClass, labelClass } from "@/components/ui";
 import { useAuth } from "@/providers/AuthProvider";
-import { useTheme } from "@/providers/ThemeProvider";
 import { getAutoProviderLabel } from "@/lib/providers";
 import { hasPaidAccess as hasPaidAccessForUser } from "@/lib/subscription";
 
@@ -122,7 +122,6 @@ function filingToForm(filing: Filing): FormState {
 }
 
 export default function AnalysisPage() {
-  const { theme } = useTheme();
   const { user } = useAuth();
   const searchParams = useSearchParams();
   const hasPaidAccess = hasPaidAccessForUser(user);
@@ -137,25 +136,6 @@ export default function AnalysisPage() {
   const [marketStatus, setMarketStatus] = useState<string | null>(null);
   const [marketProvider, setMarketProvider] = useState<string | null>(null);
   const [selectedFiling, setSelectedFiling] = useState<Filing | null>(null);
-
-  const cardClass =
-    theme === "dark"
-      ? "rounded-[28px] border border-white/10 bg-[linear-gradient(145deg,rgba(15,23,42,0.92),rgba(8,12,20,0.95))] p-6 shadow-[0_25px_80px_rgba(3,7,18,0.55)]"
-      : "rounded-[28px] border border-slate-200/70 bg-white/85 p-6 shadow-[0_20px_60px_rgba(15,23,42,0.12)]";
-  const headingClass = theme === "dark" ? "text-white" : "text-slate-900";
-  const mutedTextClass = theme === "dark" ? "text-slate-400" : "text-slate-500";
-  const frostedInputClass = clsx(
-    "flex-1 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-cyan-400/50",
-    theme === "dark"
-      ? "border border-white/10 bg-white/10 text-white placeholder:text-slate-400 shadow-inner shadow-black/30"
-      : "border border-slate-200 bg-white text-slate-900 placeholder:text-slate-500 shadow-inner shadow-slate-200/60",
-  );
-  const textareaClass = clsx(
-    "w-full rounded-xl border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-cyan-400/60",
-    theme === "dark"
-      ? "border-slate-700 bg-slate-900 text-white placeholder:text-slate-500"
-      : "border-slate-200 bg-white text-slate-900 placeholder:text-slate-500",
-  );
 
   const analysisPayload = useMemo(() => normalizePayload(form), [form]);
 
@@ -269,185 +249,200 @@ export default function AnalysisPage() {
   }, [searchParams]);
 
   return (
-    <main className="space-y-10">
-      <header className={cardClass}>
-        <h1 className={clsx("text-3xl font-semibold text-display", headingClass)}>
-          Shariah compliance analysis
-        </h1>
-        <p className={clsx("mt-2 text-sm", mutedTextClass)}>
-          Load the latest filing by symbol or enter metrics manually to compute the
-          AAOIFI ratios with Explain-Why narratives.
-        </p>
-      </header>
+    <div className="space-y-8">
+      <PageHeader
+        eyebrow="Screening"
+        title="Shariah compliance analysis"
+        description="Load the latest filing by symbol or enter metrics manually to compute the AAOIFI ratios with Explain-Why narratives."
+      />
 
-      <section className={cardClass}>
-        <h2 className={clsx("text-lg font-semibold", headingClass)}>
-          Instant symbol lookup
-        </h2>
-        <p className={clsx("text-sm", mutedTextClass)}>
-          Pull the newest filing for a symbol and auto-run the analysis.
-        </p>
-        <div className="mt-3 flex flex-col gap-3 md:flex-row">
-          <input
-            className={frostedInputClass}
-            placeholder="e.g., 532540 or TCS"
-            value={lookupSymbol}
-            onChange={(e) => setLookupSymbol(e.target.value.toUpperCase())}
-          />
-          <button
-            type="button"
-            onClick={quickAnalyzeSymbol}
-            className={clsx(
-              "rounded-lg bg-gradient-to-r from-cyan-400 to-emerald-400 px-4 py-2 text-sm font-semibold transition hover:opacity-90 disabled:opacity-50",
-              theme === "dark" ? "text-slate-950" : "text-slate-900",
+      <div className="grid items-start gap-6 lg:grid-cols-2">
+        <div className="space-y-6">
+          <section className={clsx(cardClass, "p-6")}>
+            <p className={eyebrowClass}>01 · Lookup</p>
+            <h2 className="mt-1 text-lg font-semibold text-fg">Instant symbol lookup</h2>
+            <p className="mt-1 text-sm text-muted">
+              Pull the newest filing for a symbol and auto-run the analysis.
+            </p>
+            <div className="mt-4 flex flex-col gap-3 sm:flex-row">
+              <input
+                className={clsx(inputClass, "font-mono sm:flex-1")}
+                aria-label="Symbol to look up"
+                placeholder="e.g., 532540 or TCS"
+                value={lookupSymbol}
+                onChange={(e) => setLookupSymbol(e.target.value.toUpperCase())}
+              />
+              <button
+                type="button"
+                onClick={quickAnalyzeSymbol}
+                className={buttonClass("primary")}
+                disabled={lookupLoading || loading}
+              >
+                {lookupLoading ? "Analyzing…" : "Analyze symbol"}
+              </button>
+            </div>
+            {lookupError && (
+              <p className="mt-2 text-sm text-danger" role="alert">{lookupError}</p>
             )}
-            disabled={lookupLoading || loading}
-          >
-            {lookupLoading ? "Analyzing…" : "Analyze symbol"}
-          </button>
+            {selectedFiling && (
+              <div className="mt-4 space-y-2 rounded-lg border border-line bg-surface-2 p-3 text-xs text-muted">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span>Market data source:</span>
+                  <ProviderBadge provider={marketProvider ?? selectedFiling.market_data_provider} />
+                  {marketStatus && <span>{marketStatus}</span>}
+                </div>
+                <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+                  <span>
+                    Filing date:{" "}
+                    <span className="font-mono tabular-nums text-fg">
+                      {new Date(selectedFiling.filing_date).toLocaleDateString()}
+                    </span>
+                  </span>
+                  {selectedFiling.data_updated_at && (
+                    <span>
+                      Last updated:{" "}
+                      <span className="font-mono tabular-nums text-fg">
+                        {new Date(selectedFiling.data_updated_at).toLocaleDateString()}
+                      </span>
+                    </span>
+                  )}
+                  {selectedFiling.confidence && (
+                    <span>Confidence: {selectedFiling.confidence}</span>
+                  )}
+                  {selectedFiling.governance_override_applied && (
+                    <span>
+                      Override applied
+                      {selectedFiling.governance_override_source
+                        ? ` (${selectedFiling.governance_override_source})`
+                        : ""}
+                    </span>
+                  )}
+                </div>
+                {selectedFiling.quality_issues?.length ? (
+                  <p className="text-warning">
+                    Data quality flags: {selectedFiling.quality_issues.join(", ")}
+                  </p>
+                ) : null}
+              </div>
+            )}
+          </section>
+
+          <section className={clsx(cardClass, "p-6")}>
+            <p className={eyebrowClass}>02 · Inputs</p>
+            <h2 className="mt-1 text-lg font-semibold text-fg">Filing metrics</h2>
+            <form
+              className="mt-4 space-y-6"
+              onSubmit={(event) => {
+                event.preventDefault();
+                if (!analysisPayload.market_data.market_cap && !analysisPayload.market_data.trailing_market_cap) {
+                  setError(MANUAL_MARKET_MESSAGE);
+                  return;
+                }
+                runAnalysis(analysisPayload);
+              }}
+            >
+              <div className="grid gap-4 sm:grid-cols-2">
+                <label className="flex flex-col gap-1">
+                  <span className={labelClass}>Symbol</span>
+                  <input
+                    className={clsx(inputClass, "font-mono")}
+                    value={form.snapshot.symbol}
+                    onChange={(e) => updateField("snapshot", "symbol", e.target.value.toUpperCase())}
+                  />
+                </label>
+                <label className="flex flex-col gap-1">
+                  <span className={labelClass}>Filing date</span>
+                  <input
+                    className={clsx(inputClass, "font-mono tabular-nums")}
+                    type="date"
+                    value={form.snapshot.filing_date}
+                    onChange={(e) => updateField("snapshot", "filing_date", e.target.value)}
+                  />
+                </label>
+              </div>
+              <fieldset className="border-t border-line pt-4">
+                <legend className="pr-2 font-mono text-[11px] font-medium uppercase tracking-wider text-muted">
+                  Balance sheet and income
+                </legend>
+                <div className="grid gap-4 sm:grid-cols-2">
+                  {[
+                    ["total_debt", "Total debt"],
+                    ["cash_equiv", "Cash equivalents"],
+                    ["revenue", "Revenue"],
+                    ["non_permissible_income", "Non-permissible income"],
+                    ["interest_income", "Interest income"],
+                    ["dividend_income", "Dividend income"],
+                    ["accounts_receivable", "Accounts receivable"],
+                    ["liquid_assets", "Liquid assets"],
+                  ].map(([key, label]) => (
+                    <label key={key} className="flex flex-col gap-1">
+                      <span className={labelClass}>{label}</span>
+                      <input
+                        className={clsx(inputClass, "font-mono tabular-nums")}
+                        type="number"
+                        value={form.snapshot[key as keyof SnapshotForm]}
+                        onChange={(e) => updateField("snapshot", key, e.target.value)}
+                      />
+                    </label>
+                  ))}
+                </div>
+              </fieldset>
+              <fieldset className="border-t border-line pt-4">
+                <legend className="pr-2 font-mono text-[11px] font-medium uppercase tracking-wider text-muted">
+                  Market data
+                </legend>
+                <div className="grid gap-4 sm:grid-cols-3">
+                  {[
+                    ["market_cap", "Market cap"],
+                    ["trailing_market_cap", "Trailing market cap"],
+                    ["share_price", "Share price"],
+                  ].map(([key, label]) => (
+                    <label key={key} className="flex flex-col gap-1">
+                      <span className={labelClass}>{label}</span>
+                      <input
+                        className={clsx(inputClass, "font-mono tabular-nums")}
+                        type="number"
+                        value={form.market_data[key as keyof MarketForm]}
+                        onChange={(e) => updateField("market_data", key, e.target.value)}
+                      />
+                    </label>
+                  ))}
+                </div>
+              </fieldset>
+              {error && <p className="text-sm text-danger" role="alert">{error}</p>}
+              <button type="submit" className={buttonClass("primary", "lg")} disabled={loading}>
+                {loading ? "Analyzing…" : "Analyze filing"}
+              </button>
+            </form>
+          </section>
         </div>
-        {lookupError && (
-          <p className="mt-2 text-sm text-rose-400">{lookupError}</p>
-        )}
-        {selectedFiling && (
-          <>
-            <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
-              <span className={mutedTextClass}>Market data source:</span>
-              <ProviderBadge
-                provider={marketProvider ?? selectedFiling.market_data_provider}
-                theme={theme}
-              />
-              {marketStatus && <span className={mutedTextClass}>{marketStatus}</span>}
-            </div>
-            <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
-              <span className={mutedTextClass}>
-                Filing date:{" "}
-                {new Date(selectedFiling.filing_date).toLocaleDateString()}
-              </span>
-              {selectedFiling.data_updated_at && (
-                <span className={mutedTextClass}>
-                  Last updated:{" "}
-                  {new Date(selectedFiling.data_updated_at).toLocaleDateString()}
-                </span>
-              )}
-              {selectedFiling.confidence && (
-                <span className={mutedTextClass}>
-                  Confidence: {selectedFiling.confidence}
-                </span>
-              )}
-              {selectedFiling.governance_override_applied && (
-                <span className={mutedTextClass}>
-                  Override applied
-                  {selectedFiling.governance_override_source
-                    ? ` (${selectedFiling.governance_override_source})`
-                    : ""}
-                </span>
-              )}
-            </div>
-            {selectedFiling.quality_issues?.length ? (
-              <p className="mt-2 text-xs text-amber-300">
-                Data quality flags: {selectedFiling.quality_issues.join(", ")}
-              </p>
-            ) : null}
-          </>
-        )}
-      </section>
 
-      <section className={cardClass}>
-        <form
-          className="space-y-6"
-          onSubmit={(event) => {
-            event.preventDefault();
-            if (!analysisPayload.market_data.market_cap && !analysisPayload.market_data.trailing_market_cap) {
-              setError(MANUAL_MARKET_MESSAGE);
-              return;
-            }
-            runAnalysis(analysisPayload);
-          }}
-        >
-          <div className="grid gap-4 md:grid-cols-2">
-            <label className="flex flex-col gap-1 text-sm">
-              <span className={mutedTextClass}>Symbol</span>
-              <input
-                className={textareaClass}
-                value={form.snapshot.symbol}
-                onChange={(e) => updateField("snapshot", "symbol", e.target.value.toUpperCase())}
-              />
-            </label>
-            <label className="flex flex-col gap-1 text-sm">
-              <span className={mutedTextClass}>Filing date</span>
-              <input
-                className={textareaClass}
-                type="date"
-                value={form.snapshot.filing_date}
-                onChange={(e) => updateField("snapshot", "filing_date", e.target.value)}
-              />
-            </label>
-          </div>
-          <div className="grid gap-4 md:grid-cols-2">
-            {[
-              ["total_debt", "Total debt"],
-              ["cash_equiv", "Cash equivalents"],
-              ["revenue", "Revenue"],
-              ["non_permissible_income", "Non-permissible income"],
-              ["interest_income", "Interest income"],
-              ["dividend_income", "Dividend income"],
-              ["accounts_receivable", "Accounts receivable"],
-              ["liquid_assets", "Liquid assets"],
-            ].map(([key, label]) => (
-              <label key={key} className="flex flex-col gap-1 text-sm">
-                <span className={mutedTextClass}>{label}</span>
-                <input
-                  className={textareaClass}
-                  type="number"
-                  value={form.snapshot[key as keyof SnapshotForm]}
-                  onChange={(e) => updateField("snapshot", key, e.target.value)}
-                />
-              </label>
-            ))}
-          </div>
-          <div className="grid gap-4 md:grid-cols-3">
-            {[
-              ["market_cap", "Market cap"],
-              ["trailing_market_cap", "Trailing market cap"],
-              ["share_price", "Share price"],
-            ].map(([key, label]) => (
-              <label key={key} className="flex flex-col gap-1 text-sm">
-                <span className={mutedTextClass}>{label}</span>
-                <input
-                  className={textareaClass}
-                  type="number"
-                  value={form.market_data[key as keyof MarketForm]}
-                  onChange={(e) => updateField("market_data", key, e.target.value)}
-                />
-              </label>
-            ))}
-          </div>
-          {error && <p className="text-sm text-rose-400">{error}</p>}
-          <button
-            type="submit"
-            className="rounded-lg bg-cyan-500 px-6 py-3 text-sm font-medium text-slate-950 transition hover:bg-cyan-400 disabled:opacity-50"
-            disabled={loading}
-          >
-            {loading ? "Analyzing…" : "Analyze filing"}
-          </button>
-        </form>
-      </section>
-
-      {response && (
-        <section className="grid gap-6 lg:grid-cols-2">
-          <RatioTable evaluation={response.score} theme={theme} />
-          {response.narration ? (
-            <ExplainPanel narration={response.narration} theme={theme} />
+        <section className="space-y-6 lg:sticky lg:top-6" aria-live="polite">
+          {response ? (
+            <>
+              <RatioTable evaluation={response.score} />
+              {response.narration ? (
+                <ExplainPanel narration={response.narration} />
+              ) : (
+                <article className={clsx(cardClass, "p-6 text-sm text-muted")}>
+                  {hasPaidAccess
+                    ? "Explain-Why narration is unavailable for this filing."
+                    : "Explain-Why narration is included in the paid plans."}
+                </article>
+              )}
+            </>
           ) : (
-            <article className={clsx(cardClass, "text-sm", mutedTextClass)}>
-              {hasPaidAccess
-                ? "Explain-Why narration is unavailable for this filing."
-                : "Explain-Why narration is included in the paid plans."}
-            </article>
+            <div className={clsx(cardClass, "p-6")}>
+              <p className={eyebrowClass}>03 · Result</p>
+              <div className="mt-3">
+                <EmptyState title="No screening yet">
+                  Look up a symbol or enter the filing metrics, then run the analysis to see the verdict, each ratio against its cap and the Explain-Why text.
+                </EmptyState>
+              </div>
+            </div>
           )}
         </section>
-      )}
-    </main>
+      </div>
+    </div>
   );
 }

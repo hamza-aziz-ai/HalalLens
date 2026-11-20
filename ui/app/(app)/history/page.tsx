@@ -1,7 +1,6 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import clsx from "clsx";
 
 import type { Filing } from "@/lib/types";
 import { fetchFilingHistory } from "@/lib/filings";
@@ -11,14 +10,13 @@ import { HistoryMatrix } from "@/components/history-matrix";
 import { RatioTrendChart } from "@/components/ratio-trend-chart";
 import { ProviderBadge } from "@/components/provider-badge";
 import { useAuth } from "@/providers/AuthProvider";
-import { useTheme } from "@/providers/ThemeProvider";
+import { Card, EmptyState, PageHeader, buttonClass, inputClass } from "@/components/ui";
 import { getAutoProviderLabel } from "@/lib/providers";
 import { hasPaidAccess as hasPaidAccessForUser } from "@/lib/subscription";
 
 const DEFAULT_LIMIT = 12;
 
 export default function HistoryPage() {
-  const { theme } = useTheme();
   const { user } = useAuth();
   const hasPaidAccess = hasPaidAccessForUser(user);
 
@@ -29,19 +27,6 @@ export default function HistoryPage() {
   const [loading, setLoading] = useState(false);
   const [appending, setAppending] = useState(false);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
-
-  const cardClass =
-    theme === "dark"
-      ? "rounded-[28px] border border-white/10 bg-[linear-gradient(145deg,rgba(15,23,42,0.92),rgba(8,12,20,0.95))] p-6 shadow-[0_25px_80px_rgba(3,7,18,0.55)]"
-      : "rounded-[28px] border border-slate-200/70 bg-white/85 p-6 shadow-[0_20px_60px_rgba(15,23,42,0.12)]";
-  const headingClass = theme === "dark" ? "text-white" : "text-slate-900";
-  const mutedTextClass = theme === "dark" ? "text-slate-400" : "text-slate-500";
-  const inputClass = clsx(
-    "w-full rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-cyan-400/60",
-    theme === "dark"
-      ? "border border-white/10 bg-white/10 text-white placeholder:text-slate-400"
-      : "border border-slate-200 bg-white text-slate-900 placeholder:text-slate-500",
-  );
 
   const selectedKey = selected
     ? `${selected.symbol}-${selected.filing_date}`
@@ -94,18 +79,18 @@ export default function HistoryPage() {
   };
 
   return (
-    <main className="space-y-10">
-      <header className={cardClass}>
-        <h1 className={clsx("text-3xl font-semibold text-display", headingClass)}>
-          Historical analytics
-        </h1>
-        <p className={clsx("mt-2", mutedTextClass)}>
-          Scan quarter-by-quarter AAOIFI ratios, verdict shifts, and market data
-          context for any symbol.
-        </p>
-        <div className="mt-4 grid gap-3 md:grid-cols-[1fr_auto]">
+    <div className="space-y-8">
+      <PageHeader
+        eyebrow="History"
+        title="Historical analytics"
+        description="Scan quarter-by-quarter AAOIFI ratios, verdict shifts, and market data context for any symbol."
+      />
+
+      <Card>
+        <div className="grid gap-3 md:grid-cols-[1fr_auto]">
           <input
             className={inputClass}
+            aria-label="BSE symbol"
             placeholder="Enter BSE symbol (e.g., TCS or 532540)"
             value={symbol}
             onChange={(event) => setSymbol(event.target.value.toUpperCase())}
@@ -113,51 +98,51 @@ export default function HistoryPage() {
           <button
             type="button"
             onClick={() => loadHistory(symbol)}
-            className="rounded-lg bg-gradient-to-r from-cyan-400 to-emerald-400 px-4 py-2 text-sm font-semibold text-slate-950 hover:opacity-90"
+            className={buttonClass("primary")}
           >
             Load history
           </button>
         </div>
         {!hasPaidAccess && (
-          <p className={clsx("mt-3 text-xs", mutedTextClass)}>
+          <p className="mt-3 text-xs text-muted">
             History is a paid feature. Upgrade to a paid plan to unlock the timeline.
           </p>
         )}
         {historyError && (
-          <p className="mt-2 text-sm text-rose-400">{historyError}</p>
+          <p className="mt-2 text-sm text-danger">{historyError}</p>
         )}
-      </header>
+      </Card>
 
       {loading && (
-        <section className={cardClass}>
-          <p className={clsx("text-sm", mutedTextClass)}>Loading history…</p>
-        </section>
+        <Card>
+          <p className="text-sm text-muted motion-safe:animate-pulse">Loading history…</p>
+        </Card>
       )}
 
       {!loading && entries.length > 0 && (
         <section className="space-y-6">
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <h2 className={clsx("text-lg font-semibold", headingClass)}>
+            <div className="space-y-0.5">
+              <h2 className="text-lg font-semibold text-fg">
                 {selected?.company_name || selected?.symbol}
               </h2>
-              <p className={clsx("text-sm", mutedTextClass)}>
+              <p className="text-sm text-muted">
                 {selected
                   ? `Selected filing: ${new Date(selected.filing_date).toLocaleDateString()}`
                   : "Select a filing to see details."}
               </p>
               {selected?.data_updated_at && (
-                <p className={clsx("text-xs", mutedTextClass)}>
-                  Last updated: {new Date(selected.data_updated_at).toLocaleDateString()}
+                <p className="text-xs text-muted">
+                  Last updated: <span className="font-mono tabular-nums">{new Date(selected.data_updated_at).toLocaleDateString()}</span>
                 </p>
               )}
               {selected?.confidence && (
-                <p className={clsx("text-xs", mutedTextClass)}>
+                <p className="text-xs text-muted">
                   Confidence: {selected.confidence}
                 </p>
               )}
               {selected?.governance_override_applied && (
-                <p className={clsx("text-xs", mutedTextClass)}>
+                <p className="text-xs text-muted">
                   Override applied
                   {selected.governance_override_source
                     ? ` (${selected.governance_override_source})`
@@ -165,17 +150,17 @@ export default function HistoryPage() {
                 </p>
               )}
               {selected?.quality_issues?.length ? (
-                <p className="text-xs text-amber-300">
+                <p className="text-xs text-warning">
                   Data quality flags: {selected.quality_issues.join(", ")}
                 </p>
               ) : null}
             </div>
             {selected && (
               <div className="flex flex-wrap items-center gap-2 text-xs">
-                <span className={mutedTextClass}>Market data source:</span>
-                <ProviderBadge provider={selected.market_data_provider} theme={theme} />
+                <span className="text-muted">Market data source:</span>
+                <ProviderBadge provider={selected.market_data_provider} />
                 {providerLabel && (
-                  <span className={mutedTextClass}>{providerLabel}</span>
+                  <span className="text-muted">{providerLabel}</span>
                 )}
               </div>
             )}
@@ -183,21 +168,15 @@ export default function HistoryPage() {
 
           <div className="grid gap-6 lg:grid-cols-2">
             <HistoryTimeline
-              theme={theme}
               entries={entries}
               activeKey={selectedKey}
               onSelect={setSelected}
             />
-            <RatioTrendChart
-              theme={theme}
-              entries={entries}
-              onSelect={setSelected}
-            />
+            <RatioTrendChart entries={entries} onSelect={setSelected} />
           </div>
 
           <HistoryMatrix
             entries={entries}
-            theme={theme}
             selectedKey={selectedKey}
             onSelect={setSelected}
           />
@@ -207,12 +186,7 @@ export default function HistoryPage() {
               type="button"
               onClick={() => loadHistory(symbol, nextCursor)}
               disabled={!nextCursor || appending}
-              className={clsx(
-                "rounded-full border px-4 py-2 text-xs font-semibold transition",
-                theme === "dark"
-                  ? "border-cyan-400/40 text-cyan-200 hover:border-cyan-300 hover:text-cyan-100"
-                  : "border-cyan-500/40 text-cyan-700 hover:border-cyan-600 hover:text-cyan-600",
-              )}
+              className={buttonClass("secondary")}
             >
               {appending
                 ? "Loading…"
@@ -225,12 +199,10 @@ export default function HistoryPage() {
       )}
 
       {!loading && !entries.length && !historyError && (
-        <section className={cardClass}>
-          <p className={clsx("text-sm", mutedTextClass)}>
-            Enter a symbol to view historical ratios and compliance shifts.
-          </p>
-        </section>
+        <EmptyState title="No symbol loaded">
+          Enter a symbol to view historical ratios and compliance shifts.
+        </EmptyState>
       )}
-    </main>
+    </div>
   );
 }

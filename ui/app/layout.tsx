@@ -5,7 +5,6 @@ import { IBM_Plex_Mono, IBM_Plex_Sans } from "next/font/google";
 import { AuthProvider } from "@/providers/AuthProvider";
 import { ThemeProvider } from "@/providers/ThemeProvider";
 import MaintenanceOverlay from "@/components/maintenance-overlay";
-import GithubBadge from "@/components/github-badge";
 
 // Self-hosted at build time: no request to Google's font CDN from the browser.
 const sans = IBM_Plex_Sans({
@@ -43,7 +42,6 @@ export default function RootLayout({ children }: { children: ReactNode }) {
       <body>
         <ThemeProvider>
           <AuthProvider>{children}</AuthProvider>
-          <GithubBadge />
           <MaintenanceOverlay />
         </ThemeProvider>
       </body>

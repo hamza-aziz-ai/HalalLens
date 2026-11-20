@@ -7,6 +7,7 @@ import type { BillingPlan, Entitlement } from "@/lib/types";
 import {
   createRazorpayOrder,
   creditBreakdown,
+  FEATURE_LABELS,
   fetchBillingPlans,
   fetchEntitlement,
   loadRazorpayScript,
@@ -19,11 +20,10 @@ import { logoutUser } from "@/lib/auth";
 import { GoogleLinkCard } from "@/components/google-link-card";
 import { AlertEmailsCard } from "@/components/alert-emails-card";
 import { useAuth } from "@/providers/AuthProvider";
-import { useTheme } from "@/providers/ThemeProvider";
+import { Card, PageHeader, buttonClass, eyebrowClass } from "@/components/ui";
 import { isTrialEligible } from "@/lib/subscription";
 
 export default function AccountPage() {
-  const { theme } = useTheme();
   const { user, refresh } = useAuth();
 
   const [billingPlans, setBillingPlans] = useState<BillingPlan[]>([]);
@@ -36,13 +36,6 @@ export default function AccountPage() {
 
   const isAdmin = Boolean(user?.is_admin);
   const trialEligible = isTrialEligible(user);
-
-  const cardClass =
-    theme === "dark"
-      ? "rounded-[28px] border border-white/10 bg-[linear-gradient(145deg,rgba(15,23,42,0.92),rgba(8,12,20,0.95))] p-6 shadow-[0_25px_80px_rgba(3,7,18,0.55)]"
-      : "rounded-[28px] border border-slate-200/70 bg-white/85 p-6 shadow-[0_20px_60px_rgba(15,23,42,0.12)]";
-  const headingClass = theme === "dark" ? "text-white" : "text-slate-900";
-  const mutedTextClass = theme === "dark" ? "text-slate-400" : "text-slate-500";
 
   useEffect(() => {
     fetchBillingPlans()
@@ -127,7 +120,7 @@ export default function AccountPage() {
           prefill: {
             email: user.email,
           },
-          theme: { color: "#06b6d4" },
+          theme: { color: "#0f766e" }, // brand teal (--brand, light theme)
           modal: {
             // Closing the checkout ends the wait. It is not proof of a cancel:
             // a payment finished on the bank's page never calls `handler`.
@@ -217,53 +210,42 @@ export default function AccountPage() {
   })();
 
   return (
-    <main className="space-y-10">
-      <header className={cardClass}>
-        <h1 className={clsx("text-3xl font-semibold text-display", headingClass)}>
-          Account & subscription
-        </h1>
-        <p className={clsx("mt-2", mutedTextClass)}>
-          Manage your plan, billing status, and account access.
-        </p>
-      </header>
-
-      <GoogleLinkCard
-        cardClass={cardClass}
-        headingClass={headingClass}
-        mutedTextClass={mutedTextClass}
+    <>
+      <PageHeader
+        eyebrow="Account"
+        title="Account & subscription"
+        description="Manage your plan, billing status, and account access."
       />
 
-      <AlertEmailsCard cardClass={cardClass} headingClass={headingClass} mutedTextClass={mutedTextClass} />
-
-      <section className={cardClass}>
+      <Card>
         <div className="flex flex-col gap-6 md:flex-row md:items-start md:justify-between">
           <div className="space-y-2">
-            <h2 className={clsx("text-lg font-semibold", headingClass)}>
+            <h2 className="font-semibold text-fg">
               Subscription status
             </h2>
             {user ? (
               <>
-                <p className={clsx("text-sm", mutedTextClass)}>
+                <p className="text-sm text-muted">
                   Signed in as {" "}
-                  <span className={clsx("font-semibold", headingClass)}>
+                  <span className="font-semibold text-fg">
                     {user.email}
                   </span>
                 </p>
-                <p className={clsx("text-sm", mutedTextClass)}>
+                <p className="text-sm text-muted">
                   Plan: {" "}
-                  <span className="font-semibold capitalize">
+                  <span className="font-semibold capitalize text-fg">
                     {isAdmin ? "admin" : user.plan}
                   </span>{" "}
                   ({isAdmin ? "full access" : user.subscription_status})
                 </p>
                 {running && !isAdmin && (
-                  <p className={clsx("text-xs", mutedTextClass)}>
+                  <p className="text-xs text-muted">
                     {running.end ? `Access until ${formatDate(running.end)}` : "Lifetime access"}
                   </p>
                 )}
                 {!isAdmin &&
                   queued.map((segment) => (
-                    <p key={segment.start} className={clsx("text-xs", mutedTextClass)}>
+                    <p key={segment.start} className="text-xs text-muted">
                       Then {planName(segment.plan_code)}{" "}
                       {segment.end
                         ? `from ${formatDate(segment.start)} until ${formatDate(segment.end)}`
@@ -271,56 +253,56 @@ export default function AccountPage() {
                     </p>
                   ))}
                 {running?.end && !isAdmin && (
-                  <p className={clsx("text-xs", mutedTextClass)}>
+                  <p className="text-xs text-muted">
                     No automatic renewal: buy again before your access ends to continue.
                   </p>
                 )}
               </>
             ) : (
-              <p className={clsx("text-sm", mutedTextClass)}>
+              <p className="text-sm text-muted">
                 Sign in to manage your subscription.
               </p>
             )}
-            <p className={clsx("text-xs", mutedTextClass)}>
+            <p className="text-xs text-muted">
               Starter ₹50/month, Annual ₹500/year, and Lifetime ₹2000 unlock unlimited
               lookups, Explain-Why, governance overrides, and premium alerts.
             </p>
             {billingError && (
-              <p className="text-xs text-rose-300">{billingError}</p>
+              <p className="text-xs text-danger">{billingError}</p>
             )}
             {upgradeMessage && (
-              <p className="text-xs text-emerald-300">{upgradeMessage}</p>
+              <p className="text-xs text-success">{upgradeMessage}</p>
             )}
           </div>
-          <div className="w-full max-w-sm space-y-3 rounded-2xl border border-white/10 bg-white/5 p-4 shadow-inner shadow-black/10">
+          <div className="w-full max-w-sm space-y-3 rounded-lg border border-line bg-surface-2 p-4">
             {user ? (
               <>
                 <button
                   type="button"
                   onClick={handleLogout}
-                  className="w-full rounded-lg border border-white/20 bg-white/10 px-4 py-2 text-sm font-semibold text-white hover:bg-white/20"
+                  className={clsx(buttonClass("secondary"), "w-full")}
                 >
                   Sign out
                 </button>
               </>
             ) : (
-              <p className={clsx("text-sm", mutedTextClass)}>
+              <p className="text-sm text-muted">
                 Login required to manage billing.
               </p>
             )}
           </div>
         </div>
-      </section>
+      </Card>
 
-      <section className={cardClass}>
+      <section className="space-y-4">
         <div className="flex items-center justify-between">
-          <h2 className={clsx("text-lg font-semibold", headingClass)}>Plans</h2>
+          <h2 className="font-semibold text-fg">Plans</h2>
           {billingLoading && (
-            <span className={clsx("text-xs", mutedTextClass)}>Loading…</span>
+            <span className="text-xs text-muted">Loading…</span>
           )}
         </div>
-        {billingError && <p className="mt-2 text-xs text-rose-300">{billingError}</p>}
-        <div className="mt-4 grid gap-4 md:grid-cols-3">
+        {billingError && <p className="text-xs text-danger">{billingError}</p>}
+        <div className="grid gap-4 md:grid-cols-3">
           {billingPlans.map((plan) => {
             // An unrefunded Lifetime covers every plan (the API refuses the order).
             const isLifetimeUser = Boolean(entitlement?.purchases_blocked);
@@ -331,41 +313,44 @@ export default function AccountPage() {
             const quote = quoteFor(plan);
             const disableUpgrade = upgradeLoading || billingLoading || isLifetimeUser || Boolean(quote?.blocked);
             const label = purchaseLabel(plan, currentRank);
+            // Presentation only: outline the plan that is running now.
+            const isCurrent = !isAdmin && running?.plan_code === plan.code;
             return (
               <div
                 key={plan.code}
                 className={clsx(
-                  "rounded-2xl border p-4",
-                  theme === "dark"
-                    ? "border-white/10 bg-white/5 text-slate-200"
-                    : "border-slate-200 bg-white text-slate-700",
+                  "flex flex-col rounded-xl border bg-surface p-5 shadow-sm transition motion-reduce:transition-none",
+                  isCurrent ? "border-brand ring-1 ring-brand/30" : "border-line hover:border-brand/40",
                 )}
               >
-                <div className="flex items-center justify-between">
+                <div className="flex items-start justify-between gap-2">
                   <div>
-                    <h3 className="text-base font-semibold">{plan.name}</h3>
-                    <p className={clsx("text-xs", mutedTextClass)}>{formatPlanPrice(plan)}</p>
+                    <p className={eyebrowClass}>{isCurrent ? "Current plan" : "Plan"}</p>
+                    <h3 className="mt-1 text-base font-semibold text-fg">{plan.name}</h3>
+                    <p className="mt-1 font-mono text-sm tabular-nums text-fg">{formatPlanPrice(plan)}</p>
                   </div>
                   {isAnnual && annualSavings && (
-                    <span className="rounded-full bg-emerald-500/15 px-2 py-1 text-[11px] font-semibold text-emerald-200">
+                    <span className="rounded-full border border-success/30 bg-success/10 px-2 py-0.5 font-mono text-[11px] font-semibold tabular-nums text-success">
                       Save {annualSavings.toFixed(2)}%
                     </span>
                   )}
                 </div>
                 {plan.trial_days > 0 && (
-                  <p className={clsx("mt-2 text-xs", mutedTextClass)}>
+                  <p className="mt-2 text-xs text-muted">
                     Includes 1-month trial
                   </p>
                 )}
-                <ul className="mt-3 space-y-1 text-xs">
-                  {plan.features.map((feature) => (
-                    <li key={feature}>• {feature}</li>
-                  ))}
+                <ul className="mt-4 flex-1 space-y-1.5 border-t border-line pt-4 text-xs text-muted">
+                  {plan.features
+                    .filter((feature) => FEATURE_LABELS[feature])
+                    .map((feature) => (
+                      <li key={feature}>• {FEATURE_LABELS[feature]}</li>
+                    ))}
                 </ul>
                 <div className="mt-4 flex flex-col gap-2">
                   {user ? (
                     isLifetimeUser ? (
-                      <p className={clsx("text-xs", mutedTextClass)}>
+                      <p className="text-xs text-muted">
                         {plan.code === "lifetime" ? "Your plan: Lifetime." : "Lifetime covers this plan."}
                       </p>
                     ) : (
@@ -375,7 +360,7 @@ export default function AccountPage() {
                             type="button"
                             onClick={() => handleTrial(plan)}
                             disabled={trialLoading === plan.code}
-                            className="w-full rounded-lg border border-amber-400/40 bg-amber-400/10 px-3 py-2 text-xs font-semibold text-amber-200 hover:bg-amber-400/20 disabled:opacity-60"
+                            className={clsx(buttonClass("secondary"), "w-full")}
                           >
                             {trialLoading === plan.code
                               ? "Starting trial…"
@@ -386,29 +371,29 @@ export default function AccountPage() {
                           type="button"
                           onClick={() => handleUpgrade(plan)}
                           disabled={disableUpgrade}
-                          className="w-full rounded-lg bg-gradient-to-r from-cyan-400 to-emerald-400 px-3 py-2 text-xs font-semibold text-slate-950 hover:opacity-90 disabled:opacity-60"
+                          className={clsx(buttonClass("primary"), "w-full")}
                         >
                           {label}
                         </button>
                         {quote && quote.credit_amount > 0 && (
-                          <p className={clsx("text-[11px]", mutedTextClass)}>
+                          <p className="text-[11px] text-muted">
                             {creditBreakdown(quote)} for your unused paid time.
                           </p>
                         )}
                         {quote?.blocked && (
-                          <p className="text-[11px] text-amber-300">
+                          <p className="text-[11px] text-warning">
                             Your credit covers almost all of the price, so checkout is closed: contact support to upgrade.
                           </p>
                         )}
                         {planStartsLater && (
-                          <p className={clsx("text-[11px]", mutedTextClass)}>
+                          <p className="text-[11px] text-muted">
                             {extendsLastPlan ? "Adds to your plan; " : ""}starts {formatDate(planStartsLater)}
                           </p>
                         )}
                       </>
                     )
                   ) : (
-                    <p className={clsx("text-xs", mutedTextClass)}>
+                    <p className="text-xs text-muted">
                       Sign in to upgrade.
                     </p>
                   )}
@@ -418,6 +403,11 @@ export default function AccountPage() {
           })}
         </div>
       </section>
-    </main>
+
+      <div className="grid gap-6 md:grid-cols-2">
+        <GoogleLinkCard />
+        <AlertEmailsCard />
+      </div>
+    </>
   );
 }

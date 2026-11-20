@@ -1,7 +1,6 @@
 "use client";
 
 import { useState } from "react";
-import clsx from "clsx";
 
 import type { Filing, GovernanceOverride, GovernanceReview } from "@/lib/types";
 import { fetchFilingDetail } from "@/lib/filings";
@@ -13,7 +12,7 @@ import {
 } from "@/lib/governance";
 import { GovernanceReviewPanel } from "@/components/governance-review";
 import { useAuth } from "@/providers/AuthProvider";
-import { useTheme } from "@/providers/ThemeProvider";
+import { Card, EmptyState, PageHeader, buttonClass, inputClass, labelClass } from "@/components/ui";
 import { hasGovernanceAccess } from "@/lib/subscription";
 
 const defaultOverrideForm = {
@@ -37,7 +36,6 @@ function parseOverrideNumber(value: string) {
 }
 
 export default function GovernancePage() {
-  const { theme } = useTheme();
   const { user } = useAuth();
   // Named hasPaidAccess throughout this page for historical reasons; the API
   // now requires an admin account for every governance route.
@@ -57,25 +55,6 @@ export default function GovernancePage() {
   const [governanceReview, setGovernanceReview] = useState<GovernanceReview | null>(null);
   const [governanceReviewError, setGovernanceReviewError] = useState<string | null>(null);
   const [governanceReviewLoading, setGovernanceReviewLoading] = useState(false);
-
-  const cardClass =
-    theme === "dark"
-      ? "rounded-[28px] border border-white/10 bg-[linear-gradient(145deg,rgba(15,23,42,0.92),rgba(8,12,20,0.95))] p-6 shadow-[0_25px_80px_rgba(3,7,18,0.55)]"
-      : "rounded-[28px] border border-slate-200/70 bg-white/85 p-6 shadow-[0_20px_60px_rgba(15,23,42,0.12)]";
-  const headingClass = theme === "dark" ? "text-white" : "text-slate-900";
-  const mutedTextClass = theme === "dark" ? "text-slate-400" : "text-slate-500";
-  const inputClass = clsx(
-    "w-full rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-cyan-400/60",
-    theme === "dark"
-      ? "border border-white/10 bg-white/10 text-white placeholder:text-slate-400"
-      : "border border-slate-200 bg-white text-slate-900 placeholder:text-slate-500",
-  );
-  const textareaClass = clsx(
-    "w-full rounded-xl border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-cyan-400/60",
-    theme === "dark"
-      ? "border-slate-700 bg-slate-900 text-white placeholder:text-slate-500"
-      : "border-slate-200 bg-white text-slate-900 placeholder:text-slate-500",
-  );
 
   const refreshOverrides = async (targetSymbol?: string) => {
     if (!targetSymbol) {
@@ -206,61 +185,55 @@ export default function GovernancePage() {
   };
 
   return (
-    <main className="space-y-10">
-      <header className={cardClass}>
-        <h1 className={clsx("text-3xl font-semibold text-display", headingClass)}>
-          Governance overrides
-        </h1>
-        <p className={clsx("mt-2", mutedTextClass)}>
-          Apply structured corrections when extracted AAOIFI metrics disagree with
-          filings or Indian API values.
-        </p>
-        <div className="mt-4 grid gap-3 md:grid-cols-[1fr_auto]">
+    <>
+      <PageHeader
+        eyebrow="Admin"
+        title="Governance overrides"
+        description="Apply structured corrections when extracted AAOIFI metrics disagree with filings or Indian API values."
+      />
+
+      <Card>
+        <div className="grid gap-3 md:grid-cols-[1fr_auto]">
           <input
             className={inputClass}
+            aria-label="Symbol"
             placeholder="Enter a symbol to review (e.g., TCS)"
             value={symbol}
             onChange={(event) => setSymbol(event.target.value.toUpperCase())}
           />
-          <button
-            type="button"
-            onClick={loadLatestFiling}
-            className="rounded-lg bg-gradient-to-r from-cyan-400 to-emerald-400 px-4 py-2 text-sm font-semibold text-slate-950 hover:opacity-90"
-          >
+          <button type="button" onClick={loadLatestFiling} className={buttonClass("primary")}>
             {loadingFiling ? "Loading…" : "Load latest filing"}
           </button>
         </div>
-        {filingError && <p className="mt-2 text-sm text-rose-400">{filingError}</p>}
+        {filingError && <p className="mt-2 text-sm text-danger">{filingError}</p>}
         {selectedFiling && (
-          <p className={clsx("mt-2 text-xs", mutedTextClass)}>
-            Reviewing {selectedFiling.symbol} · Filing date{" "}
-            {new Date(selectedFiling.filing_date).toLocaleDateString()}
+          <p className="mt-2 text-xs text-muted">
+            Reviewing <span className="font-mono text-fg">{selectedFiling.symbol}</span> · Filing date{" "}
+            <span className="font-mono tabular-nums">{new Date(selectedFiling.filing_date).toLocaleDateString()}</span>
           </p>
         )}
         {!hasPaidAccess && (
-          <p className={clsx("mt-2 text-xs", mutedTextClass)}>
+          <p className="mt-2 text-xs text-muted">
             Governance overrides require a paid plan.
           </p>
         )}
-      </header>
+      </Card>
 
-      <section className={cardClass}>
+      <Card className="space-y-5">
         <GovernanceReviewPanel
           review={governanceReview}
           loading={governanceReviewLoading}
           error={governanceReviewError}
-          theme={theme}
           onApplyIndian={handleApplyIndianMetrics}
         />
 
-        <div className="mt-6 grid gap-4 md:grid-cols-2">
+        <div className="grid gap-4 md:grid-cols-2">
           <TextInput
             label="Accounts receivable override"
             value={overrideForm.accounts_receivable}
             onChange={(value) =>
               setOverrideForm((prev) => ({ ...prev, accounts_receivable: value }))
             }
-            theme={theme}
           />
           <TextInput
             label="Liquid assets override"
@@ -268,7 +241,6 @@ export default function GovernancePage() {
             onChange={(value) =>
               setOverrideForm((prev) => ({ ...prev, liquid_assets: value }))
             }
-            theme={theme}
           />
           <TextInput
             label="Non-permissible income override"
@@ -276,7 +248,6 @@ export default function GovernancePage() {
             onChange={(value) =>
               setOverrideForm((prev) => ({ ...prev, non_halal_income: value }))
             }
-            theme={theme}
           />
           <TextInput
             label="Reviewer name"
@@ -284,15 +255,14 @@ export default function GovernancePage() {
             onChange={(value) =>
               setOverrideForm((prev) => ({ ...prev, reviewer: value }))
             }
-            theme={theme}
           />
         </div>
 
-        <div className="mt-4 grid gap-3">
-          <label className="flex flex-col gap-1 text-sm">
-            <span className={mutedTextClass}>Override notes</span>
+        <div className="grid gap-4">
+          <label className="flex flex-col gap-1.5">
+            <span className={labelClass}>Override notes</span>
             <textarea
-              className={clsx("min-h-[70px]", textareaClass)}
+              className={`min-h-[70px] ${inputClass}`}
               value={overrideForm.governance_notes}
               onChange={(event) =>
                 setOverrideForm((prev) => ({
@@ -302,10 +272,10 @@ export default function GovernancePage() {
               }
             />
           </label>
-          <label className="flex flex-col gap-1 text-sm">
-            <span className={mutedTextClass}>Reason</span>
+          <label className="flex flex-col gap-1.5">
+            <span className={labelClass}>Reason</span>
             <input
-              className={textareaClass}
+              className={inputClass}
               value={overrideForm.reason}
               onChange={(event) =>
                 setOverrideForm((prev) => ({ ...prev, reason: event.target.value }))
@@ -314,33 +284,30 @@ export default function GovernancePage() {
           </label>
         </div>
 
-        <div className="mt-4 flex flex-wrap items-center gap-3">
+        <div className="flex flex-wrap items-center gap-3 border-t border-line pt-4">
           <button
             type="button"
             onClick={handleOverrideSubmit}
-            className="rounded-lg bg-emerald-500 px-4 py-2 text-sm font-semibold text-slate-900 hover:bg-emerald-400 disabled:opacity-60"
+            className={buttonClass("primary")}
             disabled={overrideLoading || !hasPaidAccess}
           >
             {overrideLoading ? "Saving…" : "Apply override"}
           </button>
           {overrideStatus && (
-            <span className="text-xs text-emerald-300">{overrideStatus}</span>
+            <span className="text-xs text-success">{overrideStatus}</span>
           )}
           {overrideError && (
-            <span className="text-xs text-rose-300">{overrideError}</span>
+            <span className="text-xs text-danger">{overrideError}</span>
           )}
         </div>
-      </section>
+      </Card>
 
-      <section className={cardClass}>
-        <div className="flex items-center justify-between">
-          <h2 className={clsx("text-lg font-semibold", headingClass)}>Override history</h2>
+      <Card className="p-0">
+        <div className="flex items-center justify-between border-b border-line px-5 py-4">
+          <h2 className="font-semibold text-fg">Override history</h2>
           <button
             type="button"
-            className={clsx(
-              "text-xs font-semibold",
-              theme === "dark" ? "text-cyan-300" : "text-cyan-700",
-            )}
+            className={buttonClass("ghost")}
             onClick={() => refreshOverrides(selectedFiling?.symbol)}
             disabled={!selectedFiling}
           >
@@ -348,55 +315,55 @@ export default function GovernancePage() {
           </button>
         </div>
         {governanceOverrides.length === 0 ? (
-          <p className={clsx("mt-3 text-sm", mutedTextClass)}>
-            {selectedFiling
-              ? "No overrides for this symbol yet."
-              : "Load a symbol to view overrides."}
-          </p>
+          <div className="p-5">
+            <EmptyState
+              title={
+                selectedFiling
+                  ? "No overrides for this symbol yet."
+                  : "Load a symbol to view overrides."
+              }
+            />
+          </div>
         ) : (
-          <div className="mt-4 space-y-3">
+          <ul>
             {governanceOverrides.map((entry) => (
-              <div
+              <li
                 key={`${entry.symbol}-${entry.filing_date}`}
-                className={clsx(
-                  "rounded-lg border px-3 py-3 text-sm",
-                  theme === "dark"
-                    ? "border-slate-800 bg-slate-900/70 text-slate-200"
-                    : "border-slate-200 bg-white text-slate-700",
-                )}
+                className="border-b border-line px-5 py-3 text-sm last:border-0"
               >
-                <div className="flex items-center justify-between text-xs">
-                  <span className={mutedTextClass}>
-                    {entry.symbol} · {new Date(entry.filing_date).toLocaleString()}
+                <div className="flex items-center justify-between gap-3 text-xs">
+                  <span className="text-muted">
+                    <span className="font-mono text-fg">{entry.symbol}</span> ·{" "}
+                    <span className="font-mono tabular-nums">{new Date(entry.filing_date).toLocaleString()}</span>
                   </span>
                   <button
                     type="button"
-                    className="text-rose-400 hover:text-rose-300"
+                    className="font-semibold text-danger hover:underline disabled:opacity-60"
                     onClick={() => handleOverrideDelete(entry)}
                     disabled={!hasPaidAccess}
                   >
                     Remove
                   </button>
                 </div>
-                <p className="mt-1 text-xs text-slate-400">
+                <p className="mt-1 text-xs text-muted">
                   Reviewer: {entry.reviewer || "—"} · Source: {entry.source || "manual"}
                 </p>
-                <p className="mt-2 text-sm">
+                <p className="mt-2 font-mono text-sm tabular-nums text-fg">
                   AR={entry.accounts_receivable ?? "—"} · Liquid={entry.liquid_assets ?? "—"}
                   {" · "}Non-halal={entry.non_halal_income ?? "—"}
                 </p>
                 {entry.governance_notes && (
-                  <p className="text-xs text-amber-300">{entry.governance_notes}</p>
+                  <p className="mt-1 text-xs text-warning">{entry.governance_notes}</p>
                 )}
                 {entry.reason && (
-                  <p className={clsx("text-xs", mutedTextClass)}>Reason: {entry.reason}</p>
+                  <p className="text-xs text-muted">Reason: {entry.reason}</p>
                 )}
-              </div>
+              </li>
             ))}
-          </div>
+          </ul>
         )}
-      </section>
-    </main>
+      </Card>
+    </>
   );
 }
 
@@ -404,25 +371,16 @@ function TextInput({
   label,
   value,
   onChange,
-  theme,
 }: {
   label: string;
   value: string;
   onChange: (value: string) => void;
-  theme: "dark" | "light";
 }) {
   return (
-    <label className="flex flex-col gap-1 text-sm">
-      <span className={theme === "dark" ? "text-slate-400" : "text-slate-500"}>
-        {label}
-      </span>
+    <label className="flex flex-col gap-1.5">
+      <span className={labelClass}>{label}</span>
       <input
-        className={clsx(
-          "w-full rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-cyan-400/60",
-          theme === "dark"
-            ? "border border-white/10 bg-white/10 text-white"
-            : "border border-slate-200 bg-white text-slate-900",
-        )}
+        className={inputClass}
         value={value}
         onChange={(event) => onChange(event.target.value)}
       />

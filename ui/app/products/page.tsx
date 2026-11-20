@@ -8,16 +8,9 @@ import PolicyLayout, {
   policyListClass,
   policyTitleClass,
 } from "@/components/policy-layout";
-import { fetchBillingPlans } from "@/lib/billing";
+import { FEATURE_LABELS, fetchBillingPlans } from "@/lib/billing";
 import type { BillingPlan } from "@/lib/types";
 
-// Plan features shown to customers; admin-only capabilities are not listed.
-const FEATURE_LABELS: Record<string, string> = {
-  instant_lookup: "Instant symbol lookup with fresh ratios",
-  explain_why: "Explain-Why narration of every verdict",
-  history: "Filing history and ratio trends",
-  alerts: "Watchlists with compliance-change alerts",
-};
 
 function period(plan: BillingPlan) {
   if (plan.interval_days <= 0) return "one-time payment, no renewal";

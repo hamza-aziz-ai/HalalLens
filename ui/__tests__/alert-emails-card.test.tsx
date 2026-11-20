@@ -8,11 +8,9 @@ jest.mock("@/lib/alerts", () => ({
   saveAlertEmails: jest.fn(async (enabled: boolean) => enabled),
 }));
 
-const props = { cardClass: "", headingClass: "", mutedTextClass: "" };
-
 describe("AlertEmailsCard", () => {
   it("shows the stored setting and saves the opt-out", async () => {
-    render(<AlertEmailsCard {...props} />);
+    render(<AlertEmailsCard />);
     const box = screen.getByRole("checkbox", { name: /email me when a watched stock/i });
     await waitFor(() => expect(box).toBeChecked());
     expect(screen.getByText(/not a fatwa and not investment advice/i)).toBeInTheDocument();
@@ -24,7 +22,7 @@ describe("AlertEmailsCard", () => {
 
   it("stays disabled and says so when the setting cannot be loaded", async () => {
     (fetchAlertEmails as jest.Mock).mockRejectedValueOnce(new Error("Invalid session"));
-    render(<AlertEmailsCard {...props} />);
+    render(<AlertEmailsCard />);
     expect(await screen.findByText("Invalid session")).toBeInTheDocument();
     expect(screen.getByRole("checkbox")).toBeDisabled();
   });
