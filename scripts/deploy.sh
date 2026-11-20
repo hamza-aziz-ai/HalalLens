@@ -35,6 +35,21 @@ else
   $COMPOSE up -d
 fi
 
+# Caddy mounts single files (Caddyfile, the maintenance page). `git checkout`
+# replaces them with new files, but a running container keeps reading the old
+# ones and compose does not recreate it for a changed bind-mounted file, so a
+# new Caddyfile would never take effect. Recreate Caddy only when they differ
+# (a few seconds; the Cloudflare maintenance Worker covers the gap).
+caddy_current() {  # container path, checkout path
+  docker exec "$caddy_id" cat "$1" 2>/dev/null | cmp -s - "$2"
+}
+caddy_id=$($COMPOSE ps -q caddy)
+if [ -n "$caddy_id" ] && ! { caddy_current /etc/caddy/Caddyfile Caddyfile &&
+    caddy_current /srv/errors/maintenance.html caddy/maintenance.html; }; then
+  echo "== Caddy configuration changed: recreating caddy"
+  $COMPOSE up -d --no-deps --force-recreate caddy
+fi
+
 echo "== waiting for the API to become healthy"
 state=starting
 for _ in $(seq 1 60); do
