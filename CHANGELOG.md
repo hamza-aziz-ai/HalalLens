@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.20.4](https://github.com/hamza-aziz-ai/HalalLens/compare/v0.20.3...v0.20.4) (2026-11-20)
+
+
+### Bug Fixes
+
+* **proxy:** send baseline security headers on every response ([#250](https://github.com/hamza-aziz-ai/HalalLens/issues/250)) ([22cde39](https://github.com/hamza-aziz-ai/HalalLens/commit/22cde39e6dfd75303aa331186dc78bd69abfe830))
+
 ## [0.20.3](https://github.com/hamza-aziz-ai/HalalLens/compare/v0.20.2...v0.20.3) (2026-11-20)
 
 
