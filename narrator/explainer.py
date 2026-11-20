@@ -18,6 +18,8 @@ class RuleBasedNarrator:
         "debt_to_market_cap": "Debt to market cap",
         "cash_to_market_cap": "Cash to market cap",
         "non_permissible_income_ratio": "Non-permissible income ratio",
+        "receivables_to_market_cap": "Receivables to market cap",
+        "liquid_assets_to_market_cap": "Liquid assets to market cap",
     }
 
     verdict_text: Dict[str, str] = {
@@ -30,7 +32,8 @@ class RuleBasedNarrator:
         filing = evaluation.filing_date.date().isoformat()
         verdict = self.verdict_text.get(evaluation.verdict, self.insufficient_text)
         if evaluation.verdict in self.verdict_text:
-            summary = f"{evaluation.symbol} is {verdict.lower()} for the filing dated {filing}."
+            # Lower only "NOT"; .lower() on the whole text also turned AAOIFI into aaoifi.
+            summary = f"{evaluation.symbol} is {verdict.replace('NOT ', 'not ')} for the filing dated {filing}."
         else:
             # Unknown is not a failure: say so instead of "NOT compliant".
             summary = (
@@ -52,7 +55,7 @@ class RuleBasedNarrator:
             threshold_pct = computation.threshold * 100
             status = "within" if computation.passed else "above"
             bullets.append(
-                f"{label} is {value_pct:.2f}% vs {threshold_pct:.0f}% cap ( {status} limits )."
+                f"{label} is {value_pct:.2f}% vs {threshold_pct:.0f}% cap ({status} limits)."
             )
             citations.append(
                 f"{label} sourced from filing on {evaluation.filing_date.date().isoformat()}"
