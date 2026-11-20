@@ -30,7 +30,8 @@ class RuleBasedNarrator:
         filing = evaluation.filing_date.date().isoformat()
         verdict = self.verdict_text.get(evaluation.verdict, self.insufficient_text)
         if evaluation.verdict in self.verdict_text:
-            summary = f"{evaluation.symbol} is {verdict.lower()} for the filing dated {filing}."
+            # Lower only "NOT"; .lower() on the whole text also turned AAOIFI into aaoifi.
+            summary = f"{evaluation.symbol} is {verdict.replace('NOT ', 'not ')} for the filing dated {filing}."
         else:
             # Unknown is not a failure: say so instead of "NOT compliant".
             summary = (

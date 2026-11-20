@@ -7,6 +7,7 @@ from datetime import datetime
 import pytest
 
 from narrator import NarrationEngine, NarratorConfig
+from narrator.explainer import RuleBasedNarrator
 from narrator.llm import LLMNarrationEngine, LLMNarrationError
 from ratio_engine import (
     FinancialSnapshotInput,
@@ -307,3 +308,15 @@ def test_the_guard_is_best_effort_and_a_paraphrase_can_still_pass():
     result = _llm_narrator(client, "compliant").build(evaluation)
 
     assert result.metadata["source"] == "llm"
+
+
+def test_rule_based_summary_keeps_aaoifi_capitalised():
+    engine = RatioEngine()
+    snapshot = FinancialSnapshotInput(
+        symbol="CAP",
+        filing_date=datetime(2026, 3, 31),
+        total_debt=1, cash_equiv=1, revenue=100, non_permissible_income=0,
+        interest_income=0, dividend_income=0, accounts_receivable=1, liquid_assets=1,
+    )
+    result = RuleBasedNarrator().build(engine.evaluate(snapshot, MarketDataInput(market_cap=100)))
+    assert result.summary == "CAP is compliant with AAOIFI screens for the filing dated 2026-03-31."
