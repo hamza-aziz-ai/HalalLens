@@ -65,14 +65,14 @@ export default function ProductsPage() {
         {plans && (
           <div className="mt-4 grid gap-4 sm:grid-cols-3">
             {plans.map((plan) => (
-              <div key={plan.code} className="rounded-2xl border border-white/10 bg-white/5 p-5">
-                <p className="text-sm font-semibold text-white">{plan.name}</p>
-                <p className="mt-2 text-2xl font-semibold text-white">
+              <div key={plan.code} className="rounded-2xl border border-line bg-surface p-5">
+                <p className="text-sm font-semibold text-fg">{plan.name}</p>
+                <p className="mt-2 text-2xl font-semibold text-fg">
                   ₹{plan.price_inr.toLocaleString("en-IN")}
                 </p>
-                <p className="text-xs text-slate-400">{period(plan)}</p>
+                <p className="text-xs text-muted">{period(plan)}</p>
                 {plan.trial_days > 0 && (
-                  <p className="mt-2 text-xs text-emerald-300">{plan.trial_days}-day free trial</p>
+                  <p className="mt-2 text-xs text-success">{plan.trial_days}-day free trial</p>
                 )}
               </div>
             ))}
@@ -81,7 +81,7 @@ export default function ProductsPage() {
         <p className={`${policyBodyClass} mt-4`}>
           Prices are in Indian rupees. Payments are processed securely
           by Razorpay. Access starts as soon as the payment is confirmed; nothing is shipped.{" "}
-          <Link href="/login/" className="text-cyan-200 hover:text-cyan-100">
+          <Link href="/login/" className="text-brand hover:underline">
             Create an account
           </Link>{" "}
           and choose a plan on the Account page.
@@ -101,15 +101,15 @@ export default function ProductsPage() {
           </li>
           <li>
             See the{" "}
-            <Link href="/refund-policy/" className="text-cyan-200 hover:text-cyan-100">
+            <Link href="/refund-policy/" className="text-brand hover:underline">
               cancellation and refund policy
             </Link>
             ,{" "}
-            <Link href="/terms/" className="text-cyan-200 hover:text-cyan-100">
+            <Link href="/terms/" className="text-brand hover:underline">
               terms
             </Link>{" "}
             and{" "}
-            <Link href="/privacy/" className="text-cyan-200 hover:text-cyan-100">
+            <Link href="/privacy/" className="text-brand hover:underline">
               privacy policy
             </Link>
             .

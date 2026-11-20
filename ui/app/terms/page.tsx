@@ -72,7 +72,7 @@ export default function TermsPage() {
         <h2 className={policyTitleClass}>Contact</h2>
         <p className={`${policyBodyClass} mt-3`}>
           Reach us at{" "}
-          <SupportEmail className="text-cyan-200 hover:text-cyan-100" />{" "}
+          <SupportEmail className="text-brand hover:underline" />{" "}
           for questions about these terms.
         </p>
       </section>

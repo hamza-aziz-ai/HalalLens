@@ -22,9 +22,9 @@ export default function ResetPasswordPage() {
     <div className={authPageClass}>
       <div className={authCardClass}>
         {done ? (
-          <p className="text-sm text-slate-300">
+          <p className="text-sm text-muted">
             Password set and email confirmed. Every device was signed out.{" "}
-            <Link href="/login" className="text-cyan-200 hover:text-cyan-100">
+            <Link href="/login" className="text-brand hover:underline">
               Sign in
             </Link>
             .
@@ -40,9 +40,9 @@ export default function ResetPasswordPage() {
             }}
           />
         ) : checked ? (
-          <p className="text-sm text-slate-300">
+          <p className="text-sm text-muted">
             This page needs the link from your password email.{" "}
-            <Link href="/login" className="text-cyan-200 hover:text-cyan-100">
+            <Link href="/login" className="text-brand hover:underline">
               Request a new one
             </Link>
             .

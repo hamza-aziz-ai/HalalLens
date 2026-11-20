@@ -20,10 +20,10 @@ market_data/      Indian Stock API and Bhavcopy resolution
 monitoring/       ops notifier and metrics
 narrator/         rule-based narrator and optional best-effort LLM narrator
 ratio_engine/     ratio math, verdict, summary, amount coercion
-scripts/          run_migrations.sh, deploy.sh, CI smoke tests and helpers
+scripts/          run_migrations.sh, deploy.sh, CI smoke tests, sample_screening.py (landing sample) and helpers
 tests/            pytest suite
 tools/            preflight, probes, metrics inspector, load test
-ui/               Next.js 16 dashboard (static export) and jest tests
+ui/               Next.js 16 site (static export): public landing at /, dashboard, design tokens in app/globals.css, jest tests
 utils/            date parsing helpers
 ```
 

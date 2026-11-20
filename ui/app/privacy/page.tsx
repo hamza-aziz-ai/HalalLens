@@ -55,7 +55,7 @@ export default function PrivacyPage() {
         <h2 className={policyTitleClass}>Contact</h2>
         <p className={`${policyBodyClass} mt-3`}>
           Questions about privacy can be sent to{" "}
-          <SupportEmail className="text-cyan-200 hover:text-cyan-100" />
+          <SupportEmail className="text-brand hover:underline" />
           .
         </p>
       </section>

@@ -35,9 +35,9 @@ export default function VerifyEmailPage() {
             }}
           />
         ) : checked ? (
-          <p className="text-sm text-slate-300">
+          <p className="text-sm text-muted">
             This page needs the link from your sign-up email.{" "}
-            <Link href="/login" className="text-cyan-200 hover:text-cyan-100">
+            <Link href="/login" className="text-brand hover:underline">
               Request a new one
             </Link>
             .

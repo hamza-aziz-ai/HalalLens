@@ -6,7 +6,7 @@ import { usePathname, useRouter } from "next/navigation";
 import clsx from "clsx";
 
 import { useAuth } from "@/providers/AuthProvider";
-import { ThemeProvider, useTheme } from "@/providers/ThemeProvider";
+import { useTheme } from "@/providers/ThemeProvider";
 
 const NAV_ITEMS = [
   { href: "/dashboard", label: "Overview" },
@@ -113,8 +113,6 @@ function AppShell({ children }: { children: React.ReactNode }) {
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   return (
-    <ThemeProvider>
-      <AppShell>{children}</AppShell>
-    </ThemeProvider>
+    <AppShell>{children}</AppShell>
   );
 }

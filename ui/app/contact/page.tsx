@@ -18,7 +18,7 @@ export default function ContactPage() {
         <ul className={`mt-3 ${policyListClass}`}>
           <li>
             Email:{" "}
-            <SupportEmail className="text-cyan-200 hover:text-cyan-100" />
+            <SupportEmail className="text-brand hover:underline" />
           </li>
           <li>Response time: within 3 business days.</li>
           <li>Coverage: India market and Shariah screening questions.</li>
@@ -29,7 +29,7 @@ export default function ContactPage() {
         <h2 className={policyTitleClass}>Business inquiries</h2>
         <p className={`${policyBodyClass} mt-3`}>
           For partnerships or data requests, email{" "}
-          <SupportEmail className="text-cyan-200 hover:text-cyan-100" />
+          <SupportEmail className="text-brand hover:underline" />
           .
         </p>
       </section>
