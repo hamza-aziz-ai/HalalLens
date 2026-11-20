@@ -51,3 +51,43 @@ export function Logo({ className }: { className?: string }) {
     </span>
   );
 }
+
+export const inputClass =
+  "w-full rounded-lg border border-line bg-surface px-3 py-2 text-sm text-fg placeholder:text-muted focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/30";
+export const labelClass = "text-xs font-medium text-muted";
+/** Small uppercase mono label above a heading ("01 · Method"). */
+export const eyebrowClass = "font-mono text-[11px] font-medium uppercase tracking-wider text-brand";
+
+/** Title block at the top of every signed-in page. */
+export function PageHeader({
+  eyebrow,
+  title,
+  description,
+  actions,
+}: {
+  eyebrow?: string;
+  title: string;
+  description?: ReactNode;
+  actions?: ReactNode;
+}) {
+  return (
+    <header className="flex flex-wrap items-end justify-between gap-4">
+      <div className="min-w-0">
+        {eyebrow && <p className={eyebrowClass}>{eyebrow}</p>}
+        <h1 className="mt-1 text-2xl font-semibold tracking-tight text-fg">{title}</h1>
+        {description && <p className="mt-1.5 max-w-2xl text-sm text-muted">{description}</p>}
+      </div>
+      {actions && <div className="flex flex-wrap gap-2">{actions}</div>}
+    </header>
+  );
+}
+
+/** Says why a list is empty and what to do next, instead of a bare dash. */
+export function EmptyState({ title, children }: { title: string; children?: ReactNode }) {
+  return (
+    <div className="rounded-lg border border-dashed border-line px-4 py-8 text-center">
+      <p className="text-sm font-medium text-fg">{title}</p>
+      {children && <div className="mx-auto mt-1.5 max-w-md text-sm text-muted">{children}</div>}
+    </div>
+  );
+}

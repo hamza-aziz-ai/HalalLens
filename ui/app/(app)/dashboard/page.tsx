@@ -1,41 +1,41 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import clsx from "clsx";
+import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 
 import type { Filing, IngestionStats } from "@/lib/types";
 import { fetchRecentFilings } from "@/lib/filings";
 import { fetchIngestionStats } from "@/lib/ingestion";
-import { useTheme } from "@/providers/ThemeProvider";
 import { useAuth } from "@/providers/AuthProvider";
+import { Card, EmptyState, PageHeader, VerdictBadge, buttonClass, eyebrowClass } from "@/components/ui";
+
+const QUICK_ACTIONS = [
+  { href: "/analysis", label: "Screen a company", body: "Look up a symbol or enter figures by hand." },
+  { href: "/history", label: "Filing history", body: "Ratios and verdicts over time for one company." },
+  { href: "/account", label: "Plan and alerts", body: "Subscription, watchlist alerts and sign-in methods." },
+  { href: "/learn", label: "Learn", body: "Riba, the AAOIFI screens and each ratio explained." },
+];
 
 export default function DashboardPage() {
-  const { theme } = useTheme();
   const { user } = useAuth();
 
-  const [filings, setFilings] = useState<Filing[]>([]);
+  const [filings, setFilings] = useState<Filing[] | null>(null);
   const [filingError, setFilingError] = useState<string | null>(null);
   const [adminStats, setAdminStats] = useState<IngestionStats | null>(null);
   const [adminStatsError, setAdminStatsError] = useState<string | null>(null);
-  // Shown only while the session is an admin's.
-  const stats = user?.is_admin ? adminStats : null;
-  const statsError = user?.is_admin ? adminStatsError : null;
 
-  const cardClass =
-    theme === "dark"
-      ? "rounded-[28px] border border-white/10 bg-[linear-gradient(145deg,rgba(15,23,42,0.92),rgba(8,12,20,0.95))] p-6 shadow-[0_25px_80px_rgba(3,7,18,0.55)]"
-      : "rounded-[28px] border border-slate-200/70 bg-white/85 p-6 shadow-[0_20px_60px_rgba(15,23,42,0.12)]";
-  const headingClass = theme === "dark" ? "text-white" : "text-slate-900";
-  const mutedTextClass = theme === "dark" ? "text-slate-400" : "text-slate-500";
+  const loadFilings = useCallback(async () => {
+    try {
+      setFilings(await fetchRecentFilings());
+      setFilingError(null);
+    } catch (err: any) {
+      setFilingError(err.message ?? "Unable to load filings.");
+    }
+  }, []);
 
   useEffect(() => {
-    fetchRecentFilings()
-      .then((data) => {
-        setFilings(data);
-        setFilingError(null);
-      })
-      .catch((err) => setFilingError(err.message ?? "Unable to load filings."));
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- first load after mount (static export)
+    loadFilings();
 
     // Ingestion stats are an operator surface; non-admins get 403 from the API,
     // so don't fetch (or render a scary error) for them.
@@ -47,167 +47,112 @@ export default function DashboardPage() {
         setAdminStatsError(null);
       })
       .catch((err) => setAdminStatsError(err.message ?? "Unable to load stats."));
-  }, [user?.is_admin]);
+  }, [user?.is_admin, loadFilings]);
 
   return (
-    <main className="space-y-10">
-      <header className={cardClass}>
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <p className={clsx("text-xs uppercase tracking-[0.3em]", mutedTextClass)}>
-              Overview
-            </p>
-            <h1 className={clsx("text-3xl font-semibold text-display", headingClass)}>
-              Shariah compliance cockpit
-            </h1>
-            <p className={clsx("mt-2", mutedTextClass)}>
-              Track recent filings, ingestion status, and jump into analysis or
-              governance review.
-            </p>
-          </div>
-          <Link
-            href="/account"
-            className={clsx(
-              "rounded-full border px-4 py-2 text-xs font-semibold transition",
-              theme === "dark"
-                ? "border-cyan-400/40 text-cyan-200 hover:border-cyan-300"
-                : "border-cyan-500/40 text-cyan-700 hover:border-cyan-600",
-            )}
-          >
-            {user ? `Plan: ${user.plan}` : "Account"}
+    <>
+      <PageHeader
+        eyebrow="Overview"
+        title="Overview"
+        description="Recent screenings, quick ways in, and (for operators) the state of filing collection."
+        actions={
+          <Link href="/analysis" className={buttonClass("primary")}>
+            Screen a company
           </Link>
-        </div>
-      </header>
+        }
+      />
 
-      <section className="grid gap-6 lg:grid-cols-3">
-        <div className={cardClass}>
-          <p className={clsx("text-xs uppercase", mutedTextClass)}>
-            Total announcements
-          </p>
-          <p className={clsx("mt-2 text-3xl font-semibold", headingClass)}>
-            {stats?.total_announcements ?? "—"}
-          </p>
-          {statsError && <p className="text-xs text-rose-300">{statsError}</p>}
-        </div>
-        <div className={cardClass}>
-          <p className={clsx("text-xs uppercase", mutedTextClass)}>
-            Financial snapshots
-          </p>
-          <p className={clsx("mt-2 text-3xl font-semibold", headingClass)}>
-            {stats?.financial_snapshots ?? "—"}
-          </p>
-          <p className={clsx("mt-2 text-xs", mutedTextClass)}>
-            High confidence: {stats?.high_confidence ?? "—"}
-          </p>
-        </div>
-        <div className={cardClass}>
-          <p className={clsx("text-xs uppercase", mutedTextClass)}>
-            Latest filing
-          </p>
-          <p className={clsx("mt-2 text-lg font-semibold", headingClass)}>
-            {stats?.latest_filing
-              ? new Date(stats.latest_filing).toLocaleString()
-              : "—"}
-          </p>
-          <p className={clsx("mt-2 text-xs", mutedTextClass)}>
-            Ingestion health checks run hourly.
-          </p>
-        </div>
-      </section>
-
-      <section className={cardClass}>
-        <h2 className={clsx("text-lg font-semibold", headingClass)}>
-          Quick actions
-        </h2>
-        <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+      {user?.is_admin && (
+        <section aria-label="Ingestion" className="grid gap-4 sm:grid-cols-3">
           {[
-            { href: "/analysis", label: "Run analysis" },
-            { href: "/history", label: "View history" },
-            { href: "/governance", label: "Governance overrides" },
-            { href: "/feedback", label: "Feedback queue" },
-            { href: "/account", label: "Manage billing" },
-            { href: "/learn", label: "Educational library" },
-          ].map((item) => (
-            <Link
-              key={item.href}
-              href={item.href}
-              className={clsx(
-                "rounded-xl border px-4 py-3 text-sm font-semibold transition",
-                theme === "dark"
-                  ? "border-white/10 bg-white/5 text-slate-200 hover:border-cyan-400/40"
-                  : "border-slate-200 bg-white text-slate-700 hover:border-cyan-300",
-              )}
-            >
-              {item.label}
-            </Link>
+            ["Announcements", adminStats?.total_announcements],
+            ["Financial snapshots", adminStats?.financial_snapshots],
+            ["High confidence", adminStats?.high_confidence],
+          ].map(([label, value]) => (
+            <Card key={label as string} className="p-5">
+              <p className={eyebrowClass}>{label}</p>
+              <p className="mt-2 font-mono text-2xl font-semibold tabular-nums text-fg">
+                {value ?? (adminStatsError ? "n/a" : "…")}
+              </p>
+            </Card>
           ))}
-        </div>
+          {adminStatsError && <p className="text-sm text-danger sm:col-span-3">{adminStatsError}</p>}
+        </section>
+      )}
+
+      <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        {QUICK_ACTIONS.map((action) => (
+          <Link
+            key={action.href}
+            href={action.href}
+            className="group rounded-xl border border-line bg-surface p-4 transition hover:border-brand/40 hover:shadow-md"
+          >
+            <p className="text-sm font-semibold text-fg group-hover:text-brand">{action.label}</p>
+            <p className="mt-1 text-xs text-muted">{action.body}</p>
+          </Link>
+        ))}
       </section>
 
-      <section className={cardClass}>
-        <div className="flex items-center justify-between">
-          <h2 className={clsx("text-lg font-semibold", headingClass)}>
-            Recent filings
-          </h2>
-          <button
-            type="button"
-            className={clsx(
-              "text-xs font-semibold",
-              theme === "dark" ? "text-cyan-300" : "text-cyan-700",
-            )}
-            onClick={async () => {
-              try {
-                const data = await fetchRecentFilings();
-                setFilings(data);
-                setFilingError(null);
-              } catch (err: any) {
-                setFilingError(err.message ?? "Unable to refresh filings.");
-              }
-            }}
-          >
+      <Card className="p-0">
+        <div className="flex items-center justify-between border-b border-line px-5 py-4">
+          <h2 className="font-semibold text-fg">Recent filings</h2>
+          <button type="button" className={buttonClass("ghost")} onClick={loadFilings}>
             Refresh
           </button>
         </div>
-        {filingError && <p className="mt-2 text-xs text-rose-300">{filingError}</p>}
-        <div className="mt-4 max-h-80 space-y-2 overflow-y-auto">
-          {filings.map((filing) => (
-            <div
-              key={`${filing.symbol}-${filing.filing_date}`}
-              className={clsx(
-                "rounded-lg border px-3 py-2 text-sm",
-                theme === "dark"
-                  ? "border-slate-800 bg-slate-900 text-slate-200"
-                  : "border-slate-200 bg-white text-slate-700",
-              )}
-            >
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className={clsx("font-semibold", headingClass)}>
-                    {filing.symbol}
-                  </p>
-                  <p className="text-xs text-slate-400">
-                    {filing.headline || "—"}
-                  </p>
-                </div>
-                <Link
-                  href={`/analysis?symbol=${encodeURIComponent(filing.symbol)}`}
-                  className="rounded-md bg-cyan-500 px-3 py-1 text-xs font-semibold text-slate-950 hover:bg-cyan-400"
-                >
-                  Analyze
-                </Link>
-              </div>
-              <p className={clsx("mt-2 text-xs", mutedTextClass)}>
-                {new Date(filing.filing_date).toLocaleDateString()} · {filing.verdict ?? "pending"}
-              </p>
-            </div>
-          ))}
-          {filings.length === 0 && (
-            <p className={clsx("text-sm", mutedTextClass)}>
-              No filings ingested yet.
-            </p>
-          )}
-        </div>
-      </section>
-    </main>
+        {filingError && <p className="px-5 pt-4 text-sm text-danger">{filingError}</p>}
+        {filings === null && !filingError && <p className="px-5 py-6 text-sm text-muted">Loading…</p>}
+        {filings && filings.length === 0 && (
+          <div className="p-5">
+            <EmptyState title="No screened filings yet">
+              Automatic collection of BSE filings is not running in production yet. You can still
+              screen any company from{" "}
+              <Link href="/analysis" className="text-brand hover:underline">
+                Analysis
+              </Link>{" "}
+              by entering its figures.
+            </EmptyState>
+          </div>
+        )}
+        {filings && filings.length > 0 && (
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[36rem] text-sm">
+              <thead>
+                <tr className="border-b border-line text-left text-xs text-muted">
+                  <th scope="col" className="px-5 py-2 font-medium">Company</th>
+                  <th scope="col" className="px-5 py-2 font-medium">Filing date</th>
+                  <th scope="col" className="px-5 py-2 font-medium">Verdict</th>
+                  <th scope="col" className="px-5 py-2"><span className="sr-only">Actions</span></th>
+                </tr>
+              </thead>
+              <tbody>
+                {filings.map((filing) => (
+                  <tr key={`${filing.symbol}-${filing.filing_date}`} className="border-b border-line last:border-0 hover:bg-surface-2/60">
+                    <td className="px-5 py-3">
+                      <p className="font-medium text-fg">{filing.company_name || filing.symbol}</p>
+                      <p className="font-mono text-xs text-muted">{filing.symbol}</p>
+                    </td>
+                    <td className="px-5 py-3 font-mono text-xs tabular-nums text-muted">
+                      {new Date(filing.filing_date).toLocaleDateString()}
+                    </td>
+                    <td className="px-5 py-3">
+                      <VerdictBadge verdict={filing.verdict ?? ""} />
+                    </td>
+                    <td className="px-5 py-3 text-right">
+                      <Link
+                        href={`/analysis?symbol=${encodeURIComponent(filing.symbol)}`}
+                        className={buttonClass("secondary")}
+                      >
+                        Analyze
+                      </Link>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Card>
+    </>
   );
 }
