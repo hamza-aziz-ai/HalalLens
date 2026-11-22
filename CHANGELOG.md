@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.21.4](https://github.com/hamza-aziz-ai/HalalLens/compare/v0.21.3...v0.21.4) (2026-11-22)
+
+
+### Bug Fixes
+
+* **ui:** allow Cloudflare Web Analytics in the Content-Security-Policy ([#264](https://github.com/hamza-aziz-ai/HalalLens/issues/264)) ([68c15a2](https://github.com/hamza-aziz-ai/HalalLens/commit/68c15a2a63855b906619cc2f64fb3540fc3ae560))
+
 ## [0.21.3](https://github.com/hamza-aziz-ai/HalalLens/compare/v0.21.2...v0.21.3) (2026-11-22)
 
 
