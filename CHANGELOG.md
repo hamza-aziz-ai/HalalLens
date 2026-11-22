@@ -24,6 +24,11 @@
 ## [0.20.3](https://github.com/hamza-aziz-ai/HalalLens/compare/v0.20.2...v0.20.3) (2026-11-20)
 
 
+### Features
+
+* **ui:** public landing page with an engine-generated sample screening ([#248](https://github.com/hamza-aziz-ai/HalalLens/issues/248)) ([668ff73](https://github.com/hamza-aziz-ai/HalalLens/commit/668ff73)) (added by hand: the release PR was cut before #248 merged)
+
+
 ### Bug Fixes
 
 * **narrator:** tidy the rule-based Explain-Why text ([#247](https://github.com/hamza-aziz-ai/HalalLens/issues/247)) ([362f1f6](https://github.com/hamza-aziz-ai/HalalLens/commit/362f1f6d0258ffc3ce998b7700add0a7cfa7cb9e))
