@@ -12,8 +12,8 @@
 
   # Content-Security-Policy for the dashboard pages only (D-033); the API and
   # its Swagger page at /api/docs (jsDelivr assets) are served elsewhere.
-  # Report-Only until the policy is proven in the browser console, then the
-  # header name becomes Content-Security-Policy. 'unsafe-inline' scripts:
+  # Enforced since the Report-Only run came back clean (pages, a Test Mode
+  # purchase); rollback = rename it back (docs/ROLLBACK.md). 'unsafe-inline':
   # every page inlines a per-build RSC payload, so one static header cannot
   # list hashes, and a static export has no nonces. Razorpay hosts: the
   # checkout script and its api.razorpay.com iframe (no official list).
@@ -21,7 +21,7 @@
   # beacon (static.cloudflareinsights.com) into HTML for browsers only, and it
   # reports to cloudflareinsights.com. Another Cloudflare feature that injects
   # scripts (Rocket Loader, email obfuscation) needs its host added here.
-  header Content-Security-Policy-Report-Only "default-src 'self'; script-src 'self' 'unsafe-inline' https://checkout.razorpay.com https://static.cloudflareinsights.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://*.razorpay.com; font-src 'self' data:; connect-src 'self' https://*.razorpay.com https://cloudflareinsights.com; frame-src https://api.razorpay.com; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; upgrade-insecure-requests"
+  header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' https://checkout.razorpay.com https://static.cloudflareinsights.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://*.razorpay.com; font-src 'self' data:; connect-src 'self' https://*.razorpay.com https://cloudflareinsights.com; frame-src https://api.razorpay.com; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; upgrade-insecure-requests"
   # trailingSlash export: /login/ -> login/index.html; file_server redirects
   # /login to /login/ and serves directory index files.
   file_server

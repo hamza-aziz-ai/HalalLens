@@ -79,9 +79,9 @@ for h in "x-content-type-options: nosniff" "x-frame-options: DENY" "referrer-pol
 done
 echo "ok   security headers on pages and API"
 # The page policy comes from the dashboard image and must reach the browser
-# through the front Caddy (D-033). Report-Only for now.
+# through the front Caddy (D-033), enforced.
 csp=$(curl -s -D - -o /dev/null "$BASE/" | tr -d '\r')
-grep -qi "^content-security-policy-report-only: default-src 'self';" <<<"$csp" \
+grep -qi "^content-security-policy: default-src 'self';" <<<"$csp" \
   || fail "/ lacks the Content-Security-Policy"
 echo "ok   Content-Security-Policy on pages"
 check "GET /login/" 200 "$(status "$BASE/login/")"
