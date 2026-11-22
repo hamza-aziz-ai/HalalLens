@@ -26,9 +26,9 @@
 
   # Baseline browser hardening on every response (pages, API, error pages).
   # HSTS only takes effect over HTTPS (Cloudflare in tunnel mode, Caddy in
-  # tls mode). No Content-Security-Policy yet: the static export and the
-  # theme script are inline and Razorpay loads its checkout script, so a CSP
-  # needs hashes and a report endpoint first (D-032).
+  # tls mode). The Content-Security-Policy is set by the dashboard image
+  # (ui/Caddyfile.static, D-033), not here: Swagger at /api/docs loads its
+  # assets from a CDN and would break under the page policy.
   header {
     Strict-Transport-Security "max-age=15552000"
     X-Content-Type-Options nosniff
