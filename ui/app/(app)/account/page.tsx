@@ -264,8 +264,8 @@ export default function AccountPage() {
               </p>
             )}
             <p className="text-xs text-muted">
-              Starter ₹50/month, Annual ₹500/year, and Lifetime ₹2000 unlock unlimited
-              lookups, Explain-Why, governance overrides, and premium alerts.
+              Paid plans unlock instant lookups, Explain-Why, filing history and
+              compliance-change alerts.
             </p>
             {billingError && (
               <p className="text-xs text-danger">{billingError}</p>

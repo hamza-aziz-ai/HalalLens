@@ -37,9 +37,7 @@ function parseOverrideNumber(value: string) {
 
 export default function GovernancePage() {
   const { user } = useAuth();
-  // Named hasPaidAccess throughout this page for historical reasons; the API
-  // now requires an admin account for every governance route.
-  const hasPaidAccess = hasGovernanceAccess(user);
+  const canOverride = hasGovernanceAccess(user);
 
   const [symbol, setSymbol] = useState("");
   const [selectedFiling, setSelectedFiling] = useState<Filing | null>(null);
@@ -111,8 +109,8 @@ export default function GovernancePage() {
   };
 
   const handleOverrideSubmit = async () => {
-    if (!hasPaidAccess) {
-      setOverrideError("Upgrade to unlock governance overrides.");
+    if (!canOverride) {
+      setOverrideError("Governance overrides are limited to admin accounts.");
       return;
     }
     const targetSymbol = selectedFiling?.symbol || symbol.trim().toUpperCase();
@@ -155,8 +153,8 @@ export default function GovernancePage() {
 
   const handleOverrideDelete = async (entry: GovernanceOverride) => {
     try {
-      if (!hasPaidAccess) {
-        throw new Error("Upgrade to unlock governance overrides.");
+      if (!canOverride) {
+        throw new Error("Governance overrides are limited to admin accounts.");
       }
       await deleteGovernanceOverride(entry.symbol, entry.filing_date);
       setOverrideStatus("Override removed.");
@@ -169,8 +167,8 @@ export default function GovernancePage() {
   const handleApplyIndianMetrics = (
     metrics: Record<string, number | null | undefined>,
   ) => {
-    if (!hasPaidAccess) {
-      setOverrideError("Upgrade to unlock governance overrides.");
+    if (!canOverride) {
+      setOverrideError("Governance overrides are limited to admin accounts.");
       return;
     }
     const toInput = (value?: number | null) =>
@@ -212,9 +210,9 @@ export default function GovernancePage() {
             <span className="font-mono tabular-nums">{new Date(selectedFiling.filing_date).toLocaleDateString()}</span>
           </p>
         )}
-        {!hasPaidAccess && (
+        {!canOverride && (
           <p className="mt-2 text-xs text-muted">
-            Governance overrides require a paid plan.
+            Governance overrides are limited to admin accounts.
           </p>
         )}
       </Card>
@@ -289,7 +287,7 @@ export default function GovernancePage() {
             type="button"
             onClick={handleOverrideSubmit}
             className={buttonClass("primary")}
-            disabled={overrideLoading || !hasPaidAccess}
+            disabled={overrideLoading || !canOverride}
           >
             {overrideLoading ? "Saving…" : "Apply override"}
           </button>
@@ -340,7 +338,7 @@ export default function GovernancePage() {
                     type="button"
                     className="font-semibold text-danger hover:underline disabled:opacity-60"
                     onClick={() => handleOverrideDelete(entry)}
-                    disabled={!hasPaidAccess}
+                    disabled={!canOverride}
                   >
                     Remove
                   </button>
