@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.21.1](https://github.com/hamza-aziz-ai/HalalLens/compare/v0.21.0...v0.21.1) (2026-11-22)
+
+
+### Bug Fixes
+
+* **deploy:** recreate Caddy when its mounted config changes ([#255](https://github.com/hamza-aziz-ai/HalalLens/issues/255)) ([5f6ab2f](https://github.com/hamza-aziz-ai/HalalLens/commit/5f6ab2fdb50a2da22323849a58aa7d90f2dbeb25))
+
 ## [0.21.0](https://github.com/hamza-aziz-ai/HalalLens/compare/v0.20.4...v0.21.0) (2026-11-20)
 
 
