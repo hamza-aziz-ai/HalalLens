@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.21.2](https://github.com/hamza-aziz-ai/HalalLens/compare/v0.21.1...v0.21.2) (2026-11-22)
+
+
+### Bug Fixes
+
+* **ui:** say governance overrides are admin-only ([#257](https://github.com/hamza-aziz-ai/HalalLens/issues/257)) ([c22d543](https://github.com/hamza-aziz-ai/HalalLens/commit/c22d543e0e4fbdcf0a7345f16576995c4441a6ae))
+
 ## [0.21.1](https://github.com/hamza-aziz-ai/HalalLens/compare/v0.21.0...v0.21.1) (2026-11-22)
 
 
