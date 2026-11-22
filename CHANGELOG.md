@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.21.3](https://github.com/hamza-aziz-ai/HalalLens/compare/v0.21.2...v0.21.3) (2026-11-22)
+
+
+### Bug Fixes
+
+* **ui:** send a Report-Only Content-Security-Policy on dashboard pages ([#261](https://github.com/hamza-aziz-ai/HalalLens/issues/261)) ([9246cf5](https://github.com/hamza-aziz-ai/HalalLens/commit/9246cf5f80576db1fd03083657cddde7e9144e27))
+
 ## [0.21.2](https://github.com/hamza-aziz-ai/HalalLens/compare/v0.21.1...v0.21.2) (2026-11-22)
 
 
