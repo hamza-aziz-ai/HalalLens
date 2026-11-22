@@ -78,6 +78,12 @@ for h in "x-content-type-options: nosniff" "x-frame-options: DENY" "referrer-pol
   done
 done
 echo "ok   security headers on pages and API"
+# The page policy comes from the dashboard image and must reach the browser
+# through the front Caddy (D-033). Report-Only for now.
+csp=$(curl -s -D - -o /dev/null "$BASE/" | tr -d '\r')
+grep -qi "^content-security-policy-report-only: default-src 'self';" <<<"$csp" \
+  || fail "/ lacks the Content-Security-Policy"
+echo "ok   Content-Security-Policy on pages"
 check "GET /login/" 200 "$(status "$BASE/login/")"
 check "policy page redirect keeps working" "308" "$(status "$BASE/terms")"
 grep -q '"/api"\|/api/' <(curl -s "$BASE/" ; for f in $(curl -s "$BASE/" | grep -o '/_next/static/[^"]*\.js'); do curl -s "$BASE$f"; done) \
